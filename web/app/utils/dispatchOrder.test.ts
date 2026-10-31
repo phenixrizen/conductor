@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DispatchOrder, serially, through, throughOrAbsent } from './dispatchOrder'
+import { DispatchOrder, catchUp, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
 
 /** A request whose reply the test hands back, or fails, when it wants. */
 function deferred<T>() {
@@ -232,5 +232,117 @@ describe("a page's operations, one after another", () => {
     expect(started).toEqual(['a', 'b', 'c'])
     gates.get('c')!.resolve('c done')
     expect(await c).toBe('c done')
+  })
+})
+
+describe("an operation's catch-up, before the next operation is made", () => {
+  /**
+   * A ticket page after an edit committed rev 3, showing rev 2: its reads of the ticket answered by `answers` in turn (a rev taken, a
+   * reply the gate dropped, or a failure), its waits recorded and passed at once, unless `during` acts in one (another read's success,
+   * the page left).
+   */
+  function behind(answers: Array<number | 'dropped' | Error>, during?: (waits: number) => void) {
+    const state = { rev: 2, left: false, reads: 0, waits: [] as number[] }
+    const o: CatchUpOptions = {
+      shown: () => state.rev >= 3,
+      read: async () => {
+        const a = answers[state.reads++]
+        if (a === undefined) throw new Error('read more often than the test answers')
+        if (a instanceof Error) throw a
+        if (a === 'dropped') return false
+        state.rev = a
+        return true
+      },
+      left: () => state.left,
+      wait: async (ms) => {
+        state.waits.push(ms)
+        during?.(state.waits.length)
+      },
+      firstMs: 250,
+      maxMs: 1000,
+    }
+    return { state, o }
+  }
+  const failed = () => new Error('Cannot reach the server')
+
+  it('reads nothing when the page shows what the operation left already: its reply was taken', async () => {
+    const p = behind([])
+    p.state.rev = 3
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(0)
+  })
+
+  it('reads the ticket, and asks again while a read fails, the wait doubled up to the most, until one is shown', async () => {
+    const p = behind([failed(), failed(), failed(), failed(), failed(), 3])
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(6)
+    expect(p.state.waits).toEqual([250, 500, 1000, 1000, 1000])
+    expect(p.state.rev).toBe(3)
+  })
+
+  it('holds the edit queued behind it while a read fails, and that edit is made on the revision the read then shows', async () => {
+    const p = behind([failed(), 3])
+    const passes: Array<() => void> = []
+    p.o.wait = (ms) => {
+      p.state.waits.push(ms)
+      return new Promise<void>((resolve) => passes.push(resolve))
+    }
+    // The page's edits, one after another: the first has answered, and catches up; the next is made on the revision shown then.
+    const madeOn: number[] = []
+    const edit = serially(async (which: 'first' | 'next') => {
+      if (which === 'first') await catchUp(p.o)
+      else madeOn.push(p.state.rev)
+    })
+    const first = edit('first')
+    const next = edit('next')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The read failed: the next edit is not made on the rev 2 shown, which a failure taken for a read would have it made on.
+    expect(p.state.reads).toBe(1)
+    expect(madeOn).toEqual([])
+    passes[0]!()
+    await first
+    await next
+    expect(madeOn).toEqual([3])
+  })
+
+  it("stops once the page shows the ticket some other way while it waits: the re-read of the commit's event answered", async () => {
+    const p = behind([failed()], () => (p.state.rev = 3))
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(1)
+  })
+
+  it("reads again at once when the gate dropped a read's reply, until one is taken", async () => {
+    const p = behind(['dropped', 'dropped', 3])
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(3)
+    expect(p.state.waits).toEqual([])
+  })
+
+  it('takes a read that answers below the revision committed (a store restored from a backup): the page shows the store as it is', async () => {
+    const p = behind([1])
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(1)
+    expect(p.state.rev).toBe(1)
+  })
+
+  it('gives up, reading nothing more, once the page has left the ticket', async () => {
+    const p = behind([failed(), failed()], (n) => {
+      if (n === 2) p.state.left = true
+    })
+    expect(await catchUp(p.o)).toBe(false)
+    expect(p.state.reads).toBe(2)
+    // Left before anything was read: nothing is.
+    const q = behind([])
+    q.state.left = true
+    expect(await catchUp(q.o)).toBe(false)
+    expect(q.state.reads).toBe(0)
+  })
+
+  it('with no revision to wait for (a refusal), waits for a read taken, whatever it shows', async () => {
+    const p = behind([failed(), 'dropped', 2])
+    p.o.shown = () => false
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(3)
+    expect(p.state.waits).toEqual([250])
   })
 })

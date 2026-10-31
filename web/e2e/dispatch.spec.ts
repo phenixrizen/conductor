@@ -11,9 +11,11 @@ import { expect, test, type Api } from './fixtures'
 // save goes, kept. And review round 3's: an edit waiting behind one whose reply carries no ticket, made on the revision its receipt
 // names; an owner picked back while the edit of another is on its way, kept; an acceptance made again for the same owner, in the
 // history. And review round 4's: a title typed back to the one shown while its save goes, kept and saved after it; a new ticket's and
-// a new project's dialog, which stay open while what they make is on its way and are closed by its answer alone. The spec names what
-// it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the earlier ones), and counts only the rows of
-// that project.
+// a new project's dialog, which stay open while what they make is on its way and are closed by its answer alone. And review round 5's:
+// an owner picked back behind an edit whose reply carries no ticket, and behind one refused for a stale revision, kept while the reads
+// after it fail and made once one answers; a new ticket and a new project answered with their receipts alone, said and opened by the
+// key the receipt names. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the
+// earlier ones), and counts only the rows of that project.
 test.describe.configure({ mode: 'serial' })
 
 let other: BrowserContext | null = null
@@ -737,4 +739,185 @@ test("a new project's dialog stays open while its project is made, and that proj
   await expect(page.locator('[data-project-name]')).toHaveText(name)
   await expect(dialog).toHaveCount(0)
   expect(creations.sent).toBe(1)
+})
+
+/**
+ * Fails every read of the ticket `ticket` the page makes while `failing` is set, as a server busy for a moment answers (a read, and the
+ * one retry of it that $fetch makes of a GET by itself), and counts them.
+ */
+async function failReads(page: Page, ticket: string): Promise<{ failing: boolean; failed: number }> {
+  const r = { failing: false, failed: 0 }
+  await page.route(new RegExp(`/api/dispatch/tickets/${ticket}$`), async (route) => {
+    if (route.request().method() !== 'GET' || !r.failing) return route.fallback()
+    r.failed++
+    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'The store is busy.' } }) })
+  })
+  return r
+}
+
+test('an owner picked back behind an edit whose reply carries no ticket is kept while the reads after that edit fail, and made once one answers', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Owned')
+  const first = `Alice ${key}`
+  const second = `Bob ${key}`
+  await api.ok('POST', `/api/dispatch/tickets/${key}-1/edit`, { opId: opOf(key, 'o1'), set: { owner: first } })
+  await api.ok('POST', '/api/dispatch/people', { opId: opOf(key, 'b'), name: second })
+  const reads = await failReads(page, `${key}-1`)
+  // The page's edits, in order: the first held on its way, then answered as the server answers when its read after the commit fails,
+  // its receipt done and no ticket; the page's reads of the ticket fail from its commit on.
+  const sent: SentEdit[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let receiptRev: number | undefined
+  /** How many reads had failed when the first edit's reply was handed to the page; -1 before. */
+  let failedAtReply = -1
+  await page.route('**/api/dispatch/tickets/*/edit', async (route) => {
+    sent.push(route.request().postDataJSON())
+    if (sent.length > 1) return route.continue()
+    await held
+    reads.failing = true
+    const response = await route.fetch()
+    const reply = (await response.json()) as { receipt: { rev?: number }; ticket: unknown }
+    receiptRev = reply.receipt.rev
+    failedAtReply = reads.failed
+    await route.fulfill({ response, json: { ...reply, ticket: null } })
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  const owner = page.locator('[data-ticket-owner]')
+  await expect(owner).toContainText(first)
+
+  // Bob picked: his edit held on its way. Alice picked back meanwhile: her edit waits its turn behind his.
+  await owner.click()
+  await page.getByRole('option', { name: second, exact: true }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  await owner.click()
+  await page.getByRole('option', { name: first, exact: true }).click()
+  release()
+
+  // Bob's edit commits rev 3, which its reply says in its receipt alone, and the page's reads of the ticket fail: its read after that
+  // reply, the commit's event's re-read, and each asked again, three of them at least after the reply. Alice's edit waits: made on the
+  // rev 2 shown, which holds her already, it would change nothing and not be sent, and Bob would stay.
+  await expect.poll(() => (failedAtReply < 0 ? 0 : reads.failed - failedAtReply)).toBeGreaterThanOrEqual(6)
+  expect(receiptRev).toBe(3)
+  expect(sent).toHaveLength(1)
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  // The reads go through: the page shows rev 3, Bob's, and Alice's edit is made on it. The page's next read is at most
+  // DISPATCH_RETRY_MAX_MS (8 s) away, the wait after a failure doubled up to it, so the test waits longer than that for it.
+  reads.failing = false
+  await expect(rev).toHaveAttribute('data-ticket-rev', '4', { timeout: 30_000 })
+  await expect(owner).toContainText(first)
+  expect(sent.map((b) => [b.set, b.expectedRev])).toEqual([
+    [{ owner: second }, 2],
+    [{ owner: first }, 3],
+  ])
+  expect((await stored(api, `${key}-1`)).owner).toBe(first)
+})
+
+test('an owner picked back behind an edit refused for a stale revision is kept while the reads after the refusal fail, and made on what the store holds', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Owned')
+  const first = `Alice ${key}`
+  const second = `Bob ${key}`
+  const third = `Carol ${key}`
+  await api.ok('POST', `/api/dispatch/tickets/${key}-1/edit`, { opId: opOf(key, 'o1'), set: { owner: first } })
+  await api.ok('POST', '/api/dispatch/people', { opId: opOf(key, 'b'), name: second })
+  const reads = await failReads(page, `${key}-1`)
+  let release!: () => void
+  const sent = await recordEdits(page, { n: 1, until: new Promise<void>((resolve) => (release = resolve)) })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  const owner = page.locator('[data-ticket-owner]')
+  await expect(owner).toContainText(first)
+
+  // The page's reads of the ticket fail from now on, and another person makes Carol the owner: the page's re-read for it fails, and it
+  // still shows Alice at rev 2.
+  reads.failing = true
+  await api.ok('POST', `/api/dispatch/tickets/${key}-1/edit`, { opId: opOf(key, 'o2'), set: { owner: third } })
+  await expect.poll(() => reads.failed).toBeGreaterThanOrEqual(2)
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  // Bob picked: his edit held on its way, made on the rev 2 shown. Alice picked back meanwhile: her edit waits its turn behind his.
+  await owner.click()
+  await page.getByRole('option', { name: second, exact: true }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  await owner.click()
+  await page.getByRole('option', { name: first, exact: true }).click()
+  const failedAtRelease = reads.failed
+  release()
+
+  // Bob's edit is refused stale_revision, the store at rev 3, and the page's read of the ticket after the refusal fails, and each asked
+  // again, three of them at least. Alice's edit waits: made on the rev 2 shown, which holds her already, it would change nothing and not
+  // be sent, and Carol would stay.
+  await expect.poll(() => reads.failed - failedAtRelease).toBeGreaterThanOrEqual(6)
+  expect(sent).toHaveLength(1)
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  // The reads go through: the page shows rev 3, Carol's, and Alice's edit is made on it, at most DISPATCH_RETRY_MAX_MS (8 s) later.
+  reads.failing = false
+  await expect(rev).toHaveAttribute('data-ticket-rev', '4', { timeout: 30_000 })
+  await expect(owner).toContainText(first)
+  expect(sent.map((b) => [b.set, b.expectedRev])).toEqual([
+    [{ owner: second }, 2],
+    [{ owner: first }, 3],
+  ])
+  expect((await stored(api, `${key}-1`)).owner).toBe(first)
+})
+
+/**
+ * Answers the first creation `url` names (a POST) as the server answers when its read after the commit fails: done, its receipt and no
+ * entity (`entity` null). `key` is the key its receipt names, once answered.
+ */
+async function receiptAlone(page: Page, url: string, entity: 'ticket' | 'project'): Promise<{ key?: string }> {
+  const r: { key?: string } = {}
+  await page.route(url, async (route) => {
+    if (route.request().method() !== 'POST' || r.key !== undefined) return route.fallback()
+    const response = await route.fetch()
+    const reply = (await response.json()) as { receipt: { key?: string } }
+    r.key = reply.receipt.key ?? ''
+    await route.fulfill({ response, json: { ...reply, [entity]: null } })
+  })
+  return r
+}
+
+test('a new ticket answered with its receipt alone is said by the key the receipt names, and opened from there, though the filter leaves it out', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key)
+  const reply = await receiptAlone(page, '**/api/dispatch/tickets', 'ticket')
+  // The list filtered to the tickets done: a new ticket, in the backlog, is none of its rows.
+  await page.goto(`/dispatch/${key}?status=done`)
+  await expect(page.locator('[data-list-empty]')).toBeVisible()
+
+  await page.locator('[data-new-ticket-open]').click()
+  const dialog = page.getByRole('dialog')
+  await page.locator('[data-new-ticket-title]').fill('Out of the filter')
+  await page.locator('[data-new-ticket-submit]').click()
+  await expect(dialog).toHaveCount(0)
+  expect(reply.key).toBe(`${key}-1`)
+  // Said by its key, with Open, while the list still shows nothing; Open is its page.
+  const toast = page.locator('li').filter({ hasText: `${key}-1 made` }).last()
+  await expect(toast).toBeVisible()
+  await expect(toast).toContainText('Out of the filter')
+  await expect(page.locator('[data-list-empty]')).toBeVisible()
+  await toast.getByRole('button', { name: 'Open' }).click()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Out of the filter')
+})
+
+test('a new project answered with its receipt alone opens the page of the key the receipt names', async ({ page, api }) => {
+  const key = await freeKey(api)
+  const name = `E2E project ${key}`
+  const reply = await receiptAlone(page, '**/api/dispatch/projects', 'project')
+  await page.goto('/dispatch')
+
+  await page.locator('[data-new-project-open]').click()
+  const dialog = page.getByRole('dialog')
+  await page.locator('[data-new-project-key]').fill(key)
+  await page.locator('[data-new-project-name]').fill(name)
+  await page.locator('[data-new-project-submit]').click()
+  // Its page opens, from the key its receipt names.
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))
+  expect(reply.key).toBe(key)
+  await expect(page.locator('[data-project-name]')).toHaveText(name)
+  await expect(dialog).toHaveCount(0)
 })

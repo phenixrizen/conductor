@@ -2,10 +2,11 @@
 import type { DispatchChange, DispatchTicket, Horizon, ProjectRead, TicketEdit, TicketReply, TicketStatus } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { ticketWatch } from '~/composables/useDispatchLive'
+import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
 import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
+import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
-import { serially } from '~/utils/dispatchOrder'
+import { catchUp, serially } from '~/utils/dispatchOrder'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -13,9 +14,10 @@ import { serially } from '~/utils/dispatchOrder'
  * the revision shown (useDispatchOps), and every read and every operation's reply goes through the page's ordering gate, the ticket's by
  * its key, a 404 among them. The live events read it again: at once when one names the ticket, after the window on any other of its
  * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup); a read that fails, its first among
- * them, is asked again. An edit waits for the one before it to be shown. An editor's save is made against the text it opened on, so
- * another person's edit made meanwhile is never replaced unseen, and what is typed while it goes stays. Its comments, attachments, parent
- * and relations, labels and milestones, and the close policy come with the next changes, and the page says so. One column on a phone.
+ * them, is asked again. An edit waits for the one before it to be shown, read again until a read answers. An editor's save is made
+ * against the text it opened on, so another person's edit made meanwhile is never replaced unseen, and what is typed while it goes
+ * stays. Its comments, attachments, parent and relations, labels and milestones, and the close policy come with the next changes, and
+ * the page says so. One column on a phone.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -44,15 +46,16 @@ useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.va
 
 /**
  * Reads the ticket in full; a key no ticket has says so, and is no failure to ask again. That answer goes through the gate as any reply,
- * so a slow 404 never hides the ticket a later read found (one made since the page opened).
+ * so a slow 404 never hides the ticket a later read found (one made since the page opened). Resolves to whether the gate took the answer;
+ * what is no key needs no read, and is taken.
  */
-async function readTicket(): Promise<void> {
+async function readTicket(): Promise<boolean> {
   const key = props.ticketKey
   if (!parseTicketKey(key)) {
     missing.value = true
-    return
+    return true
   }
-  await readOrAbsent(`ticket:${key}`, () => api.ticket(key), {
+  return readOrAbsent(`ticket:${key}`, () => api.ticket(key), {
     apply: (t) => {
       if (key !== props.ticketKey) return
       ticket.value = t
@@ -124,8 +127,11 @@ async function readProject(): Promise<void> {
   }
 }
 
-/** Everything the page shows, read again: the ticket, its history, its project. Rejects when a read failed (the live store asks again). */
-async function reload(): Promise<void> {
+/**
+ * Everything the page shows, read again: the ticket, its history, its project. Rejects when a read failed (the live store asks again);
+ * else resolves to whether the gate took the ticket's answer.
+ */
+async function reload(): Promise<boolean> {
   const results = await Promise.allSettled([readTicket(), readHistory(), readProject()])
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
   if (failed) {
@@ -133,6 +139,8 @@ async function reload(): Promise<void> {
     throw failed.reason
   }
   error.value = ''
+  const [read] = results
+  return read.status === 'fulfilled' && read.value
 }
 
 /**
@@ -207,17 +215,27 @@ const entries = computed(() =>
 type Made = TicketEdit | null | false
 
 /**
- * Reads the ticket again when the page shows it below `rev`, the revision an edit of it has just committed, before the next edit is
- * made: that edit's reply is dropped by the gate when a read numbered after it (a re-read for another ticket's event) was served before
- * its commit and answered first, and a reply whose read after the commit failed carries no ticket at all, only its receipt; either way
- * the next edit, made on the older ticket shown, would expect its revision and be refused stale_revision. `rev` is the reply's ticket's,
- * else its receipt's; with neither (a resend answered from a receipt since pruned, its read failed too) the ticket is read whatever is
- * shown. This read is sent after the commit, so it finds it. One that fails leaves the next edit to the store's check, whose refusal
- * reads the page again.
+ * Waits, before the next edit is made, until the page shows the ticket as the store holds it since an edit of it answered (catchUp): at
+ * `rev`, the revision that edit committed, or a later one; with no `rev`, once a read of the ticket sent after the answer is shown. The
+ * edit's reply shows it when the gate takes it; else the ticket is read now, after the commit, so the read finds it: the reply is dropped
+ * when a read numbered after it (a re-read for another ticket's event) was served before its commit and answered first, and a reply
+ * whose read after the commit failed carries its receipt alone. `rev` is the reply's ticket's, else its receipt's; there is none after a
+ * refusal, nor for a resend answered from a receipt since pruned. A read that fails is asked again after the window, doubled up to
+ * DISPATCH_RETRY_MAX_MS, as a re-read is, until one answers or the page shows the ticket some other way (the re-read of the commit's
+ * event): the next edit, made on the older ticket shown, would expect its revision and be refused stale_revision, or be taken for no
+ * change and never sent (an owner picked back to the name the older ticket holds), and the edit before it would stand. It stops once the
+ * page shows another ticket, whose edits are not sent; a page left while the reads fail reads on until one answers, and the edits
+ * waiting behind it are made then, on what the store holds, as edits made just before a page is left are.
  */
 async function caughtUp(key: string, rev: number | undefined): Promise<void> {
-  if (key !== props.ticketKey || (rev !== undefined && (ticket.value?.rev ?? 0) >= rev)) return
-  await readTicket().catch(() => {})
+  await catchUp({
+    shown: () => rev !== undefined && (ticket.value?.rev ?? 0) >= rev,
+    read: readTicket,
+    left: () => key !== props.ticketKey,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    firstMs: RUN_EVENT_WINDOW_MS,
+    maxMs: DISPATCH_RETRY_MAX_MS,
+  })
 }
 
 /**
@@ -246,10 +264,12 @@ const edit = serially(async (key: string, make: () => Made): Promise<boolean> =>
     rev: (r) => r.ticket?.rev,
     refused: () => (refused = true),
   })
-  // A refusal (a stale revision: another person's edit came first) shows the ticket as the store holds it now, read before the next
-  // edit is sent, so that one expects the revision the store has.
-  if (refused) await reload().catch(() => {})
-  else if (reply) {
+  // A refusal (a stale revision: another person's edit came first) shows the page as the store holds it now, read before the next edit
+  // is made, so that one expects the revision the store has and is made on what it holds; a read of the ticket that fails, or that the
+  // gate drops, is asked again until one is shown, as after a commit (caughtUp).
+  if (refused) {
+    if (!(await reload().catch(() => false))) await caughtUp(key, undefined)
+  } else if (reply) {
     await caughtUp(key, reply.ticket?.rev ?? reply.receipt.rev)
     void readHistory().catch(() => {})
   }

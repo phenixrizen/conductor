@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DispatchTicket, TicketReply, TicketStatus } from '~/composables/useDispatch'
+import type { TicketReply, TicketStatus } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { PRIORITIES, TICKET_STATUSES, statusWord } from '~/utils/dispatch'
 import { dispatchFailureWords } from '~/composables/useDispatchOps'
@@ -9,11 +9,12 @@ import { dispatchFailureWords } from '~/composables/useDispatchOps'
  * page), its status and its priority; the store gives it its key, the project's next number (CND-12), never reassigned. Ctrl+Enter
  * (⌘+Enter) in the description makes it too. A refusal shows in the dialog. While the ticket is made the dialog stays: Escape, a click
  * outside, its close button and Cancel do nothing until the store has answered, so that answer closes the opening it was made from,
- * never a later one holding a draft of its own.
+ * never a later one holding a draft of its own. The ticket made is handed on by its key (`created`), its reply's ticket's, else its
+ * receipt's: a creation whose read after the commit failed is answered with its receipt alone, and is made all the same.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ project: string; gate: DispatchOrder }>()
-const emit = defineEmits<{ created: [ticket: DispatchTicket] }>()
+const emit = defineEmits<{ created: [ticket: { key: string; title: string }] }>()
 
 const api = useDispatchApi()
 const ops = useDispatchOps(props.gate)
@@ -54,7 +55,9 @@ async function submit() {
       ...(priority.value ? { priority: priority.value } : {}),
     }
     const reply = await ops.run<TicketReply>((op) => api.createTicket({ ...op, ...body }), { thing: `new-ticket:${props.project}`, what: 'New ticket', raise: true })
-    if (reply?.ticket) emit('created', reply.ticket)
+    // Made: by the key its reply's ticket has, else the one its receipt names, with the title the reply has, else the one sent.
+    const key = reply?.ticket?.key || reply?.receipt.key
+    if (key) emit('created', { key, title: reply?.ticket?.title ?? body.title })
     open.value = false
   } catch (e) {
     error.value = dispatchFailureWords(e)
