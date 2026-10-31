@@ -42,6 +42,18 @@ describe('the Markdown preview', () => {
     expect(resolveRelative('/repo/docs', './c.md')).toBe('/repo/docs/c.md')
   })
 
+  it("keeps a relative link's words as words where the text has no folder (a Dispatch ticket's), and every other link as it is", () => {
+    const { html } = renderMarkdown('[users](users.md), [up](../README.md#top), [here](#intro), [web](https://example.net/x), [none]()\n', { dir: '', relativeLinks: false })
+    expect(html).not.toContain('data-md-link')
+    expect(html).toContain('<span class="md-link-held" title="users.md">users</span>')
+    expect(html).toContain('<span class="md-link-held" title="../README.md#top">up</span>')
+    expect(html).toContain('<a href="#intro">here</a>')
+    expect(html).toContain('<a href="https://example.net/x" target="_blank" rel="noopener noreferrer">web</a>')
+    expect(html).toContain('<a>none</a>')
+    // A held link's destination is text in its title, escaped.
+    expect(renderMarkdown('[q](a"b<c>.md)\n', { dir: '', relativeLinks: false }).html).toContain('title="a%22b%3Cc%3E.md"')
+  })
+
   it('names the file a local link or image means: the encoding markdown-it gives undone once, the query and fragment cut', () => {
     expect(localPath('my%20notes.md')).toBe('my notes.md')
     expect(localPath('a%2520b.md')).toBe('a%20b.md')

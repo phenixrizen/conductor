@@ -159,6 +159,22 @@ add its rule here.
   its processes (`endRuns` in `internal/crew`); anything else a test leaves
   running is ended the same way, before the cleanup that removes what it
   writes to.
+- Servers over one data directory hand its owner lock on: a later one
+  waits for it and takes it when the first ends. End the later ones first
+  (cleanups run last in, first out, so `serve` registers each one's end
+  after the first's), or the later one opens the ledger as its owner while
+  `t.TempDir` removes it (`data/runs: directory not empty`, #281). And a
+  Close returns only once nothing it started can still write: the ledger's
+  wait could try for the lock once more after Close and make `owner.lock`
+  again; its tries are made under the ledger's lock now.
+- Check what must last again after a redraw the test causes. A check made
+  only as a view first appears races the page's own redraws (a clock
+  tick, a live update): the run page's graph dropped a task's needs edge
+  at every redraw after its first (Vue Flow ran the editor's connection
+  check on every edge it was handed, #281), and the spec that read the
+  edge on arrival failed only when the page's 5 s tick came first. Switch
+  a mode or toggle a setting, then check again, so a bug that only a
+  redraw shows fails every run.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

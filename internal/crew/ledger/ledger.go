@@ -277,11 +277,32 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 	}
 	l.db = db
 	if !l.readOnly {
-		if err := os.Chmod(path, 0o600); err != nil {
+		// Private before the first transaction, which makes the -wal and
+		// -shm with the file's mode as it is then: a file the open has
+		// just made has the umask's. Its error waits for the write's
+		// proof, so a file the server may not write is read-only, not a
+		// failed Open.
+		modeErr := private(path)
+		if err := writable(ctx, db); err != nil {
+			// The owner, but the connection does not write: a file in WAL
+			// mode, or the WAL beside it, that the server may not write,
+			// which SQLite opens read-only without an error (#444). Kept
+			// as it is, read when it can be, never written.
+			db.Close()
+			l.readOnly, l.why = true, fmt.Sprintf("ledger: %s cannot be written: %v", path, err)
+			if db, err = l.open(ctx, path, true); err != nil {
+				l.why += "; nor read: " + err.Error()
+				l.db = nil
+				return nil
+			}
+			l.db = db
+			return nil
+		}
+		if modeErr != nil {
 			db.Close()
 			l.db = nil
 			l.release()
-			return err
+			return modeErr
 		}
 		if err := l.prepare(ctx); err != nil {
 			// A damaged database, or one a later binary wrote: kept as it
@@ -303,7 +324,12 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 // after Open and, once it is taken, opens the database as the owner's in
 // place of the read-only one, under mu, so a reader sees one or the other;
 // then OnOwned's function runs. Past LockWait the ledger stays read-only
-// and says who holds the lock. Close ends the wait.
+// and says who holds the lock. Close ends the wait: each try is made under
+// mu and only while the ledger is open, so a Close waits for a try under
+// way and none is made after it. A try opens the lock file, making it when
+// it is missing, and a lock taken opens the database: once Close has
+// returned, the wait makes nothing in the directory, which may be going by
+// then (a test's cleanup removing it, #281).
 func (l *Ledger) awaitLock(lockPath, path string) {
 	deadline := time.Now().Add(LockWait)
 	tick := time.NewTicker(250 * time.Millisecond)
@@ -314,15 +340,13 @@ func (l *Ledger) awaitLock(lockPath, path string) {
 			return
 		case <-tick.C:
 		}
-		lock, why, held, err := takeLock(lockPath)
 		l.mu.Lock()
 		if l.closed {
+			// Closed between the tick and the try: no try.
 			l.mu.Unlock()
-			if lock != nil {
-				lock.release()
-			}
 			return
 		}
+		lock, why, held, err := takeLock(lockPath)
 		switch {
 		case err != nil:
 			l.why = err.Error()
@@ -393,6 +417,40 @@ func (l *Ledger) open(ctx context.Context, path string, readOnly bool) (*sql.DB,
 		return nil, fmt.Errorf("ledger: %s: %w", path, err)
 	}
 	return db, nil
+}
+
+// private takes the group's and others' permissions off the database
+// file and grants the owner none it lacks: 0644 becomes 0600, and a file
+// made 0400 stays 0400, so a file the server may not write stays so and
+// opens read-only (#444).
+func private(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(path, fi.Mode().Perm()&0o600)
+}
+
+// writable proves that the connection writes, with a write it rolls
+// back. SQLite opens a file the process may not write read-only, without
+// an error, and nothing short of a write shows it: a file in a rollback
+// journal's mode fails the open, whose switch to WAL writes the header
+// (#417), but one already in WAL mode, the mode the ledger leaves it in,
+// has nothing to write at open (#444). The write sets the header's user
+// version to what it is, inside a transaction that is rolled back, so the
+// file is as it was.
+func writable(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var v int64
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v))
+	return err
 }
 
 // conn gives the database for a read, or why there is none.
@@ -515,9 +573,10 @@ func isNoTable(err error) bool {
 
 // ReadOnly reports whether the ledger takes no writes, and why: another
 // server holds the owner lock (waited for, for a while after Open), locks
-// are not supported where the data directory is, the database file is in
-// a rollback journal's mode and the server may not write it, the database
-// failed its check, or a newer Conductor wrote it.
+// are not supported where the data directory is, the server may not write
+// the database file (in a rollback journal's mode the open fails, in WAL
+// mode the write the open tries does), the database failed its check, or
+// a newer Conductor wrote it.
 func (l *Ledger) ReadOnly() (bool, string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -530,6 +589,9 @@ func (l *Ledger) Dir() string { return l.dir }
 // Close checkpoints the write-ahead log into the database, closes it and
 // releases the owner lock. A read or a write after it begins gets
 // ErrClosed; one in flight gets the database's own error, never a panic.
+// It ends the wait for the owner lock too (awaitLock): a try under way
+// ends first, and none follows, so once Close has returned the ledger
+// makes nothing in its directory.
 func (l *Ledger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

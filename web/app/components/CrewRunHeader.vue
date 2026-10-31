@@ -4,7 +4,7 @@ import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
 import { runResumable, runSubtitle, shortRunId } from '~/utils/crewWords'
 import { relativeTime } from '~/utils/sessions'
-import { sendCommand, taskBadges } from '~/utils/tasks'
+import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -120,7 +120,7 @@ async function togglePause() {
   const paused = !r.paused
   pausing.value = true
   try {
-    await sendCommand((body) => api.pauseRun(props.runId, paused, body))
+    await sendCommand((body) => api.pauseRun(props.runId, paused, body), commandBody())
     toast.add({ title: paused ? 'Scheduling paused' : 'Scheduling resumed', description: paused ? 'Attempts in flight go on; no task starts until it is resumed.' : undefined, icon: paused ? 'i-lucide-pause' : 'i-lucide-play', color: 'neutral' })
   } catch (e) {
     toast.add({ title: paused ? 'Not paused' : 'Not resumed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
