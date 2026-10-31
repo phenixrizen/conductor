@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
@@ -37,6 +38,17 @@ interface Step {
 
 const crewIds: string[] = []
 const runs: string[] = []
+const scratch: string[] = []
+
+/**
+ * A directory of the spec's own for the files its steps wait on, outside the server's allowed root: a directory added there is one
+ * more entry in its listing, which GET /api/paths cuts at 50 in name order, and settings.spec.ts looks for the repository among them.
+ */
+function scratchDir(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `conductor-e2e-${name}-`))
+  scratch.push(dir)
+  return dir
+}
 
 test.beforeAll(async ({ api }) => {
   await stopStrays(api, [])
@@ -48,6 +60,7 @@ test.afterEach(async ({ api }) => {
 
 test.afterAll(async ({ api }) => {
   for (const id of crewIds.splice(0)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
 /** Saves a managed crew with one task, build, done by the stub worker, with the manifest and the checks given. */
@@ -143,8 +156,8 @@ async function taskRowActions(page: Page, taskId: string) {
   return row
 }
 
-test('the receipts and their logs, Open preview while the attempt runs and gone once it succeeded, and the tree ended after', async ({ page, api, state, context }) => {
-  const dir = mkdtempSync(join(state.root, 'manifest-preview-'))
+test('the receipts and their logs, Open preview while the attempt runs and gone once it succeeded, and the tree ended after', async ({ page, api, context }) => {
+  const dir = scratchDir('manifest-preview')
   const gate = join(dir, 'gate')
   const crewId = await manifestCrew(
     api,
@@ -268,8 +281,8 @@ test('the receipts and their logs, Open preview while the attempt runs and gone 
   await expect(receipts.locator(`[data-step-row="${cleanups[0]!.phase}:${cleanups[0]!.id}:${cleanups[0]!.k}"] [data-step-words]`)).toContainText('exited 0 in')
 })
 
-test('a prerequisite that fails pauses the run with the step named, and Resume runs it again and goes on', async ({ page, api, state }) => {
-  const dir = mkdtempSync(join(state.root, 'manifest-prereq-'))
+test('a prerequisite that fails pauses the run with the step named, and Resume runs it again and goes on', async ({ page, api }) => {
+  const dir = scratchDir('manifest-prereq')
   const needed = join(dir, 'tool')
   const crewId = await manifestCrew(api, 'e2e manifest prerequisite', { prerequisites: [{ id: 'tool', argv: ['test', '-e', needed] }] }, [{ id: 'unit', argv: ['true'] }])
   const runId = await launch(api, crewId)
@@ -306,8 +319,8 @@ test('a prerequisite that fails pauses the run with the step named, and Resume r
   ])
 })
 
-test('a task cancelled mid-step gets its tree cleaned up: the step interrupted, the cleanup receipt after it', async ({ page, api, state }) => {
-  const dir = mkdtempSync(join(state.root, 'manifest-cancel-'))
+test('a task cancelled mid-step gets its tree cleaned up: the step interrupted, the cleanup receipt after it', async ({ page, api }) => {
+  const dir = scratchDir('manifest-cancel')
   const crewId = await manifestCrew(
     api,
     'e2e manifest cancel',
