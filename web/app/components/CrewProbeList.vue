@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
-import { TASK_LIMITS, type DraftProbe } from '~/utils/crews'
+import { TASK_LIMITS, secondsText, typedSeconds, type DraftProbe } from '~/utils/crews'
 
 /**
  * A project manifest's ready probes (EN1): each an id, a URL on this machine fetched until it answers under 300 or a command run until it
@@ -55,15 +55,6 @@ function setKind(i: number, by: 'command' | 'url') {
   update(i, by === 'url' ? { by, argv: undefined, pending: undefined } : { by, url: undefined })
 }
 
-function secondsOf(n: number | undefined): string {
-  return n ? String(n) : ''
-}
-
-/** A typed number of seconds; nothing (the default) for one that is not a positive whole number. */
-function seconds(text: string): number | undefined {
-  const n = Number.parseInt(text, 10)
-  return Number.isFinite(n) && n > 0 ? n : undefined
-}
 </script>
 
 <template>
@@ -97,13 +88,13 @@ function seconds(text: string): number | undefined {
         </div>
         <UFieldGroup class="w-36">
           <UBadge label="every" color="neutral" variant="outline" size="lg" class="flex-none" />
-          <UInput :model-value="secondsOf(p.intervalSeconds)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.probeInterval" :placeholder="String(TASK_LIMITS.probeIntervalDefault)" :aria-label="`Interval in seconds of ${what} ${i + 1}`" class="min-w-0 flex-1" @update:model-value="update(i, { intervalSeconds: seconds(String($event)) })">
+          <UInput :model-value="secondsText(p.intervalSeconds)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.probeInterval" :placeholder="String(TASK_LIMITS.probeIntervalDefault)" :aria-label="`Interval in seconds of ${what} ${i + 1}`" class="min-w-0 flex-1" @update:model-value="update(i, { intervalSeconds: typedSeconds(String($event)) })">
             <template #trailing><span class="text-xs text-muted">s</span></template>
           </UInput>
         </UFieldGroup>
         <UFieldGroup class="w-36">
           <UBadge label="up to" color="neutral" variant="outline" size="lg" class="flex-none" />
-          <UInput :model-value="secondsOf(p.timeoutSeconds)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.probeTimeout" :placeholder="String(TASK_LIMITS.probeTimeoutDefault)" :aria-label="`Timeout in seconds of ${what} ${i + 1}`" class="min-w-0 flex-1" @update:model-value="update(i, { timeoutSeconds: seconds(String($event)) })">
+          <UInput :model-value="secondsText(p.timeoutSeconds)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.probeTimeout" :placeholder="String(TASK_LIMITS.probeTimeoutDefault)" :aria-label="`Timeout in seconds of ${what} ${i + 1}`" class="min-w-0 flex-1" @update:model-value="update(i, { timeoutSeconds: typedSeconds(String($event)) })">
             <template #trailing><span class="text-xs text-muted">s</span></template>
           </UInput>
         </UFieldGroup>

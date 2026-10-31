@@ -38,17 +38,15 @@ function setPreview(text: string) {
   put({ ...m.value, preview: text || undefined })
 }
 
-// The lists, while the file switch is on: turning it off again gives them back, until the page is left.
-const aside = ref<DraftManifest>()
+// The lists, while the file switch is on, are parked in the draft's manifest (never sent): turning it off again gives them back, after a visit
+// to the Runs tab or a save too.
 function setFile(on: boolean) {
-  const { file: _file, ...rest } = m.value
+  const { file: _file, parked, ...rest } = m.value
   if (on) {
-    aside.value = manifestEmpty(rest) ? undefined : rest
-    put({ file: true })
+    put(manifestEmpty(rest) ? { file: true } : { file: true, parked: rest })
     return
   }
-  put(manifestEmpty(rest) ? (aside.value ?? {}) : rest)
-  aside.value = undefined
+  put(manifestEmpty(rest) ? (parked ?? {}) : rest)
 }
 
 /** A space or a comma ends a name typed into the env and ports chips, as Enter does. */

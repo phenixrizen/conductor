@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, liftSetup, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS } from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -898,5 +898,56 @@ describe('project manifests', () => {
     expect(taskSaveProblems(placeholder)).toEqual(['Setup step 1: ${CONDUCTOR_PORT_WEB} names no port of the manifest'])
     // A crew stored with a manifest has nothing lifted, and is held to its rules for both.
     expect(toDraft({ ...managedInfo, manifest: { setup: [{ id: 'deps', argv: ['true'] }] } }).liftedSetup).toBeUndefined()
+  })
+
+  it('keeps the lists the file switch set aside in the draft, never sent, through a save or a read of the crew while the file is on', () => {
+    const lists = { setup: [{ id: 'deps', argv: ['npm', 'ci'] }], ports: ['web'] }
+    const fileCrew: CrewInfo = { ...managedInfo, manifest: { file: true }, manifestRevision: 2 }
+    const d = { ...toDraft(fileCrew), manifest: { file: true, parked: lists } }
+    // Parked, the lists are no part of what is sent, of what is unsaved, or of the rules: the file form alone.
+    expect(wire(toCrewInput(d)).manifest).toEqual({ file: true })
+    expect(crewKey(d)).toBe(crewKey(fileCrew))
+    expect(manifestProblems(d)).toEqual([])
+    expect(taskProblems(d)).toEqual([])
+    // A save or a read hands back the crew as the server has it: the lists stay while its manifest is still the file.
+    expect(keepParked(toDraft(fileCrew), d).manifest).toEqual({ file: true, parked: lists })
+    const inline: CrewInfo = { ...managedInfo, manifest: { setup: [{ id: 'other', argv: ['true'] }] } }
+    expect(keepParked(toDraft(inline), d).manifest).toEqual({ setup: [{ id: 'other', argv: ['true'] }] })
+    const none = toDraft(fileCrew)
+    expect(keepParked(none, toDraft(fileCrew))).toBe(none)
+    expect(keepParked(none, undefined)).toBe(none)
+  })
+
+  it('keeps a duration as typed, so a negative or a fraction is marked rather than turned into one nobody typed', () => {
+    expect(typedSeconds('')).toBeUndefined()
+    expect(typedSeconds(' ')).toBeUndefined()
+    expect(typedSeconds('30')).toBe(30)
+    expect(typedSeconds('-1')).toBe(-1)
+    expect(typedSeconds('1.5')).toBe(1.5)
+    expect(typedSeconds('3600.5')).toBe(3600.5)
+    expect([undefined, 0, -1, 1.5].map(secondsText)).toEqual(['', '0', '-1', '1.5'])
+    const c = crew()
+    const probe = c.manifest.ready![1]!
+    for (const [text, rule] of [
+      ['-1', 'timeout'],
+      ['1.5', 'timeout'],
+      [String(TASK_LIMITS.probeTimeout + 0.5), 'timeout'],
+    ] as const) {
+      c.manifest.ready![1] = { ...probe, timeoutSeconds: typedSeconds(text) }
+      expect(manifestProblems(c), text).toEqual([`Ready probe 2: the ${rule} is 1 to ${TASK_LIMITS.probeTimeout} seconds`])
+    }
+    c.manifest.ready![1] = { ...probe, intervalSeconds: typedSeconds('0.5') }
+    expect(manifestProblems(c)).toEqual([`Ready probe 2: the interval is 1 to ${TASK_LIMITS.probeInterval} seconds`])
+    c.manifest.ready![1] = { ...probe, timeoutSeconds: typedSeconds(''), intervalSeconds: typedSeconds('') }
+    expect(manifestProblems(c)).toEqual([])
+    // A step's timeout, and a task's check's, the same.
+    expect(checkProblems({ id: 'deps', argv: ['true'], timeoutSeconds: typedSeconds('-1') }, 'Setup step 1')).toEqual([`Setup step 1: the timeout is 1 to ${TASK_LIMITS.timeout} seconds`])
+    expect(checkProblems({ id: 'deps', argv: ['true'], timeoutSeconds: typedSeconds('2.5') }, 'Setup step 1')).toEqual([`Setup step 1: the timeout is 1 to ${TASK_LIMITS.timeout} seconds`])
+  })
+
+  it("names every step's and probe's id of a manifest, for a task's new check to avoid", () => {
+    expect(manifestIds(fullManifest())).toEqual(['node', 'deps', 'dbserver', 'webserver', 'dbready', 'webready', 'e2e', 'dropdb'])
+    expect(manifestIds(undefined)).toEqual([])
+    expect(manifestIds({ file: true, parked: { setup: [{ id: 'deps', argv: ['true'] }] } })).toEqual([])
   })
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
-import { TASK_LIMITS, checkProblems, type DraftCheck } from '~/utils/crews'
+import { TASK_LIMITS, checkProblems, secondsText, typedSeconds, type DraftCheck } from '~/utils/crews'
 
 /**
  * The commands of a task's checks or of a project manifest's phase (#334, EN1): an id, an argv as chips (ArgvInput: never a shell line, a
@@ -61,13 +61,9 @@ function problem(c: DraftCheck, i: number): string {
   return checkProblems(c, props.what, taken)[0]?.replace(`${props.what}: `, '') ?? ''
 }
 
-function timeoutOf(c: DraftCheck): string {
-  return c.timeoutSeconds ? String(c.timeoutSeconds) : ''
-}
-
+// A timeout as typed: a negative or a fraction stays, for the rules to mark (typedSeconds).
 function setTimeout(i: number, text: string) {
-  const n = Number.parseInt(text, 10)
-  update(i, { timeoutSeconds: Number.isFinite(n) && n > 0 ? n : undefined })
+  update(i, { timeoutSeconds: typedSeconds(text) })
 }
 </script>
 
@@ -80,7 +76,7 @@ function setTimeout(i: number, text: string) {
           <!-- The text typed and not yet a chip (an unclosed quote) stays in the draft: it blocks a save rather than vanish. -->
           <ArgvInput :model-value="c.argv" :pending="c.pending ?? ''" :placeholder="`program and arguments; a quoted argument is one`" :invalid="!c.argv.length || !!c.pending" :aria-label="`Command of ${what} ${i + 1}`" @update:model-value="update(i, { argv: $event })" @update:pending="update(i, { pending: $event || undefined })" />
         </div>
-        <UInput v-if="!noTimeout || !!c.timeoutSeconds" :model-value="timeoutOf(c)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.timeout" :placeholder="String(timeoutDefault ?? TASK_LIMITS.timeoutDefault)" :aria-label="`Timeout in seconds of ${what} ${i + 1}`" class="w-24" @update:model-value="setTimeout(i, String($event))">
+        <UInput v-if="!noTimeout || !!c.timeoutSeconds" :model-value="secondsText(c.timeoutSeconds)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.timeout" :placeholder="String(timeoutDefault ?? TASK_LIMITS.timeoutDefault)" :aria-label="`Timeout in seconds of ${what} ${i + 1}`" class="w-24" @update:model-value="setTimeout(i, String($event))">
           <template #trailing><span class="text-xs text-muted">s</span></template>
         </UInput>
         <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Remove ${what} ${i + 1}`" @click="remove(i)" />

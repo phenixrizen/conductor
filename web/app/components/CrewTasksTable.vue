@@ -10,7 +10,12 @@ import { TASK_LIMITS, draftTask, taskRowProblems, type DraftCheck, type DraftMem
  * refused (taskRowProblems); the server still decides.
  */
 const tasks = defineModel<DraftTask[]>({ default: () => [] })
-const props = defineProps<{ members: DraftMember[]; isolation: 'none' | 'worktree' }>()
+const props = defineProps<{
+  members: DraftMember[]
+  isolation: 'none' | 'worktree'
+  /** The ids of the project manifest's steps and probes (manifestIds): a task's new check is given none of them. */
+  taken?: readonly string[]
+}>()
 
 const shape = computed<TaskShape>(() => ({ tasks: tasks.value, isolation: props.isolation, members: props.members }))
 
@@ -160,7 +165,7 @@ const focused = ref<number | null>(null)
               <template #content>
                 <div class="w-[32rem] max-w-[calc(100vw-2rem)] p-3">
                   <p class="mb-2 text-xs text-muted">Run against the result's commit, in a checkout of their own; every one must pass. Argv, never a shell line.</p>
-                  <CrewCheckList :model-value="t.checks ?? []" what="check" @update:model-value="setChecks(i, $event)" />
+                  <CrewCheckList :model-value="t.checks ?? []" what="check" :taken="taken" @update:model-value="setChecks(i, $event)" />
                 </div>
               </template>
             </UPopover>

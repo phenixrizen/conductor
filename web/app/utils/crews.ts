@@ -110,6 +110,31 @@ export interface DraftManifest extends Omit<CrewManifest, 'prerequisites' | 'set
   ready?: DraftProbe[]
   verify?: DraftCheck[]
   cleanup?: DraftCheck[]
+  /**
+   * The lists set aside while the file switch is on (file: true), given back when it is turned off; never sent (toCrewManifest leaves it out).
+   * In the draft, not the editor, so that it lasts while the editor is away (the Runs tab) and across a save (keepParked).
+   */
+  parked?: DraftManifest
+}
+
+/** The ids of a project manifest's steps and probes, in every list: what a task's new check is not given (CrewTasksTable). */
+export function manifestIds(m: DraftManifest | undefined): string[] {
+  const out: string[] = []
+  for (const name of ['prerequisites', 'setup', 'services', 'ready', 'verify', 'cleanup'] as const) for (const row of m?.[name] ?? []) out.push(row.id)
+  return out
+}
+
+/**
+ * A number of seconds as typed into a timeout or an interval: nothing (the default) for an empty field, else the number as typed, so a
+ * negative or a fraction stays for the rules to mark (checkProblems, manifestProblems) rather than turn into a value nobody typed.
+ */
+export function typedSeconds(text: string): number | undefined {
+  return text.trim() === '' ? undefined : Number(text)
+}
+
+/** A typed number of seconds as its field shows it: empty for none. */
+export function secondsText(n: number | undefined): string {
+  return n === undefined ? '' : String(n)
 }
 
 /**
@@ -686,6 +711,16 @@ let memberKeys = 0
 
 export function draftMember(m: CrewMember): DraftMember {
   return { ...toCrewMember(m), key: ++memberKeys, argsText: joinArgv(m.args ?? []) }
+}
+
+/**
+ * next, a draft made from the crew as the server has it (toDraft), with the lists prev set aside under the file switch (DraftManifest.parked),
+ * while next's manifest is still read from the file: a save or a read of the crew keeps what turning the switch off gives back.
+ */
+export function keepParked(next: DraftCrew, prev: DraftCrew | undefined): DraftCrew {
+  const parked = prev?.manifest?.parked
+  if (!parked || !next.manifest?.file) return next
+  return { ...next, manifest: { ...next.manifest, parked } }
 }
 
 /** A saved crew, or the new one, as the editor holds it: its members and tasks keyed, a legacy setup lifted into its project manifest (liftSetup). */

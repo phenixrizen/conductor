@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
+import { draftMember, manifestIds, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -237,7 +237,7 @@ function refused(message: string) {
       </template>
     </div>
 
-    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :members="crew.members" :isolation="crew.isolation" @update:model-value="set('tasks', $event)" />
+    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :members="crew.members" :isolation="crew.isolation" :taken="manifestIds(crew.manifest)" @update:model-value="set('tasks', $event)" />
     <CrewManifestEditor v-if="managed" :model-value="crew.manifest" :tasks="crew.tasks ?? []" :setup="crew.setup" @update:model-value="set('manifest', $event)" />
 
     <UModal v-model:open="pickOpen" title="Add from a running session" description="Its agent becomes a new member, and its working directory the crew's when the crew has none yet.">

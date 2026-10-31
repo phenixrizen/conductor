@@ -125,9 +125,20 @@ test('a crew with tasks takes a project manifest with every phase under its task
   await page.getByLabel('Id of ready probe 1', { exact: true }).fill('up')
   await page.getByLabel('URL of ready probe 1', { exact: true }).fill('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/')
   await page.getByLabel('Interval in seconds of ready probe 1', { exact: true }).fill('1')
-  await page.getByLabel('Timeout in seconds of ready probe 1', { exact: true }).fill('30')
+  // A duration is kept as typed: a negative or a fraction is marked and holds Save, never turned into the default or a whole number.
+  const up = ready.locator('[data-probe-id="up"]')
+  const timeout = page.getByLabel('Timeout in seconds of ready probe 1', { exact: true })
+  for (const typed of ['-1', '1.5', '3600.5']) {
+    await timeout.fill(typed)
+    await expect(up.locator('[data-probe-error]'), typed).toHaveText('the timeout is 1 to 3600 seconds')
+    await expect(saveButton(page)).toHaveAttribute('data-save-problem', 'Ready probe 1: the timeout is 1 to 3600 seconds')
+  }
+  await timeout.fill('30')
+  await expect(up.locator('[data-probe-error]')).toHaveCount(0)
   await ready.getByRole('button', { name: 'Add ready probe' }).click()
   await page.getByLabel('Id of ready probe 2', { exact: true }).fill('statedir')
+  // A URL typed first: switched to a command, the probe keeps the command alone (saved below with no url).
+  await page.getByLabel('URL of ready probe 2', { exact: true }).fill('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/state')
   await page.getByLabel('Kind of ready probe 2', { exact: true }).click()
   await page.getByRole('option', { name: 'command' }).click()
   await typeArgv(page, 'Command of ready probe 2', 'test -d ${CONDUCTOR_STATE_DIR}')
@@ -136,7 +147,11 @@ test('a crew with tasks takes a project manifest with every phase under its task
 
   await page.getByLabel('Preview URL', { exact: true }).fill('http://127.0.0.1:${CONDUCTOR_PORT_WEB}/')
   const lint = await addStep(page, 'verify', 'verify step', 'lint', 'true')
+  // A step's timeout as typed too.
+  await lint.getByLabel('Timeout in seconds of verify step 1', { exact: true }).fill('-1')
+  await expect(lint.locator('[data-check-error]')).toHaveText('the timeout is 1 to 3600 seconds')
   await lint.getByLabel('Timeout in seconds of verify step 1', { exact: true }).fill('120')
+  await expect(lint.locator('[data-check-error]')).toHaveCount(0)
   await addStep(page, 'cleanup', 'cleanup step', 'tidy', 'rm -rf ${CONDUCTOR_STATE_DIR}/cache')
   await expect(page.locator('[data-crew-manifest] [data-check-error], [data-crew-manifest] [data-probe-error], [data-manifest-error]')).toHaveCount(0)
 
@@ -289,4 +304,47 @@ test('the file switch saves file: true and hides the lists, and gives them back 
   await file.click()
   await expect(file).not.toBeChecked()
   await expect(page.locator('[data-manifest-phase="setup"] [data-check-id="deps"]')).toBeVisible()
+
+  // Edited, set aside by the switch, and the Runs tab visited (the editor goes away): turned off on return, the edited lists come back.
+  await addStep(page, 'cleanup', 'cleanup step', 'tidy', 'true')
+  await file.click()
+  await expect(file).toBeChecked()
+  await page.getByRole('tab', { name: /Runs/ }).click()
+  await expect(page.locator('[data-crew-manifest]')).toHaveCount(0)
+  await page.getByRole('tab', { name: /Setup/ }).click()
+  const back = page.getByRole('switch', { name: /conductor\.manifest\.json/ })
+  await expect(back).toBeChecked()
+  await back.click()
+  await expect(back).not.toBeChecked()
+  await expect(page.locator('[data-manifest-phase="setup"] [data-check-id="deps"]')).toBeVisible()
+  await expect(page.locator('[data-manifest-phase="cleanup"] [data-check-id="tidy"]')).toBeVisible()
+  await save(page)
+  expect((await crewOf(api, id)).manifest).toEqual({ setup: [{ id: 'deps', argv: ['true'] }], cleanup: [{ id: 'tidy', argv: ['true'] }] })
+})
+
+test("a task's new check is given an id no step of the manifest has", async ({ page, api }) => {
+  const id = await managedCrew(api, 'e2e manifest check ids')
+  await openCrew(page, id)
+  await addStep(page, 'setup', 'setup step', 'check', 'true')
+  await page.locator('[data-crew-task][data-task-id="build"] [data-task-checks]').click()
+  const checks = page.locator('[data-crew-checks="check"]')
+  await checks.locator('[data-add-check]').click()
+  await expect(checks.locator('[data-check-id="check-2"]')).toBeVisible()
+  await expect(checks.locator('[data-check-id="check"]')).toHaveCount(0)
+  await expect(page.locator('[data-manifest-phase="setup"] [data-check-id="check"] [data-check-error]')).toHaveCount(0)
+})
+
+test('a crew switched back to start rules drops its project manifest, and saves with none', async ({ page, api }) => {
+  const id = await managedCrew(api, 'e2e manifest dropped', { manifest: { setup: [{ id: 'deps', argv: ['true'] }] } })
+  await openCrew(page, id)
+  await page.locator('[data-crew-coordination]').click()
+  await page.getByRole('option', { name: /by start rules/ }).click()
+  await expect(page.locator('[data-crew-manifest]')).toHaveCount(0)
+  await expect(page.locator('[data-crew-tasks-section]')).toHaveCount(0)
+  // Nothing holds the save: no manifest is left behind that the page no longer shows.
+  await save(page)
+  const crew = await crewOf(api, id)
+  expect(crew.manifest).toBeUndefined()
+  expect(crew.setup).toBeUndefined()
+  expect((crew as ManifestCrew & { tasks?: unknown }).tasks).toBeUndefined()
 })
