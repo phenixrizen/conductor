@@ -310,13 +310,21 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 	}
 	fin.Error = session.CleanMessage(words)
 	// The check's outcome is evidence: not recorded, the result is not
-	// taken on it.
+	// taken on it. A task's check gives its refused receipt up, as it
+	// always did; a verify step's is a manifest step's receipt, kept for
+	// the next commit as runStep keeps one (no undo), so the attempt's
+	// failure writes it, its log with it, and it is never left running
+	// (Codex's review of #498).
+	undo := giveUp
+	if step {
+		undo = nil
+	}
 	if err := e.transact(context.Background(), r, func() tx {
 		out := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable,
 			"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 		return out
-	}, giveUp); err != nil {
+	}, undo); err != nil {
 		what := "the ledger could not record the check's outcome"
 		if step {
 			what = "the ledger could not record the outcome of the step " + ch.ID

@@ -804,6 +804,34 @@ func TestARefusedRunningRowEndsAndFailsTheCheck(t *testing.T) {
 	}
 }
 
+// A verify step's finished row the ledger refuses once is kept for the
+// next commit, as a manifest step's is (runStep): the attempt fails at the
+// step with the ledger's words, and the step's receipt is there finished,
+// its log and hash with it, never left running (Codex's review of #498).
+func TestARefusedFinishedRowOfAVerifyStepIsKept(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	l.mu.Lock()
+	l.failOn, l.failOnce = "step.finished[phase=verify]", true
+	l.mu.Unlock()
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Verify: []Check{shStep("e2e", `echo "all green"`)}}, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, a, "built.txt", "yes\n", "built")
+	row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+	if want := "the ledger could not record the outcome of the step e2e: ledger: disk full (injected)"; row.Stage != "verify e2e" || row.Error != want {
+		t.Fatalf("attempt 1: stage %q, %q", row.Stage, row.Error)
+	}
+	e2e, _ := rowOf(l.stepRows(run.ID, "build", 1), "e2e", 1)
+	if e2e.State != ledger.CheckFinished || e2e.Exit != 0 || e2e.PID == 0 || !e2e.Stable ||
+		string(e2e.Log) != "all green\n" || e2e.LogSHA256 != sha(e2e.Log) || e2e.Tail != "all green\n" {
+		t.Fatalf("the verify step's row after its refused outcome: %+v", e2e)
+	}
+	if l.eventAt(run.ID, "step.finished", func(p map[string]any) bool { return p["phase"] == ledger.PhaseVerify && p["attempt"] == 1 }) < 0 {
+		t.Fatalf("no step.finished for the verify step: %v", l.kinds(run.ID))
+	}
+	stopRun(t, e, run.ID)
+}
+
 // A check whose attempt is cancelled while it waits for the server's check
 // slot is concluded interrupted, not left started: its receipt reads as a
 // check that never ran (no process), and the result's checkout ends after
