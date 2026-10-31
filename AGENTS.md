@@ -150,6 +150,9 @@ add its rule here.
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
   it before the commit. Wait on the ledger for what the ledger must hold.
+  A message sent from inside a step is not the step done: the session
+  sends a viewer its welcome inside `AttachWith`, before the host's peer
+  holds the subscription (`awaitSub` in `internal/hostagent` waits for it).
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
