@@ -188,7 +188,11 @@ add its rule here.
   lock the events that change them take, and an event beside the wait is
   noted, under that lock, with what it did when it happened (the kill with
   whether it took a holder, `lifecycle.judge`). Read one by one, an event
-  between two reads gives a picture neither order would. A flake a whole
+  between two reads gives a picture neither order would. A goroutine's
+  view of a thing is not the thing: a copier not yet at its end of file
+  says nothing of who writes the pipe, so ask the kernel (the pipe's
+  hang-up, `writersGone`). A fact read before a slow step (a `/proc`
+  listing) is read again after it. A flake a whole
   loaded box will not show comes back when the test and a few busy loops
   share a few cores (`taskset -c 0-3`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
