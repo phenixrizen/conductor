@@ -17,6 +17,24 @@ func codexStatus(state, kind string) string {
 	return seq + "\x1b\\"
 }
 
+// lastEntryIs waits until the session's newest attention entry is words,
+// or fails the test after 5 s: an attention change's entry is recorded
+// after the change, outside the session's lock (recordOwn).
+func lastEntryIs(t *testing.T, s *Local, words string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := entries(s)
+		if len(got) > 0 && got[len(got)-1] == words {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entries %q, want the last %q", got, words)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // statusWorks reports whether the session shows working from the status;
 // statusWaits whether it needs input on the status's say-so.
 func statusWorks(a Attention) bool { return a.State == AttentionWorking && a.Source == SourceStatus }
@@ -403,8 +421,15 @@ func TestABlockedStatusKeptOutByAHeldQuestionShowsOnceThatQuestionGoes(t *testin
 	out(p, codexTurnBegins, codexStatus(StatusWorking, ""))
 	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
 	att := waitAttention(t, s, screenAsks)
+	// out returns once the pump has scanned the status, which it reads as
+	// it scans (readStatus): read, and weighed against the approval.
 	out(p, codexStatus(StatusBlocked, "auth"))
-	time.Sleep(50 * time.Millisecond)
+	s.mu.Lock()
+	last, kind := s.lastStatus, s.statusKind
+	s.mu.Unlock()
+	if last != StatusBlocked || kind != "auth" {
+		t.Fatalf("the status read %q %q", last, kind)
+	}
 	if a := s.Info().Attention; a.ID != att.ID {
 		t.Fatalf("the status replaced the approval: %+v", a)
 	}
@@ -413,9 +438,9 @@ func TestABlockedStatusKeptOutByAHeldQuestionShowsOnceThatQuestionGoes(t *testin
 	if a.Message != "The agent needs you to sign in" || a.ID == "" || a.ID == att.ID {
 		t.Fatalf("the status's wait: %+v", a)
 	}
-	if got := entries(s); len(got) == 0 || got[len(got)-1] != "The agent needs you to sign in" {
-		t.Fatalf("entries %v", got)
-	}
+	// Its entry is recorded after the change, once the session has let its
+	// lock go (recordStatusReconciled): waited for, not read at once.
+	lastEntryIs(t, s, "The agent needs you to sign in")
 	out(p, codexStatus(StatusWorking, ""))
 	waitAttention(t, s, statusWorks)
 }

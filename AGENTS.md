@@ -150,6 +150,10 @@ add its rule here.
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
   it before the commit. Wait on the ledger for what the ledger must hold.
+  The session works the same way: it changes the attention
+  inside its lock and records the change's entry after it (`recordOwn`),
+  so a state seen showing says nothing of its entry. Wait for the entry
+  before reading or counting the activity log (`logged`, `lastEntryIs`).
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
