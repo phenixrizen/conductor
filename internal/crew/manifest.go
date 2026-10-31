@@ -25,10 +25,12 @@ import (
 // in the crew's directory as each tree's commit holds it (resolveManifest),
 // versioned with the code. A crew has one or the other. A legacy Setup is
 // the manifest's setup phase (effectiveManifest), so the engine sees one
-// shape. This build runs the prerequisites and the setup phase, passes the
-// host's env names on, gives each tree its ports and its state directory
-// and expands the placeholders (steps.go): a manifest that names more is
-// refused (runnableManifest, runnable) rather than skipped or half run.
+// shape. This build runs the prerequisites, the setup phase, the services
+// and the ready probes, offers the preview, passes the host's env names on,
+// gives each tree its ports and its state directory and expands the
+// placeholders (steps.go): a manifest that names more (verify or cleanup
+// steps) is refused (runnableManifest, runnable) rather than skipped or
+// half run.
 
 // Manifest is a project manifest. Every step is a Check: an argv array, never a
 // shell line, run in the tree's working directory.
@@ -566,18 +568,12 @@ func (c Crew) runnableManifest() error {
 }
 
 // runnable refuses a manifest that names a phase this build does not run
-// yet: it runs the prerequisites and the setup phase, passes the env names
-// the server allows on, gives each tree its ports and its state directory
-// and expands every placeholder; the services, the ready probes, the
-// preview, the verify steps and the cleanup steps come later.
+// yet: it runs the prerequisites, the setup phase, the services and the
+// ready probes, offers the preview, passes the env names the server allows
+// on, gives each tree its ports and its state directory and expands every
+// placeholder; the verify steps and the cleanup steps come later.
 func (rec Manifest) runnable() error {
 	switch {
-	case len(rec.Services) > 0:
-		return invalidf("this build does not run a project manifest's services yet")
-	case len(rec.Ready) > 0:
-		return invalidf("this build does not run a project manifest's ready probes yet")
-	case rec.Preview != "":
-		return invalidf("this build does not offer a project manifest's preview yet")
 	case len(rec.Verify) > 0:
 		return invalidf("this build does not run a project manifest's verify steps yet")
 	case len(rec.Cleanup) > 0:

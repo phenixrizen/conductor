@@ -2263,10 +2263,10 @@ func TestACrewReadBackGoesBackWithoutWhatTheServerSets(t *testing.T) {
 func TestALaunchOfAProjectManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
-	services := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Services", "ready-cat",
-		map[string]any{"services": []any{map[string]any{"id": "web", "argv": []any{"npm", "start"}}}}), http.StatusCreated)
-	resp, out := e.do("POST", "/api/crews/"+services["id"].(string)+"/launch", adminToken, nil)
-	wantAPIError(t, "a manifest with a service", resp, out, http.StatusBadRequest, "invalid_crew", "this build does not run a project manifest's services yet")
+	verify := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Verify", "ready-cat",
+		map[string]any{"verify": []any{map[string]any{"id": "e2e", "argv": []any{"npm", "test"}}}}), http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/"+verify["id"].(string)+"/launch", adminToken, nil)
+	wantAPIError(t, "a manifest with a verify step", resp, out, http.StatusBadRequest, "invalid_crew", "this build does not run a project manifest's verify steps yet")
 	if _, err := os.Stat(filepath.Join(e.root, ".conductor", "worktrees")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a refused launch made the worktrees: %v", err)
 	}
