@@ -407,6 +407,75 @@ func TestAServicesRowComesFirstAndARefusedRunningRowStopsIt(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A worktree whose tree.ready the ledger refuses could not be made usable:
+// the attempt fails at ready, uncounted (the task ready with why, one more
+// attempt allowed), and the run's dispatch pauses with the same words. A
+// continuation reads its row so too (Codex's review of #441, round 2): a
+// bare ready is a manifest's stage (manifestStage), and the attempt is
+// never taken for the task's last counted one. Attempt 1's result B,
+// refused at a check, attempt 2 at B refused at ready, attempt 3 at B, in
+// the run and after a continuation made while it is paused.
+func TestATreeReadyTheLedgerRefusesIsNotCounted(t *testing.T) {
+	for _, continued := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the run", true: "after a continuation"}[continued], func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			build := work("build", "lead")
+			build.Checks = []Check{shStep("ok", "test -e ok.txt")}
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}}, build))
+			a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			// Attempt 1's worktree is ready: the next worktree's tree.ready
+			// is refused, once; the checkout's is not.
+			l.mu.Lock()
+			l.failOn, l.failOnce = "tree.ready[tree="+ledger.TreeWorktree+"]", true
+			l.mu.Unlock()
+			commitResult(t, e, a1, "half.txt", "half\n", "half")
+			attemptFailed(t, e, run.ID, "build", 2)
+			row1, row2 := l.attemptWhen(t, run.ID, "build", 1, failedRow), l.attemptWhen(t, run.ID, "build", 2, failedRow)
+			b := row1.ResultCommit
+			words := "the ledger could not record the tree ready: ledger: disk full (injected)"
+			if row1.Stage != "check ok" || b == "" || row2.StartCommit != b || row2.Stage != "ready" || row2.Error != words || row2.ResultCommit != "" || !uncountedRow(row2) {
+				t.Fatalf("attempt 1 %+v\nattempt 2 %+v", row1, row2)
+			}
+			failed := l.payloads(run.ID, "attempt.failed")
+			if p := failed[len(failed)-1]; p["attempt"] != 2 || p["uncounted"] != true || p["stage"] != "ready" {
+				t.Fatalf("attempt.failed: %v", p)
+			}
+			why := "attempt 2 could not be made usable at ready: " + words
+			waitFake(t, "the pause recorded", func() bool {
+				l.mu.Lock()
+				defer l.mu.Unlock()
+				return l.runs[run.ID].Paused && l.runs[run.ID].PausedWhy == why
+			})
+			runID, eng := run.ID, e
+			if continued {
+				stopRun(t, e, run.ID)
+				e2, _ := readyEngine(t)
+				e2.UseLedger(l)
+				next, err := e2.ContinueRun(t.Context(), run.ID, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !next.Paused || next.PausedWhy != why {
+					t.Fatalf("the continuation's pause: %v %q", next.Paused, next.PausedWhy)
+				}
+				runID, eng = next.ID, e2
+			}
+			pauseRun(t, eng, runID, false)
+			a3 := attemptN(t, eng, runID, "build", 3)
+			if a3.Attempt.Start != b {
+				t.Fatalf("attempt 3 starts at %s, not at attempt 2's start %s", short(a3.Attempt.Start), short(b))
+			}
+			md, f := taskFileOf(t, a3)
+			if f.Previous == nil || f.Previous.Attempt != 1 || f.Previous.Stage != "check ok" || f.Unusable == nil || f.Unusable.Attempt != 2 || f.Unusable.Stage != "ready" ||
+				f.StartFrom != "attempt 1's result" || !strings.Contains(md, "Attempt 2 could not be made usable: it failed at ready") {
+				t.Fatalf("attempt 3's task file: previous %+v unusable %+v from %q\n%s", f.Previous, f.Unusable, f.StartFrom, md)
+			}
+			stopRun(t, eng, runID)
+		})
+	}
+}
+
 // A service is a foreground process: one that exits before its tree is
 // ready fails the tree at it (the phase waiting on a probe that would
 // never pass is told at once), its end recorded with the words, the tree

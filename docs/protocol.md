@@ -2390,8 +2390,9 @@ loopback and is not proxied.
 
 A step, a service or a probe that fails in an attempt's worktree, or a
 manifest that cannot be resolved there (stage `setup <id>`, `service <id>`,
-`ready <id>` or `manifest`), is the host's or the manifest's, not the
-agent's: the attempt is `failed` and not counted (`attempt.failed` with `uncounted:
+`ready <id>`, `ready` for a `tree.ready` the ledger refused, or `manifest`),
+is the host's or the manifest's, not the agent's, in the run and in a
+continuation of it: the attempt is `failed` and not counted (`attempt.failed` with `uncounted:
 true`; the task `ready` with "attempt 2 could not be made usable at setup
 deps: …" and one more attempt allowed), the run's scheduling pauses with the
 same words (the run's `pausedWhy`), and the next attempt, once a person
