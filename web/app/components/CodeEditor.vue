@@ -211,7 +211,13 @@ async function startNvim() {
     nvimAt = null
     try {
       const opened = await bridge.open(props.path)
-      if (!editor) return
+      if (!editor) {
+        // The tab left or closed while its Neovim opened (a slow start, a loaded machine): that Neovim is no tab's, and ends, as Reopen's
+        // does. Kept, it held one of the four a connection may have and its swap file until the connection went, where the file's next
+        // open met it as another Vim's, read only behind a banner, and it outlived that Neovim's `:q` (#429's review round 2).
+        if (opened.id) bridge.close(opened.id)
+        return
+      }
       nvimId = opened.id ?? null
       nvimPath = opened.path ?? null
     } catch (err) {
