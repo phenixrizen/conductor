@@ -123,6 +123,12 @@ add its rule here.
   picture either way, in the product, not in the stub's ordering.
 - A pid of 0 is no process; a file not yet written is not evidence. Wait for
   the pid file, the swap file, the record before judging it.
+- A page not yet drawn passes every "hidden", and a key it does not yet
+  listen for is lost. After a `goto`, wait for something the listener's
+  own component draws (the layout's sidebar root for the layout's keys)
+  before the first key, press it once, and give its effect the expect's
+  bound; a second press on a clock only hides the first one's loss, and a
+  toggle pressed again closes what was only slow to open.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
