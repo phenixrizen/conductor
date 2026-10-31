@@ -267,7 +267,7 @@ func (s *Store) Links(ctx context.Context, key string) ([]Link, error) {
 // linksOf reads the live links of the ticket with the id, each member
 // once (Links).
 func linksOf(ctx context.Context, q queryer, ticketID string) ([]Link, error) {
-	rows, err := q.QueryContext(ctx, "SELECT "+linkColumns+" FROM links WHERE ticket_id = ? AND deleted_at = ''", ticketID)
+	rows, err := q.QueryContext(ctx, "SELECT "+linkColumnsOf(q)+" FROM links WHERE ticket_id = ? AND deleted_at = ''", ticketID)
 	if err != nil {
 		return nil, err
 	}
@@ -392,8 +392,21 @@ func runTicket(ctx context.Context, q queryer, run string) (tk Ticket, found boo
 	return tk, true, nil
 }
 
-// linkColumns is a link's row as scanLink reads it.
-const linkColumns = "id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by, deleted_at, fingerprint"
+// linkColumns is a link's row as scanLink reads it; linkColumnsV1 is the
+// same of a version 1 database, which has no candidate, verified or
+// fingerprint and reads them empty, as the migration leaves them.
+const (
+	linkColumns   = "id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by, deleted_at, fingerprint"
+	linkColumnsV1 = "id, ticket_id, kind, ref, url, note, '', '', created_at, created_by, deleted_at, ''"
+)
+
+// linkColumnsOf is the link columns of the schema q reads (schemaOf).
+func linkColumnsOf(q queryer) string {
+	if schemaOf(q) < 2 {
+		return linkColumnsV1
+	}
+	return linkColumns
+}
 
 // scanLink reads a link's row.
 func scanLink(row interface{ Scan(...any) error }) (Link, error) {

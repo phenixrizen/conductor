@@ -3,11 +3,14 @@ package dispatch
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // schemaShape is the schema of a database as SQLite reads it back, one
@@ -314,4 +317,105 @@ func TestMigratedVersion2EqualsAFreshOne(t *testing.T) {
 	}
 	rc, err = s.ProposePlan(ctx, testOp("p1"), key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
 	want(t, rc, err, StatusDone, "")
+}
+
+// A version 1 database the store cannot migrate, which it opens
+// read-only, is read as it was found: a ticket with its links (their
+// candidate, receipt and fingerprint empty), no approved revision and no
+// launch; the links' own read; a ticket's revisions none and a revision's
+// read not_found; a pruned link add's resend too old to compare, and a
+// new operation not found. Nothing reads what version 2 adds, which the
+// file has not, and the file stays version 1. The migration fails two
+// ways: a writer holding the database past the busy timeout, and a file
+// the store may not write.
+func TestAVersionOneDatabaseItCannotMigrateIsRead(t *testing.T) {
+	cases := []struct {
+		name string
+		// fail makes the store's migration of the file at path fail and
+		// gives the words ReadOnly says why with.
+		fail func(t *testing.T, path string) string
+	}{
+		{"a writer holding it past the busy timeout", func(t *testing.T, path string) string {
+			conn := rollbackConnAt(t, path)
+			if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { conn.ExecContext(context.Background(), "ROLLBACK") })
+			old := busyTimeout
+			busyTimeout = 50 * time.Millisecond
+			t.Cleanup(func() { busyTimeout = old })
+			return "another writer holds the database"
+		}},
+		{"a file it may not write", func(t *testing.T, path string) string {
+			if os.Geteuid() == 0 {
+				t.Skip("root writes a file whatever its mode")
+			}
+			if err := os.Chmod(path, 0o400); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(path, 0o600) })
+			return "readonly database"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			url := "https://github.com/rocksolidlabs/conductor/pull/1"
+			var key string
+			dir := versionOneStore(t, func(s *Store) {
+				newProject(t, s, "CND")
+				_, key = newTicket(t, s, "CND", "Delivered")
+				rc, err := addLink(s, "l1", key, NewLink{Kind: LinkDelivery, URL: url})
+				want(t, rc, err, StatusDone, "")
+				rc, err = addLink(s, "l2", key, NewLink{Kind: LinkExternal, URL: "https://example.com/x"})
+				want(t, rc, err, StatusDone, "")
+			})
+			path := filepath.Join(dir, File)
+			// The first add's receipt pruned, as prune drops it.
+			raw := openRaw(t, path)
+			if _, err := raw.Exec("DELETE FROM ops WHERE id = 'l1'"); err != nil {
+				t.Fatal(err)
+			}
+			raw.Close()
+			words := tc.fail(t, path)
+			s := openStore(t, dir)
+			if ro, why := s.ReadOnly(); !ro || !strings.Contains(why, words) || strings.Contains(why, "nor read") {
+				t.Fatalf("read-only %v: %s", ro, why)
+			}
+			v, err := s.Ticket(ctx, key)
+			if err != nil {
+				t.Fatalf("the ticket's read: %v", err)
+			}
+			if len(v.Links) != 2 || v.Approved == nil || len(v.Approved) != 0 || v.LaunchCount != 0 {
+				t.Fatalf("the ticket's read: %d links, approved %v, %d launches", len(v.Links), v.Approved, v.LaunchCount)
+			}
+			for _, l := range v.Links {
+				if l.Candidate != "" || l.Verified != nil || l.Fingerprint != "" {
+					t.Fatalf("a version 1 link reads %+v", l)
+				}
+			}
+			if links, err := s.Links(ctx, key); err != nil || len(links) != 2 {
+				t.Fatalf("the links' read: %+v %v", links, err)
+			}
+			if plans, err := s.Plans(ctx, key); err != nil || plans == nil || len(plans) != 0 {
+				t.Fatalf("the revisions' read: %+v %v", plans, err)
+			}
+			if _, err := s.Plan(ctx, "0123456789abcdef"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("a revision's read: %v", err)
+			}
+			rc, found := replayed(t, s, testOp("l1"), IntentLinkAdd, LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, URL: url}})
+			if !found || rc.Refusal != RefusalOpConflict || rc.Error != wordsTooOld {
+				t.Fatalf("a pruned add's resend: %+v %v", rc, found)
+			}
+			if rc, found := replayed(t, s, testOp("p1"), IntentPlanPropose, PlanProposeArgs{Key: key, PlanRequest: PlanRequest{Crew: "crew"}}); found {
+				t.Fatalf("a new proposal: %+v", rc)
+			}
+			rc, err = s.ProposePlan(ctx, testOp("p1"), key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+			want(t, rc, err, StatusFailed, RefusalReadOnly)
+			var version int
+			if err := s.db.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&version); err != nil || version != 1 {
+				t.Fatalf("the file's version: %d %v", version, err)
+			}
+		})
+	}
 }

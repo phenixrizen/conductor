@@ -258,6 +258,36 @@ func TestProposeFingerprintsTheRequest(t *testing.T) {
 	}
 }
 
+// A body built with the request's own decisions, one with no tasks
+// before it (Before nil), and an agent with no yolo arguments, leaves the
+// request and the body as they were sent: the body is
+// kept with an empty list, and the same request sent again, applied or
+// replayed, is answered by the first receipt, never op_conflict.
+func TestProposeLeavesTheRequestAsSent(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	req := PlanRequest{Crew: "crew", Decisions: []PlanDecision{{ID: "ship", Question: "Ship it?", Kind: DecisionApproval}}}
+	body := testPlanBody("crew")
+	body.Decisions = req.Decisions
+	body.Agents[0].YoloArgs = nil
+	id := propose(t, s, "p1", key, req, body)
+	if req.Decisions[0].Before != nil || body.Agents[0].YoloArgs != nil {
+		t.Fatalf("the proposal changed what it was given: %+v %+v", req.Decisions, body.Agents)
+	}
+	if !strings.Contains(string(planOf(t, s, id).Body), `"before":[]`) {
+		t.Fatal("the kept body's decision has no empty list")
+	}
+	rc, err := s.ProposePlan(ctx, testOp("p1"), key, req, body)
+	want(t, rc, err, StatusDone, "")
+	if !rc.Repeat || rc.ID != id {
+		t.Fatalf("the same request again: %+v", rc)
+	}
+	rc, found := replayed(t, s, testOp("p1"), IntentPlanPropose, PlanProposeArgs{Key: key, PlanRequest: req})
+	if !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != id {
+		t.Fatalf("the same request replayed: %+v %v", rc, found)
+	}
+}
+
 // Every bound of a revision, at it and one past it: past it the proposal
 // is refused bound and nothing is kept.
 func TestProposeBounds(t *testing.T) {
@@ -644,6 +674,9 @@ func TestApprovalIsTheOperators(t *testing.T) {
 // and acceptance criteria) is the one it recorded: each makes it stale,
 // with its words and the remedy approve; status, priority, labels, the
 // owner, a comment added and a comment not handed over edited do not.
+// The words name a field only when it differs from its value at the
+// approval: one edited and edited back is not named beside one that
+// changed.
 func TestApprovalGoesStaleWithTheIntent(t *testing.T) {
 	s, _, key := planTicket(t)
 	ctx := context.Background()
@@ -699,6 +732,15 @@ func TestApprovalGoesStaleWithTheIntent(t *testing.T) {
 		// Approving again cures it.
 		approve(t, s, opID("again", i), id, "")
 		holding("approving again")
+	}
+	// A field edited and edited back beside one that changed: the words
+	// name the one that changed alone.
+	mustEdit(t, s, "d1", key, TicketEdit{Set: TicketSet{Description: ptr("Other.")}})
+	mustEdit(t, s, "d2", key, TicketEdit{Set: TicketSet{Description: ptr("Both changed.")}})
+	holding("the description edited back")
+	mustEdit(t, s, "t3", key, TicketEdit{Set: TicketSet{Title: ptr("Only the title")}})
+	if v := planOf(t, s, id); v.Stale == nil || v.Stale.Words != "the title changed since revision 1 was approved" || v.Stale.Remedy != RemedyApprove {
+		t.Fatalf("a description edited back beside the title changed: %+v", v.Stale)
 	}
 }
 

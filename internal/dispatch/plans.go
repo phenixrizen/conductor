@@ -442,8 +442,13 @@ func checkDecisions(ds []PlanDecision, crew planCrew) error {
 }
 
 // normalized is the body with every list a list, none null, so a body
-// reads back the same whichever way it was built.
+// reads back the same whichever way it was built. The lists whose
+// elements it sets are copies, never the caller's: a body built with the
+// request's decisions (body.Decisions = req.Decisions) leaves the request
+// as it was sent, so a resend of it has the same fingerprint.
 func (b PlanBody) normalized() PlanBody {
+	b.Agents = slices.Clone(b.Agents)
+	b.Decisions = slices.Clone(b.Decisions)
 	if b.Agents == nil {
 		b.Agents = []PlanAgent{}
 	}
@@ -717,25 +722,44 @@ func commentsStale(ctx context.Context, q queryer, tk Ticket, p PlanSummary, com
 // intentFields names a ticket's intent fields in words, in their order.
 var intentFields = []struct{ field, words string }{{"title", "the title"}, {"description", "the description"}, {"acceptance", "the acceptance criteria"}}
 
-// intentWords says which of the ticket's intent fields changed since the
-// revision's approval, from the ticket's set rows after the approval's
-// latest (by the local seq): "the description changed since revision 3
-// was approved", or, when the log does not say (an approval a replica
-// made), "the ticket's intent changed".
+// intentWords says which of the ticket's intent fields differ now from
+// what they were at the revision's approval: a field the ticket's set
+// rows after the approval's latest (by the local seq) touched, whose
+// first such row's prior (its value at the approval) is not its value
+// now, so a field edited and edited back is not named: "the description
+// changed since revision 3 was approved", or, when the log does not say
+// (an approval a replica made), "the ticket's intent changed".
 func intentWords(ctx context.Context, q queryer, tk Ticket, p PlanSummary) (string, error) {
 	var since int64
 	if err := q.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) FROM changes WHERE entity = ? AND entity_id = ? AND field = 'approved_at'",
 		EntityPlan, p.ID).Scan(&since); err != nil {
 		return "", err
 	}
-	set, err := readTexts(ctx, q, "SELECT DISTINCT field FROM changes WHERE entity = ? AND entity_id = ? AND op = ? AND seq > ? AND field IN ('title', 'description', 'acceptance')",
+	// Each field's first set row after the approval, its prior the
+	// field's value at the approval.
+	rows, err := q.QueryContext(ctx, `SELECT field, prior FROM changes WHERE seq IN (SELECT MIN(seq) FROM changes
+		WHERE entity = ? AND entity_id = ? AND op = ? AND seq > ? AND field IN ('title', 'description', 'acceptance') GROUP BY field)`,
 		EntityTicket, tk.ID, OpSet, since)
 	if err != nil {
 		return "", err
 	}
+	approvedValue := map[string]string{}
+	for rows.Next() {
+		var field, prior string
+		if err := rows.Scan(&field, &prior); err != nil {
+			rows.Close()
+			return "", err
+		}
+		approvedValue[field] = prior
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	now := map[string]string{"title": tk.Title, "description": tk.Description, "acceptance": tk.Acceptance}
 	var named []string
 	for _, f := range intentFields {
-		if slices.Contains(set, f.field) {
+		if prior, ok := approvedValue[f.field]; ok && prior != now[f.field] {
 			named = append(named, f.words)
 		}
 	}
@@ -802,8 +826,13 @@ func (s *Store) Plans(ctx context.Context, key string) ([]PlanSummary, error) {
 }
 
 // plansOf reads the revisions of the ticket, newest first, each with its
-// number and its staleness; only the approved ones when approved is set.
+// number and its staleness; only the approved ones when approved is set,
+// the newest MaxTicketApproved of them (the ticket's read: Ticket). A
+// version 1 database, read as it was found, has none.
 func plansOf(ctx context.Context, q queryer, tk Ticket, approved bool) ([]PlanSummary, error) {
+	if schemaOf(q) < 2 {
+		return []PlanSummary{}, nil
+	}
 	rows, err := q.QueryContext(ctx, "SELECT "+planColumns+" FROM plans WHERE ticket_id = ? ORDER BY created_at, id", tk.ID)
 	if err != nil {
 		return nil, err
@@ -825,7 +854,7 @@ func plansOf(ctx context.Context, q queryer, tk Ticket, approved bool) ([]PlanSu
 	out := []PlanSummary{}
 	for i := len(all) - 1; i >= 0; i-- {
 		p := all[i]
-		if approved && p.State != PlanApproved {
+		if approved && (p.State != PlanApproved || len(out) == MaxTicketApproved) {
 			continue
 		}
 		if p.Stale, err = planStale(ctx, q, tk, p); err != nil {
@@ -842,6 +871,10 @@ func plansOf(ctx context.Context, q queryer, tk Ticket, approved bool) ([]PlanSu
 func (s *Store) Plan(ctx context.Context, id string) (PlanView, error) {
 	var out PlanView
 	err := s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < 2 {
+			// A version 1 database, read as it was found: no revisions.
+			return ErrNotFound
+		}
 		p, err := scanPlan(q.QueryRowContext(ctx, "SELECT "+planColumns+" FROM plans WHERE id = ?", id))
 		if isNoRows(err) {
 			return ErrNotFound

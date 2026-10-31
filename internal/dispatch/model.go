@@ -162,6 +162,12 @@ const (
 const (
 	// MaxPlans bounds a ticket's revisions, whatever their state.
 	MaxPlans = 100
+	// MaxTicketApproved bounds the approved revisions a ticket's read
+	// carries (TicketView.Approved), the newest: a local write leaves one
+	// at most, a merge may leave more (up to MaxPlans), and the read keeps
+	// its bound with this many at their escaped worst (internal/api's
+	// largest ticket). Plans reads every one.
+	MaxTicketApproved = 10
 	// MaxPlanBody bounds a revision's body, in bytes, as stored.
 	MaxPlanBody = 2 << 20
 	// MaxPlanReply bounds a revision's read, its summary beside its body

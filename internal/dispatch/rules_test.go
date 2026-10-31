@@ -1196,3 +1196,33 @@ func TestTwoApprovedRevisionsOfOneTicketAreKept(t *testing.T) {
 		t.Fatalf("after the other's withdrawal: %v", ids)
 	}
 }
+
+// However many approved revisions merges leave (up to MaxPlans), a
+// ticket's read carries the newest MaxTicketApproved, newest first, so it
+// keeps its bound; the revisions' own read has every one.
+func TestATicketReadCarriesTheNewestApprovedRevisions(t *testing.T) {
+	s, _, key := planTicket(t)
+	for i := range MaxTicketApproved + 2 {
+		propose(t, s, opID("p", i), key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+	}
+	tk := ticketOf(t, s, key)
+	// Every revision approved, as merges of as many replicas leave them.
+	if _, err := s.db.Exec("UPDATE plans SET state = ?, approved_at = ?, approved_by = 'elsewhere', approved_rev = ?, approved_intent = ?",
+		PlanApproved, stamp(time.Now()), tk.Rev, IntentDigest(tk)); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Plans(context.Background(), key)
+	if err != nil || len(all) != MaxTicketApproved+2 {
+		t.Fatalf("the revisions' read: %d %v", len(all), err)
+	}
+	var newest []string
+	for _, p := range all[:MaxTicketApproved] {
+		if p.State != PlanApproved {
+			t.Fatalf("revision %d is %s", p.N, p.State)
+		}
+		newest = append(newest, p.ID)
+	}
+	if ids, _ := approvedOf(t, s, key); !slices.Equal(ids, newest) {
+		t.Fatalf("the ticket's approved revisions: %v, want the newest %d %v", ids, MaxTicketApproved, newest)
+	}
+}

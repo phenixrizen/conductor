@@ -696,12 +696,16 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 	default:
 		return done, true, nil
 	}
+	// A version 1 database, read as it was found (read), kept no
+	// fingerprint: recorded stays empty, too old to compare.
 	var recorded string
-	if err := q.QueryRowContext(ctx, "SELECT fingerprint FROM "+table+" WHERE id = ?", id).Scan(&recorded); err != nil {
-		if isNoRows(err) {
-			return Receipt{}, false, fmt.Errorf("dispatch: the operation %s made %s %s, which has no row", op.ID, table, id)
+	if schemaOf(q) >= 2 {
+		if err := q.QueryRowContext(ctx, "SELECT fingerprint FROM "+table+" WHERE id = ?", id).Scan(&recorded); err != nil {
+			if isNoRows(err) {
+				return Receipt{}, false, fmt.Errorf("dispatch: the operation %s made %s %s, which has no row", op.ID, table, id)
+			}
+			return Receipt{}, false, err
 		}
-		return Receipt{}, false, err
 	}
 	switch recorded {
 	case "":
