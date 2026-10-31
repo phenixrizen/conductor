@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DispatchProject, ProjectSummary } from '~/composables/useDispatch'
+import type { ProjectSummary } from '~/composables/useDispatch'
 import { projectsWatch } from '~/composables/useDispatchLive'
 import { TRACKERS, projectPath } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
@@ -91,9 +91,9 @@ watch(() => admin.token.value, load)
 // The live events read the projects again; their first read is made once the page is subscribed to them (useDispatchLive's `first`).
 const live = useDispatchLive({ ...projectsWatch(reload), reset: () => gate.reset() }, load)
 
-/** A project made: its page. */
-function created(p: DispatchProject) {
-  void router.push(projectPath(p.key))
+/** A project made: its page, by its key (its reply's project's, else its receipt's). */
+function created(key: string) {
+  void router.push(projectPath(key))
 }
 </script>
 

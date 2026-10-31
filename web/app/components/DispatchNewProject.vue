@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DispatchProject, ProjectReply, Tracker } from '~/composables/useDispatch'
+import type { ProjectReply, Tracker } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { PROJECT_KEY_PATTERN } from '~/utils/dispatch'
 import { dispatchFailureWords } from '~/composables/useDispatchOps'
@@ -11,11 +11,13 @@ import { dispatchFailureWords } from '~/composables/useDispatchOps'
  * another one by its URL. The close policy is the store's default (the owner's acceptance for a project of Dispatch's, nothing for one
  * tracked elsewhere) until the project dialog can edit it. A refusal (a key taken) shows in the dialog. While the project is made the
  * dialog stays: Escape, a click outside, its close button and Cancel do nothing until the store has answered, so that answer closes the
- * opening it was made from and opens the project's page, never closing a later opening, or leaving its draft for that page.
+ * opening it was made from and opens the project's page, never closing a later opening, or leaving its draft for that page. The project
+ * made is handed on by its key (`created`), its reply's project's, else its receipt's: a creation whose read after the commit failed is
+ * answered with its receipt alone, and is made all the same.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ gate: DispatchOrder }>()
-const emit = defineEmits<{ created: [project: DispatchProject] }>()
+const emit = defineEmits<{ created: [key: string] }>()
 
 const api = useDispatchApi()
 const ops = useDispatchOps(props.gate)
@@ -64,7 +66,9 @@ async function submit() {
       ...(tracker.value === 'external' ? { trackerUrl: trackerUrl.value.trim() } : {}),
     }
     const reply = await ops.run<ProjectReply>((op) => api.createProject({ ...op, ...body }), { thing: `project:${key.value}`, what: 'New project', raise: true })
-    if (reply?.project) emit('created', reply.project)
+    // Made: by the key its reply's project has, else the one its receipt names.
+    const made = reply?.project?.key || reply?.receipt.key
+    if (made) emit('created', made)
     open.value = false
   } catch (e) {
     error.value = dispatchFailureWords(e)

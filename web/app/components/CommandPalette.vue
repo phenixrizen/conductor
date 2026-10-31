@@ -4,7 +4,7 @@ import type { Action } from '~/utils/actions'
 import { choiceKey } from '~/utils/attention'
 import { bindDraft } from '~/utils/reply'
 import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/palette'
-import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
+import type { TicketSummary } from '~/composables/useDispatch'
 import { PICK_WORDS, pickEdit, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { DispatchOrder } from '~/utils/dispatchOrder'
 
@@ -97,7 +97,8 @@ watch(
   },
 )
 const toast = useToast()
-function ticketMade(t: DispatchTicket) {
+/** A ticket made from the palette's dialog, by its key and title (its reply's ticket's, else its receipt's key and the title sent). */
+function ticketMade(t: { key: string; title: string }) {
   toast.add({ title: `${t.key} made`, description: t.title, icon: 'i-lucide-ticket', color: 'success', actions: [{ label: 'Open', icon: 'i-lucide-arrow-right', onClick: () => void router.push(ticketPath(t.key)) }] })
   palette.staleTickets()
 }

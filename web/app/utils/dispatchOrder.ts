@@ -123,6 +123,49 @@ export async function throughOrAbsent<T>(gate: DispatchOrder, thing: string, sen
   return true
 }
 
+/** How `catchUp` reads a thing until the page shows it as an operation on it left it, and when it stops. */
+export interface CatchUpOptions {
+  /** Whether the page shows the thing as the operation left it, or later: the revision it committed, or a later one, is shown. */
+  shown: () => boolean
+  /** Reads the thing, sent now, through the gate: resolves to whether the gate took its reply (`through`); rejects when it failed. */
+  read: () => Promise<boolean>
+  /** Whether the page has left the thing (it shows another one): nothing more is read. */
+  left: () => boolean
+  /** Waits that many milliseconds before a read failed is asked again. */
+  wait: (ms: number) => Promise<void>
+  /** The first wait, doubled after each failure up to `maxMs`: a re-read's (useDispatchLive), the window and DISPATCH_RETRY_MAX_MS. */
+  firstMs: number
+  maxMs: number
+}
+
+/**
+ * Waits until the page shows a thing as an operation on it left it, before the next operation on it is made (a ticket page's edits, one
+ * after another), and answers whether it does. At once when it shows it already (the operation's reply was taken); else the thing is
+ * read, sent now, after the operation answered, so the read finds what it left: once the gate takes a read's reply, the page shows the
+ * thing as the store held it then. A read that fails is asked again after `firstMs`, doubled each time up to `maxMs`, as a re-read is,
+ * until one is taken or the page shows the thing some other way (the re-read of the operation's event); a read the gate dropped (a later
+ * reply taken first, or the gate reset after it was asked) is asked again at once, the next check deciding. A failure never stands for
+ * the read: the next operation, judged on the older state shown, would expect its revision and be refused, or be taken for no change and
+ * not be sent at all (a pick taken back to what the older state holds), and the one before it stand. False once the page has left the
+ * thing, with nothing more read.
+ */
+export async function catchUp(o: CatchUpOptions): Promise<boolean> {
+  let delay = o.firstMs
+  for (;;) {
+    if (o.left()) return false
+    if (o.shown()) return true
+    let taken: boolean
+    try {
+      taken = await o.read()
+    } catch {
+      await o.wait(delay)
+      delay = Math.min(delay * 2, o.maxMs)
+      continue
+    }
+    if (taken) return true
+  }
+}
+
 /**
  * `f` made serial: each call starts once every call before it has settled, answered or failed, and resolves or rejects as its own call
  * does. A page's operations on one entity go so (DispatchTicketPage), each expecting the revision the one before it left, where two sent

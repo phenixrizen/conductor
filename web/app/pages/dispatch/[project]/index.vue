@@ -248,8 +248,11 @@ function more() {
   void readList().catch((e: Error) => (error.value = e.message))
 }
 
-/** A ticket made: said with its key and Open, and the list read at once (its event reads it again too). */
-function created(t: DispatchTicket) {
+/**
+ * A ticket made, by its key and title (its reply's ticket's, else its receipt's key and the title sent): said with its key and Open, so a
+ * ticket the filter leaves out of the list is said too, and the list read at once (its event reads it again too).
+ */
+function created(t: { key: string; title: string }) {
   toast.add({ title: `${t.key} made`, description: t.title, icon: 'i-lucide-ticket', color: 'success', actions: [{ label: 'Open', icon: 'i-lucide-arrow-right', onClick: () => void router.push(ticketPath(t.key)) }] })
   void readList().catch(() => {})
 }
