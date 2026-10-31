@@ -97,7 +97,11 @@ item does for each:
    round trip to its service on the call's path; the provider talks to its
    service only on goroutines of its own, begun in `Start`, and keeps what
    it holds current there (`ext`'s package documentation says so, and the
-   contract suite, C9, checks every call against it). Second, the guard
+   contract suite, C9, checks every call against it). The one exception is
+   `ContinuityStore.Restore`, which is no call on any request's path: only
+   `conductor restore --provider` makes it, at a person's word, with no
+   server running, and it may fetch the archive from the provider's service
+   on its own call, until it ends or the person stops it (C6). Second, the guard
    every provider call goes through, which bounds a provider that breaks
    the contract: a wait `ext` names (a bound of a hang, never what a normal
    answer takes), its panic recovered, its answer checked against `ext`'s
@@ -105,8 +109,10 @@ item does for each:
    with nothing remembered about the failure, so a provider that recovers
    is used again at its next call and nothing restarts. Calls fed from
    queues never hold the code that queues them: a full queue drops its
-   oldest. Third, start-up: `Start` returns at once, and one that errs,
-   panics or is late is started again with backoff while its slots answer
+   oldest (the sync store's pending set, which cannot, replays instead:
+   C6). Third, start-up: `Start` returns at once, and one that errs,
+   panics or is late is started again with backoff, never while an earlier
+   try of it is still running, while its slots answer
    the free default, so a provider whose service was down when the server
    started is used once `Start` succeeds, with no restart (Host and Start).
    `GET /api/ice`, which anyone may call, never asks a provider, and a
@@ -499,7 +505,10 @@ type NotificationSink interface {
 	Provider
 	// Events names what the sink takes: an event name (needs_input, done,
 	// exit_nonzero, error, …) or an entry's own type (file, join, input, …,
-	// or TypeProvider); nil takes everything. Read once, at start.
+	// or TypeProvider); nil takes every session entry. A provider's notice
+	// reaches a sink only when TypeProvider is listed, and a provider with
+	// such a sink cannot send notices (Host.Notify refuses): no provider
+	// both takes and sends them, so notices never loop. Read once, at start.
 	Events() []string
 	// Notify delivers one notification. Called in order, from one goroutine
 	// of the sink's own, with a context that ends after DeliveryWait.
@@ -536,9 +545,10 @@ const (
 type ContinuityStore interface {
 	Provider
 	// Saved and Deleted are told, after its local commit, of a document the
-	// data directory now holds or no longer holds. Called in order, from one
-	// goroutine of the store's own, with a context that ends after
-	// DeliveryWait.
+	// data directory now holds or no longer holds, with its bytes as they
+	// are when it is delivered; each epoch begins with a replay of the whole
+	// state (C6). Called in order, from one goroutine of the store's own,
+	// with a context that ends after DeliveryWait.
 	Saved(ctx context.Context, d Doc) error
 	Deleted(ctx context.Context, d Doc) error
 	// Restore writes this device's latest copy as an archive of `conductor
@@ -546,6 +556,10 @@ type ContinuityStore interface {
 	// accept (C6); ErrNothingToRestore when it keeps none. Called only by
 	// `conductor restore --provider`, with no server running and no Start:
 	// r gives the provider its own directory and a logger, all it has then.
+	// The one method not bound to answer from what the provider holds: it
+	// may fetch the archive from its service on this call, streaming it
+	// into w, and must end when ctx does (the person's Ctrl-C), returning
+	// ctx's error; whatever it wrote is then thrown away.
 	Restore(ctx context.Context, r RestoreRequest, w io.Writer) error
 }
 // RestoreRequest is what a provider's Restore is given on a machine where
@@ -554,19 +568,21 @@ type RestoreRequest struct {
 	Dir string       // <dataDir>/ext/<name>, made 0700, empty on a fresh machine: the provider's sign-in goes there
 	Log *slog.Logger // naming the provider
 }
-// Doc is one local commit.
+// Doc is one document's state after a local commit, or a replay's marker.
 type Doc struct {
-	Store string    `json:"store"` // data | ledger | dispatch | gap
-	Path  string    `json:"path"`  // a document's path in the data directory, a run's id, "commit"
-	Rev   int64     `json:"rev,omitempty"` // data: the data directory's commit sequence; ledger: the run's revision; dispatch: the commit's last change in its log
-	At    time.Time `json:"at"`
-	Size  int64     `json:"size,omitempty"` // the document's bytes; for a gap, how many docs were dropped
-	Data  []byte    `json:"data,omitempty"` // the bytes as written, when at most MaxDocData
+	Store  string    `json:"store"` // data | ledger | dispatch, or the markers replay | replayed
+	Path   string    `json:"path"`  // a document's path in the data directory, a run's id, a Dispatch entity's kind/id or "log"
+	Epoch  string    `json:"epoch"` // 32 hex characters, new at every replay: Rev orders docs of one epoch only
+	Rev    int64     `json:"rev,omitempty"` // data: the data directory's commit sequence in this epoch; ledger: the run's revision; dispatch: the last change's position in its log
+	At     time.Time `json:"at"`
+	Size   int64     `json:"size,omitempty"`   // the whole document's bytes
+	Offset int64     `json:"offset,omitempty"` // where Data begins in it: a document past MaxDocData comes in parts
+	Data   []byte    `json:"data,omitempty"`   // at most MaxDocData bytes of the document as it is when delivered
 }
 var ErrNothingToRestore = errors.New("ext: nothing to restore")
 const (
-	MaxDocData = 1 << 20
-	SyncQueue  = 1024
+	MaxDocData  = 1 << 20
+	SyncPending = 65_536 // documents waiting to be delivered; past it, a replay (C6)
 )
 ```
 
@@ -645,9 +661,11 @@ native default are C10's to add, before anything implements it
 // the app. It returns at once, never waiting on its service (it begins
 // goroutines that reach it), and it does not fail for an outage: an error
 // is for what no retry mends (a bad configuration). One that errs, panics
-// or has not returned within StartWait is called again, with a new ctx,
-// after a backoff (Host and Start); ctx ends when the server shuts down or
-// gives that try up, and the provider's goroutines end with it.
+// or has not returned within StartWait is called again, with a new ctx and
+// a new Host, after a backoff, and only once the earlier try has returned:
+// a provider never has two Starts running (Host and Start). ctx ends when
+// the server shuts down or gives that try up, and the provider's
+// goroutines end with it; the Host of a try given up refuses every call.
 type Starter interface {
 	Start(ctx context.Context, h Host) error
 }
@@ -761,7 +779,8 @@ every provider in the guard, defaults included, so no call site tells the
 two apart. Queue-fed calls made during `New` wait in their queues, whose
 drains begin once the provider's `Start` has succeeded (below; at once
 `StartExtensions` runs for a provider that is no `Starter`); a queue that
-fills meanwhile drops its oldest and the gap is told (C6). And the guard
+fills meanwhile drops its oldest, and the sync store's pending set, which
+drops nothing, replays the whole state once it starts (C6). And the guard
 itself:
 
 ```go
@@ -776,7 +795,8 @@ func extCall[T any](s *Server, kind, name string, wait time.Duration, fallback T
 const extInFlight = 16
 ```
 
-Queue-fed calls (`Notify`, `Saved`, `Deleted`, `NoteTouch`, `Resolved`) go
+Queue-fed calls (`Notify`, `NoteTouch`, `Resolved`; `Saved` and `Deleted`
+through the sync adapter's pending set, C6) go
 through `extQueue`: one ring per provider and kind, filled without waiting
 (a full ring drops its oldest, the first drop and every hundredth logged,
 as a webhook's queue does), drained in order by one goroutine of its own,
@@ -808,9 +828,13 @@ its others (`track`).
   program reads slowly (`session.ErrSubmitPending`).
 - `Notify` validates the notice (`Message` at most 500 bytes, `URL` at
   most 2,048, one line each), sets `Type` to `TypeProvider`, `Origin` to
-  the provider's name and `At`, and hands it to the sinks, never to a sink
-  of the same provider; until C3 (PR-7) there are none, and it is logged at
-  debug.
+  the provider's name and `At`, and hands it to the sinks whose `Events`
+  list `TypeProvider`; until C3 (PR-7) there are none, and it is logged at
+  debug. A provider one of whose sinks lists `TypeProvider` gets a `Host`
+  whose `Notify` answers `ErrUnsupported` ("a provider that takes
+  provider notices cannot send them"), decided once at start from
+  `Events`: a provider either sends notices or takes them, so no chain of
+  providers can carry a notice back round, however many there are.
 - `DataDir` is `<dataDir>/ext/<name>`, made 0700 through the store
   (`store.Sub`); `ErrUnsupported` without a data directory. Export leaves
   `ext/` out (it may hold a provider's credentials).
@@ -823,10 +847,20 @@ at once, each on its own goroutine with `StartWait`. Until a provider's
 `Start` has succeeded, every slot it holds answers its free default and
 its queues hold what reaches them. One that errs, panics or has not
 returned by `StartWait` is logged (once a minute, as the guard logs), its
-try's context is cancelled, so the work it left behind ends, and it is
-started again with a new context after a backoff, 1 s doubling to 5
-minutes, for as long as the server runs; a late `Start` that returns
-after its try was given up has its answer ignored. Once one succeeds, its
+try is given up: the try's context is cancelled and the try's `Host`
+revoked (each try gets a `Host` of its own, which answers every call
+`context.Canceled` once its try is given up, so goroutines a given-up try
+began cannot act). It is started again with a new context and a new
+`Host` after a backoff, 1 s doubling to 5 minutes, for as long as the
+server runs, and **never while an earlier try is unfinished**: each
+provider has at most one `Start` running, and the next try begins only
+after the last has returned and its backoff has passed. A `Start` that
+ignores its cancelled context and never returns therefore holds one
+goroutine for the server's life and no more; its provider stays
+`starting` (its slots the default, logged once a minute), and nothing
+calls it concurrently, which `Starter` never promises to bear. A late
+`Start` that returns after its try was given up has its answer ignored.
+Once one succeeds, its
 slots are its own from their next call: a provider whose service was
 down at start-up is used as soon as it is back, with no restart (article
 8). `runServe` calls it after `api.New` and before the listeners serve,
@@ -881,7 +915,8 @@ it), then the run engine's `OnActivity`. The notifier types each entry
 once (`eventTypeOf`), looks the session up once (name, agent, crew
 reference) when a sink wants it, and queues one `ext.Notification` for
 every sink whose `Events` is nil or lists the entry's event name or its own
-type: the rule a webhook applies (`webhook.eventFor`).
+type: the rule a webhook applies (`webhook.eventFor`). A provider's
+notice goes only to the sinks that list `TypeProvider` (Host and Start).
 
 `internal/api/webhooks.go`: a configured webhook becomes the first kind of
 sink: its `Events` are its configured events, and its `Notify` rebuilds
@@ -958,12 +993,24 @@ nothing recorded (`Local.withdrawShownLocked` records no entry, and the
 terminal may stay quiet after it). It is fed by the session change hooks
 every attention change already calls, after the session's lock is let
 go: `localChange` (a server session's `OnChange`) and the hosted hub's
-`OnChange`, each of which queues the session's id (256, the oldest
-dropped, never waiting) after its work of today. One worker per session
-id at a time (at most 16 sessions at once) reads the session's attention
+`OnChange`, each of which marks the session's id dirty after its work of
+today, never waiting. The dirty ids are a set, not a ring: an id is in it
+at most once however often its session changes, so it holds at most one
+entry per session the registry holds (`maxSessions`, at most 10,000, a
+few hundred KB at worst), and nothing is ever dropped from it. A worker
+takes an id out of the set before it reads the session, so a change made
+while it works marks the id again and the session is read once more
+after; a change is never lost, whatever the other sessions do meanwhile.
+One worker per session id at a time (at most 16 sessions at once) reads
+the session's attention
 from the registry and keeps, per session, the questions it routed: their
 ids, each `outstanding` or `resolved`, at most 64 per session (the
-oldest resolved forgotten first), forgotten with the session. An id's
+oldest resolved forgotten first), forgotten with the session. A routed id
+is resolved only when the session neither shows it nor keeps it (below),
+and a session shows again only a question it kept, so a resolved id never
+returns and forgetting it routes nothing twice; the outstanding ones are
+at most three (the one shown and the two a session keeps), never
+forgotten. An id's
 lifecycle is the router's own, never inferred from the id being new: a
 question an agent asked and the work set aside comes back at the turn's
 done with its first id (`TestAQuestionSetAsideByWorkShowsAgainAtTheDone`),
@@ -983,15 +1030,18 @@ the set does not hold, the worker adds it as outstanding, builds the
 
 The same worker, serialised per session, tells `Resolved` once per
 outstanding id and marks it resolved, when the change it reads shows that
-the question no longer waits: for a server session, when it neither shows
-nor is kept by the session (set aside in its turn, or held over by a held
-turn: `Local.Keeps(id)`, new, which reads what `keeps` reads in the
-session's tests), so a question set aside and shown again at the done is
-one routed question, told `Resolved` once, at its real end; for a hosted
-session, whose host tells the server only what shows, when it stops
-showing, and a resolved id that shows again is neither routed nor
-resolved again (the people watching answer it, as on main, and a router's
-answer through `Host.Submit` is still decided by the claim). When the
+the question no longer waits: when the session neither shows it nor keeps
+it (set aside in its turn, or held over by a held turn). For a server
+session that is `Local.Kept()`, new: the ids of the questions the session
+keeps without showing them (`own` while set aside, `heldOver`), at most
+two, read under its lock. For a hosted session it is the host's own
+`Local.Kept()`, which the host sends with its attention (`kept`, below),
+so a question set aside and shown again at the done is one routed
+question, told `Resolved` once, at its real end, on either kind of
+session and however many questions were routed between. The router
+routes a hosted session only when its host's register said `answerAs`
+(the hosts that send `kept`); an older host's questions are routed by no
+one, and the people watching answer them, as on main. When the
 session leaves the registry, each id still outstanding is told with
 `Ended`. `Host.Submit`'s `Input` lands here for server sessions.
 
@@ -1015,15 +1065,30 @@ type HostAnswerAsMsg struct {
 }
 func (m HostAnswerAsMsg) Valid() bool // the bounds, exactly one of Input and Text
 // HostInfo gains:
-AnswerAs bool `json:"answerAs,omitempty"` // the host takes answer_as
+AnswerAs bool `json:"answerAs,omitempty"` // the host takes answer_as, and sends kept
+// HostAttentionMsg gains, host to server only, from a host that said AnswerAs:
+// the ids of the questions its session keeps without showing them
+// (Local.Kept: the agent's own question set aside, a question held over by
+// a held turn), so the server's router can tell a question set aside from
+// one that ended. An older server ignores it.
+Kept []string `json:"kept,omitempty"` // at most MaxKept (2), each ValidQuestionID
+const MaxKept = 2
 ```
 
 Its size limit: about 4.4 KB at most, far under `MaxHostMessage` (64 KiB),
-and `Valid` holds every field to its bound. The three places:
+and `Valid` holds every field to its bound; `kept` adds at most 2 ids of
+32 bytes to an attention message, and a message whose `kept` is past
+`MaxKept` or holds an id `ValidQuestionID` refuses is dropped whole, as
+any invalid host message is. Such a host sends its attention whenever what
+it shows or what it keeps changes (a question set aside while the screen
+shows another state changes only `kept`), and the server's copy, given an
+attention equal to the one it shows, takes the new `kept` and records
+nothing. The three places:
 `internal/proto/hostmsg.go`; `web/app/utils/protocol.ts`
 (`HostAnswerAsMessage`, `HOST_MAX_ANSWER_AS_SUBJECT`, `answerAs` on the
-host's info); `docs/protocol.md`, Host control connection (the message's
-row and the register's field).
+host's info, `kept` and `HOST_MAX_KEPT` on the attention message);
+`docs/protocol.md`, Host control connection (the message's
+row, the register's field and the attention message's `kept`).
 
 **A switchyard never answers.** A switchyard, which someone else may run,
 has no authority over the terminal today: `hostagent.Options.Switchyard`
@@ -1031,7 +1096,7 @@ takes no attention or activity from it, its stop never stops the
 process, and `api`'s principal gives a switchyard's administrator no
 terminal role. `answer_as` carries who answered, not a right to answer,
 so it keeps that boundary: `internal/hostagent/agent.go` sets `AnswerAs`
-in its register only when `Options.Switchyard` is off (`conductor host`,
+in its register, and sends `kept` with its attention, only when `Options.Switchyard` is off (`conductor host`,
 which publishes to the owner's own server, says it; a server's uplink to
 a switchyard never does), and in switchyard mode a `HostAnswerAs` that
 arrives anyway is dropped unread, as a `HostAttention` is, and logged. A
@@ -1067,10 +1132,10 @@ Each hook hands over its events in commit order, because calling an
 observer outside the lock that serialises the commits does not: a commit
 that lets the lock go can pause before its call while the next commits
 and calls first (Dispatch's `Apply` already unlocks `s.mu` before
-`s.notify`). So each hook *queues* an immutable event under that lock,
-right after the commit, into a queue that never waits (the sync adapter's
-`extQueue` push), and the provider is called from the queue's own
-goroutine, outside every lock:
+`s.notify`). So each hook hands an immutable event under that lock,
+right after the commit, to the sync adapter, which marks the document
+pending without waiting (its pending set, below), and the provider is
+called from the adapter's own goroutine, outside every lock:
 
 - `internal/store`: `(*Store).Observe(fn func(Event))` on the data
   directory's store, inherited by every `Sub` with its path prefix. The
@@ -1081,10 +1146,15 @@ goroutine, outside every lock:
   before letting the mutex go, so two saves of one document, through the
   root or through two `Sub`s, are queued in the order of their renames and
   numbered so. `Event{Op ("saved" | "deleted"), Path (slash path from the
-  data directory), Seq, Data}`; never on a failed write. `Save` hands its
-  bytes; `WriteFile`, `RemoveFile` and `Delete` hand none, so a plain
-  file's bytes (the workbench token's) never leave the package. The data
-  doc's `Rev` is `Seq`, so a store can order data docs itself too.
+  data directory), Seq}`; never on a failed write. No event carries bytes,
+  so a plain file's bytes (the workbench token's) never leave the package;
+  the adapter reads an allowlisted document's bytes when it delivers it,
+  through `(*Store).OpenDoc(path)` (new: a regular JSON document only,
+  opened read-only through the store's root). The data doc's `Rev` is
+  `Seq`, so a store can order data docs itself too, within an epoch: the
+  sequence lives in memory and starts again with every server, which is
+  why every server's first delivery begins a new epoch with a replay
+  (below).
 - `internal/crew/ledger`: `OnCommit(func(RunPointer))`, called under
   `l.mu` right after each committed `Transition` (`Recover`'s are
   transitions too), for an observer that only queues;
@@ -1107,25 +1177,61 @@ the start-up's own commits (the masked catalog, the migrated crews,
 like any other.
 
 `internal/api/sync.go` (new) turns them into `ext.Doc`s for the sync
-store, through an `extQueue` of `SyncQueue`; when the queue has dropped
-docs, the next delivery is preceded by `Doc{Store: "gap", Size: <dropped>}`
-so the store knows it must catch up. What reaches it is an allowlist:
-`catalog.json`, `crews/<id>.json` and `runs/<id>.json` (`Store: "data"`,
-with the bytes up to `MaxDocData`). `catalog.json` keeps saved agents'
+store. What reaches it is an allowlist:
+`catalog.json`, `crews/<id>.json` and `runs/<id>.json` (`Store: "data"`);
+a run's pointer from the ledger (`Store: "ledger"`, `Path` the run's id,
+`Rev` its revision, `Data` the pointer as JSON: never the crew as
+launched, the rows or the logs); a Dispatch entity a commit changed
+(`Store: "dispatch"`, `Path` its kind and id, `Rev` the last change to it
+in Dispatch's log, `Data` its project, ticket, kind and id).
+`catalog.json` keeps saved agents'
 env values in full (`keepMaskedEnv`, `internal/api/catalog.go`), which
 `GET /api/catalog` shows only as `catalog.RedactedValue`; its doc carries
 the catalog as that route masks it, every env value replaced by
 `catalog.RedactedValue`, re-encoded by the adapter from the saved bytes,
 so no env value reaches a sync store; a `catalog.json` that does not
-decode is sent as a doc with no `Data`. Then a run's pointer from the ledger
-(`Store: "ledger"`, `Path` the run's id, `Rev` its revision, `Data` the
-pointer as JSON: never the crew as launched, the rows or the logs); a
-Dispatch commit (`Store: "dispatch"`, `Path` "commit", `Rev` the commit's
-last change, `Data` its entities, project, ticket, kind and id). The
+decode is sent as a doc with no `Data`. The
 workbench token file, `links/`, `tls/`, `hooks/` and `ext/` never reach
-it. Reading Dispatch's change rows, and applying another machine's, is the
-sync item's own (CS1), proposed by its plan as the change to Dispatch it
-needs.
+it.
+
+*What is pending, not what happened.* The adapter keeps no queue of docs.
+It keeps a pending set: one entry per document (store and path), holding
+the last event's op and `Rev`, in the order the documents became pending;
+a document already pending only has its entry updated. One goroutine of
+its own takes the oldest entry and delivers the document **as it is
+then**: a data document read through `OpenDoc` (gone: `Deleted`), a run's
+pointer read from the ledger (`Ledger.Pointer(ctx, id)`, new, read-only;
+pruned: `Deleted`), a Dispatch entity's reference. So the set never holds
+bytes, holds at most one entry per document, and a document that changed
+while it waited is delivered once, with its last state. A document larger
+than `MaxDocData` (a run record may hold 4 MiB, `maxRecordSize`; the
+catalog has no bound) is delivered whole, in parts: consecutive docs of
+one path, `Rev` and epoch, each with at most `MaxDocData` bytes at its
+`Offset` and the whole `Size`, read from one open file (one version, as
+the store renames), so no document is ever cut and only one part is held
+at a time.
+
+*Epochs and replays.* A replay hands the store the whole state: a
+`Doc{Store: "replay"}` that begins a new epoch (a random `Epoch`, which
+every doc after it carries), then every allowlisted data document, every
+run pointer the ledger holds (`Ledger.Pointers(ctx, after, n)`, new,
+read-only, paged), and one `Doc{Store: "dispatch", Path: "log", Rev:
+<Dispatch's last change position>}` (`Store.Head`, new), each delivered
+as above, interleaved with the live entries, then `Doc{Store:
+"replayed"}`: a document the store holds from an earlier epoch that the
+replay did not name is gone. A replay runs when the sync store's `Start`
+first succeeds in a server's life, so every server lifetime is an epoch
+of its own and a provider's cursor from an earlier lifetime is never
+compared with this one's `Rev`s (the data directory's sequence starts
+again with each server; the ledger's and Dispatch's positions are
+durable, and the epoch covers them too); and when the pending set would
+pass `SyncPending` entries, which then is emptied and replaced by one
+replay in a new epoch. Nothing is dropped and no gap is left for the
+store to fill: the initial state, an overflow, a restart and a document
+too large for one doc each end in docs that hold the bytes. Reading
+Dispatch's change rows from a log position, and applying another
+machine's, is the sync item's own (CS1), proposed by its plan as the
+change to Dispatch it needs.
 
 **The archive and the route** (PR-12): `internal/export` (new):
 
@@ -1148,6 +1254,7 @@ type Left struct{ Path, Why string } // secret | lock | temporary | provider | n
 type Source struct {
 	Dir      string // the data directory
 	Snapshot func(ctx context.Context, rel, dst string) error // runs/managed.sqlite, dispatch/dispatch.sqlite
+	Catalog  func() ([]byte, error) // catalog.json resolved against the configured catalog (below)
 }
 func Write(ctx context.Context, w io.Writer, src Source) (Manifest, error)
 func Fresh(dir string) (bool, error) // holds none of catalog.json, crews/, crews.json, runs/, dispatch/, links/ (hooks/ and restore.lock aside)
@@ -1169,13 +1276,34 @@ lock, `runs/owner.lock`, `restore.lock`, the databases' `-wal`, `-shm` and `-jou
 `attachments/tmp/`, `tls/` (the ACME account key and the certificates; a
 new machine gets its own), `ext/` (a provider's own state), and anything
 that is not a regular file or a directory. Repositories and worktrees are
-the projects', not the data directory's, and are not in it. Unlike a sync
-store's copy, the archive keeps `catalog.json` as the data directory
-holds it, saved agents' env values in full, because a restored machine
+the projects', not the data directory's, and are not in it.
+
+**The catalog resolved.** `catalog.json` is an overlay on the configured
+catalog, and an agent saved over a configured one stores
+`catalog.RedactedValue` for every env value equal to the configured
+agent's (`keepMaskedEnv` on save, `maskConfiguredEnv` at start) and omits
+what it leaves to it (adapter, signal, site, yolo, trust, questions,
+session, probe: `catalog.inherit`, which drops a masked key the
+configured catalog lacks). The archive holds no configuration, so the
+data directory's file would lose those values and fields on a machine
+whose config differs. So `Write` takes the catalog from `Source.Catalog`
+instead of the file: the overlay with every agent saved over a configured
+one resolved against the configuration the source runs with, each masked
+env value replaced by the configured value and each omitted field filled
+from the configured agent (what `inherit` gives the running server), in
+`catalog.json`'s format, so the archive's agents launch as the source's
+did with no config at all. The server's export passes its own
+configuration; the offline one (`--data-dir`) loads it as `serve` would
+(`--config`, below). On a destination whose config holds the same agent
+and the same values, the restored server's start masks the equal values
+again (`maskConfiguredEnv`), so the agent follows that config from then
+on, as an override saved in full by an earlier version does. Unlike a
+sync store's copy, the archive therefore holds saved agents' env values,
+and configured ones they inherit, in full, because a restored machine
 must launch those agents as the first did: the archive is the person's
 own file, written 0600, and `conductor export` says so on stderr ("the
-archive holds your saved agents' env values: keep it as you keep the
-config"), as the README's Export and restore does.
+archive holds your agents' env values, configured ones among them: keep
+it as you keep the config"), as the README's Export and restore does.
 
 **Run records before the ledger.** A run's JSON record is written after
 its ledger transition, so the records may lag the ledger but never lead
@@ -1203,21 +1331,40 @@ refused by the restore through `ledger.Held` and `Fresh`. A second
 restore, or a server, that finds `restore.lock` refuses with words naming
 it: a restore runs, or one was cut short, and the file to remove to
 start over. The check before the renames is repeated (`Fresh` again,
-under the reservation) so nothing the archive holds is renamed over
-anything.
+under the reservation), and it is not the only one: `Fresh` names six
+places, and a fresh directory may hold other files, so the collision
+check below is what keeps anything the archive holds from being renamed
+over anything.
 
 `Restore` takes the reservation, refuses a data directory that is not
 `Fresh`, then checks the whole archive before it writes a byte: format 1, the manifest within its
 bound, every entry listed with its size and SHA-256 and no other, every
 path relative under `data/`, made of `[A-Za-z0-9._-]` elements (no `..`,
-no backslash), no link, no duplicate, at most `MaxFiles`. It writes
+no backslash), no link, no duplicate, at most `MaxFiles`, and **no
+reserved path**: whatever `Write` leaves out is refused on the way in,
+by the one table both use (`export.leftOut`): `workbench-token` and its
+lock, `restore.lock`, `runs/owner.lock`, a database's `-wal`, `-shm` or
+`-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`,
+`tls/` and `ext/`, so an archive can neither plant a credential, a lock
+or a provider's state nor name the restore's own files. It writes
 everything into `<dir>/.restore-<random>` through an `os.Root` (files 0600,
 directories 0700), syncs, then renames the entries into the data
 directory. `hooks/` is the one entry a fresh directory may already hold
 (`conductor host` writes the hook assets there, and `serve` writes them
 anew at every start): the target's `hooks/` is renamed aside into the
 staging directory first and removed with it, and the archive's takes its
-place, so the rename never meets a directory in its way. A failure before the renames removes the staging directory and
+place, so the rename never meets a directory in its way. **Nothing is
+renamed over anything.** The install renames the staging directory's
+top-level entries (`catalog.json`, `crews/`, `runs/`, `dispatch/`,
+`links/`, `hooks/` and any other the archive holds) one by one; before
+the first, under the reservation and after the second `Fresh`, every one
+of those names is looked up in the data directory (`Lstat` through its
+`os.Root`), and any that exists, other than `hooks/` moved aside as
+above, refuses the restore, naming it, with nothing renamed: a fresh
+directory holding an unrelated `config.json` keeps it unless the
+archive holds one too, and then the restore stops before it is touched,
+on Unix, where a rename would replace a file, as everywhere. Entries the
+archive does not hold are never looked at or moved. A failure before the renames removes the staging directory and
 leaves the data directory as it was; a crash during them leaves a partial
 restore, which a second `restore` refuses as server data, its words naming
 what to remove to start over. The next `conductor serve` opens what was
@@ -1240,7 +1387,7 @@ nothing is buffered whole.
 
 ```
 conductor export [--server URL] [--token T] [--insecure] [--out FILE]
-conductor export --data-dir DIR [--out FILE]
+conductor export --data-dir DIR [--config FILE] [--out FILE]
 conductor restore FILE [--config FILE] [--data-dir DIR]
 conductor restore --provider [--config FILE] [--data-dir DIR]
 ```
@@ -1251,7 +1398,9 @@ same refusal of a plain server on another machine without `--insecure`)
 and writes `--out` (default `conductor-export-<UTC time>.zip` in the
 current directory, 0600, never over an existing file). With `--data-dir`
 it reads the directory itself, only when no server holds its ledger's
-owner lock (refused otherwise, naming the server form). `restore` takes
+owner lock (refused otherwise, naming the server form), and resolves the
+catalog against the configuration `config.Load(--config)` gives, as
+`serve` would load it. `restore` takes
 `--data-dir`, or else the data directory `conductor serve` would use,
 resolved the way `runServe` resolves it: `config.Load(--config)` (which
 applies `CONDUCTOR_DATA_DIR`), then `cfg.ResolveDataDir(--config)`, with
@@ -1262,14 +1411,26 @@ starts its server with its own `dataDir` (`<userData>/conductor` on
 Windows and macOS, `~/.local/share/conductor/data` inside WSL,
 `desktop/src/settings.ts`), which no default of the CLI can know: the
 README's Export and restore names both paths, to be given as
-`--data-dir`, with the app quit. `--provider` asks the sync store
+`--data-dir`, with the app quit. `--provider` takes the reservation and
+checks `Fresh` first, so no server starts while it fetches, then asks the
+sync store
 (`local.Fill(extensions()).Continuity`) for its copy (the free default
 answers that there is none, and nothing changes) into a temporary file
 beside the data directory, giving it `RestoreRequest{Dir:
 <dataDir>/ext/<name>, Log}` (made 0700; a provider that needs a sign-in
 keeps it there), then installs it the same way, its checks included: the
 one place a provider's `Restore` is called, with no server running and
-no `Start`, at a person's word. What its archive holds is the provider's
+no `Start`, at a person's word. It is the one provider call the
+local-only rule does not bind (article 8, above): `Restore` may stream
+the archive from its service on the call's own goroutine, for as long as
+the download takes, with no wait of the guard's; the command's context
+(SIGINT and SIGTERM end it, `app.Main`) is its context, and the command
+prints the provider's name and the bytes written as they arrive, so a
+person sees it work and can stop it. Whatever ends it short (an error,
+ctx's end, a panic, recovered) removes the temporary file and releases
+the reservation, the data directory as it was (`ext/<name>`, the
+provider's sign-in, aside: `Fresh` does not count it, and a retry uses
+it), and the command exits 1 with the provider's error. What its archive holds is the provider's
 (CS1 defines it); the installer accepts any part of `data/` its checks
 pass, and `serve` opens such a directory as it opens a new one, creating
 what is missing (an empty ledger, an empty Dispatch). The usage text and
@@ -1328,8 +1489,13 @@ slot runs its default meanwhile); a plain build answers `{"providers":
 per list).
 
 **The web app** (PR-16): `web/app/composables/useCapabilities.ts`, read
-once after the first paint and kept, forgotten with the workbench token
-as the palette's caches are; `web/app/utils/capabilities.ts`, pure:
+after the first paint and kept while no entry is `starting`, forgotten
+with the workbench token as the palette's caches are; while any entry is
+`starting` it reads the route again, 2 s after the last reply doubling to
+60 s, and stops once none is (a provider that never starts costs one
+small request a minute while Settings is open), so a page opened while a
+provider was still starting shows it `ready` when it is, with no reload
+and no change of token; `web/app/utils/capabilities.ts`, pure:
 `has(caps, kind)` and `extensionsWords(caps)` ("None: the open-source
 feature set", or "identity: cloud · notifications: push", one still
 starting "(starting)"). `AboutCard.vue` shows the row **Extensions**
@@ -1352,25 +1518,45 @@ call `context.Canceled`), each safe for concurrent use; and one function
 per interface that checks an implementation against the rules this plan
 writes, each taking an `exttest.T` (the part of `*testing.T` it uses:
 `Helper`, `Errorf`, `Fatalf`, `TempDir`), so a test can record what
-fails: `Identity(t, p, known, unknown)`, `Router(t, r, d)`, `Context(t,
-p, q)`, `Sink(t, s)`, `Continuity(t, c)`, `Entitlements(t, e)`,
-`Media(t, m)`, `Runtime(t, r)`, `Starter(t, s)`, and `RunAll(t,
+fails: `Identity(t, n, p, known, unknown)`, `Router(t, n, r, d)`,
+`Context(t, n, p, q)`, `Sink(t, n, s)`, `Continuity(t, n, c)`,
+`Entitlements(t, n, e)`, `Media(t, n, m)`, `Runtime(t, n, r)`,
+`Starter(t, n, s)`, `n` the `*exttest.Network` below, and `RunAll(t, n,
 ext.Providers)`, which runs the function of every entry of
 `Providers.All` (the entitlement source's among them: `exttest` is under
 `ext/`, where the lint allows the name) and `Starter` for every value
 that is one. Among what they check: a valid name; the contract of
 article 8, that every call answers from what the provider holds, checked
-as every call answering within `exttest.LocalWait` (250 ms, far under
-the guard's waits and far over a local answer), under a context that ends
-at it, which the premium repository runs with its hosted service
-unreachable as well as reachable; nothing recognised for an empty token;
+by watching the provider's network rather than a clock. Each check
+function takes the `*exttest.Network` the implementation under test was
+built with (nil for one with no transport, as the defaults): its
+`DialContext` and `Transport()` (an `http.RoundTripper`) are what the
+provider is configured to reach its service through, and it records
+every dial and request with the context it was given. The suite gives
+each request-path call (every method but `Start`'s goroutines and
+`Restore`) a context carrying a mark, and fails the check on any dial or
+request made under a marked context: work for the call on its own path,
+however fast it would answer. It then blocks the network (every dial and
+request waits on a gate the suite holds shut) and makes the calls again:
+each must return, from what the provider holds, with the gate still
+shut. A provider that reaches its service on the call's path under some
+other context waits on the gate and is caught when the guard's own wait
+for that method ends (the product's cap, the test's timeout above it),
+never by a threshold of the suite's. The premium repository runs the
+suite with its hosted service unreachable as well as reachable. How long
+a call takes is measured apart, by `exttest`'s benchmarks, never a check
+that fails; nothing recognised for an empty token;
 a valid principal with a grant whenever `ok`; a route valid for its
 decision; at most `MaxContextBlocks` valid blocks; `Events` stable; a
-valid `Where`; `Start` with a `FakeHost` returning within `LocalWait`
-while the host's calls are blocked, and taking a closed host's refusals
-without a panic once its context is cancelled; calls from 32
+valid `Where`; `Start` with a `FakeHost` returning while the host's
+calls and the network are blocked (the gate shut until it has returned),
+and taking a closed host's refusals without a panic once its context is
+cancelled; calls from 32
 goroutines at once under the race detector for what must be safe for
-concurrent use; a cancelled context answered promptly. Its package
+concurrent use; a call with a cancelled context returning, the network
+blocked. `Continuity`'s `Restore` is checked apart, as the one call that
+may use the network: it streams into its writer, and it returns ctx's
+error once ctx ends while its download waits on the shut gate. Its package
 documentation says how the premium repository runs it in CI.
 
 ### The lint: `internal/opencore` (PR-5)
@@ -1463,7 +1649,10 @@ its producer wait. The guard keeps no state about failures beyond the
 once-a-minute log, so a provider's next call after an outage is answered as
 if none had happened: that is article 8's "resumes on its own". A `Start`
 that failed is tried again with backoff, its abandoned try's context
-cancelled first, so a provider down at start-up resumes the same way.
+cancelled and its `Host` revoked first, and only once that try has
+returned: one provider never has two `Start`s running, so a provider
+down at start-up resumes the same way and one that hangs in `Start`
+holds one goroutine, never a growing number.
 
 **Identity.** Order: workbench token, host tokens, share links, provider.
 A token the chain knows never reaches the provider; a revoked or expired
@@ -1479,8 +1668,11 @@ notifier (each webhook's queue, then each notification sink's), then the
 run engine's `OnActivity`, the hub's sinks in main's order. A
 sink's notifications arrive in the order the hub handed them over; a full
 queue drops its oldest; no sink delays the hub, a session, the engine or
-another sink. A provider's notice never reaches its own sinks, which keeps
-a sink that notifies from looping.
+another sink. A provider's notice reaches only the sinks that list
+`TypeProvider`, and a provider with such a sink cannot send notices, so
+the providers that send notices and those that take them are apart and
+no notice is ever handed back to a sender, through one provider or a
+chain of them.
 
 **Context.** For an attempt: the worktree made and checked, the project
 manifest resolved, then the context asked (at most `ContextWait`), then
@@ -1494,7 +1686,12 @@ after the session records it; denied paths never are.
 taking an answer's keys, resolved once they are written, the first answer
 winning; no timer ends it). The router adds: a question is routed at most
 once per server (the ids routed, kept per session, so a question set
-aside and shown again with its id is not routed twice); a route's answer is
+aside and shown again with its id is not routed twice: an id is resolved
+only when its session neither shows nor keeps it, so the ids the bound
+forgets never show again); a change of a session's attention is never
+lost to the router (a set of dirty session ids, at most one per session,
+nothing dropped), so every routed question is told `Resolved`, however
+busy the other sessions were; a route's answer is
 applied at most
 once and only through the claim, so it is refused once a person answered,
 and a person's answer is refused once the route's was taken; a route
@@ -1511,11 +1708,16 @@ there.
 
 **Sync.** Every doc is handed over after its local commit: the store's
 rename, the ledger's `COMMIT`, Dispatch's commit; a failed write hands
-nothing. Each is queued under the lock that serialises its commits (the
-data directory's observer mutex shared by the store and its `Sub`s,
-`l.mu`, Dispatch's `s.mu`), so docs arrive in the order of their commits,
-and each carries a `Rev` that increases with them; a gap doc precedes
-whatever follows a drop. The start-up's own commits are among them (the
+nothing. Each is marked pending under the lock that serialises its
+commits (the data directory's observer mutex shared by the store and its
+`Sub`s, `l.mu`, Dispatch's `s.mu`), and delivered with its state at
+delivery, so a document's docs follow its commits and, within an epoch,
+carry a `Rev` that increases with them; the pending set holds one entry
+per document and drops nothing, and past its bound gives way to a
+replay. Every epoch begins with a replay of the whole state and ends it
+with `replayed`, at each server's start and after an overflow, so a
+store holds every allowlisted document's last state whatever it missed,
+and no `Rev` of one server lifetime is compared with another's. The start-up's own commits are among them (the
 hooks are installed before `api.New`'s first write). The
 data directory stays the truth: nothing a sync store answers is ever
 written back into it while a server runs, and `Restore` installs only into
@@ -1530,9 +1732,11 @@ files, then writes the manifest last; a document written meanwhile
 appears as one version or the other, never torn (the store renames), and
 a run's record is never ahead of its ledger, which the restored server's
 `syncRecords` mends. Restore reserves the data directory
-(`restore.lock`, which a starting server takes too), checks everything,
-writes everything into the staging directory, syncs it, checks the
-directory is still fresh, then renames into place; nothing is written
+(`restore.lock`, which a starting server takes too), checks everything
+(no reserved path among the entries), writes everything into the staging
+directory, syncs it, checks the directory is still fresh and that no
+top-level name it will rename exists there (`hooks/` aside, moved aside
+first), then renames into place, never over anything; nothing is written
 into the data directory itself before every check has passed, and no
 server starts on it until the reservation is let go.
 
@@ -1540,7 +1744,9 @@ server starts on it until the reservation is let go.
 host whose register says `answerAs`, which a host publishing to a
 switchyard never says. Its fields are bounded as an
 `answer`'s are, plus a display name and a subject; the host refuses
-anything outside them. Nothing else of the host connection, the viewer
+anything outside them. `kept` is host to server only, on the attention
+message, from a host that said `answerAs`: at most two question ids, an
+attention message holding more or an invalid one dropped. Nothing else of the host connection, the viewer
 protocol or the web client's frames changes; the web app sends nothing
 new.
 
@@ -1615,6 +1821,13 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   `TestRestoreRefusesWhileServeStarts` (a restore paused before its
   renames through a seam: a `serve` and a second restore refused, nothing
   written; a `serve` paused inside its reservation: a restore refused),
+  `TestExportOfflineResolvesCatalog` (`--data-dir` with `--config`: the
+  inherited env value in the archive), `TestRestoreFromProviderStreams`
+  (a fake whose `Restore` downloads the archive from an `httptest`
+  server in chunks: installed, the bytes counted as they arrive),
+  `TestRestoreFromProviderEndedShort` (the download failing halfway, and
+  ctx cancelled while it waits on the server: the temporary file gone,
+  the reservation released, the data directory as before, exit 1),
   `TestRestoreFromProvider` (the default: nothing to restore, nothing
   changed; a fake's archive installed; a fake's partial archive, the
   catalog, a crew and a finished run's record with no database, installed
@@ -1635,7 +1848,13 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     `StartWait`: the default answered meanwhile, the given-up try's
     context cancelled before the next, the provider's slots its own from
     the call after a later try succeeds, in the same server; the backoff
-    driven through a clock seam, never slept), `TestStartQueuesHeldUntilStarted`.
+    driven through a clock seam, never slept), `TestStartQueuesHeldUntilStarted`,
+    `TestStartNeverOverlaps` (a `Start` gated shut that ignores its
+    context: past `StartWait` its try is given up, its context cancelled
+    and its `Host` refusing, and through any number of backoffs driven
+    by the clock seam no second `Start` begins while the gate is shut;
+    the gate opened, the next try begins only after it has returned;
+    the provider listed `starting` meanwhile, one goroutine of it alive).
   - PR-6: `TestTokenChainUnchanged` (every kind of token, by header and
     by query, on a server and a switchyard, with no provider and with the
     default: the principal main gives), `TestProviderAskedLast` (a chain
@@ -1657,7 +1876,11 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     (10 sessions, 1,000 changes, each sink's in order), `TestBlockedSinkNeverHoldsTheHub`
     (a sink that never returns: the hub, the sessions, the webhooks and the
     other sinks go on; the drops counted), `TestSinkEventsFilter`,
-    `TestProviderNoticeNotToItsOwnSinks`, `TestSinkPanicRecovered`,
+    `TestProviderNoticesCannotLoop` (two providers, each a sink that
+    lists `TypeProvider` and answers a notice with a notice of its own:
+    both `Host.Notify`s refused, nothing delivered round; a sender and a
+    taker: each notice delivered once, no echo; a sink with nil `Events`
+    given no provider notice), `TestSinkPanicRecovered`,
     `TestSinksInMainsOrder` (the webhooks handed an entry before the run
     engine, as on main).
   - PR-8: `TestContextInTaskFile`, `TestContextBounds` (a block past its
@@ -1680,9 +1903,18 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     for A, one for B, `Resolved` for A once, at its answer),
     `TestResolvedOnWithdrawalWithNoActivity` (a status question withdrawn
     by the screen, no entry recorded, the terminal quiet after: exactly
-    one `Resolved`).
+    one `Resolved`), `TestResolvedAfterABurstOfOtherSessions` (a routed
+    question, the 16 workers held in a gated `Route` by other sessions,
+    changes from 1,000 more sessions, then the question withdrawn and its
+    session quiet: once the gate opens, exactly one `Resolved` for it),
+    `TestRouteOncePerQuestionSetAsidePastTheBound` (A set aside, 70
+    questions routed and answered before A shows again at the done: A
+    not routed again, `Resolved` once at its answer).
   - PR-10: `TestRoutedAnswerReachesAHostedSession` (a real host agent:
-    applied once, the host's attention says so), `TestOlderHostUnsupported`,
+    applied once, the host's attention says so), `TestOlderHostUnsupported`
+    (and its questions not routed), `TestHostedSetAsidePastTheBound` (a
+    real host agent: A set aside, 70 questions routed between, A shown
+    again: not routed again, `Resolved` once at its end),
     `TestSwitchyardNeverRoutesAHostedSession` (a switchyard server:
     `Host.Submit` to a hosted session `ErrUnsupported`, no `answer_as`
     sent).
@@ -1690,7 +1922,21 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     commits reach a fake; the token file, `links/`, `tls/`, `hooks/` and
     `ext/` never), `TestSyncAfterLocalCommit` (the fake reads the file,
     the ledger's run row and Dispatch's receipt as each doc arrives and
-    finds them committed), `TestSyncGap`, `TestSyncDefaultKeepsNothing`,
+    finds them committed), `TestSyncReplayAtStart` (a data directory
+    with a catalog, crews, records and ledger runs made before the server
+    starts: `replay`, each document once, the Dispatch `log` doc,
+    `replayed`), `TestSyncOverflowReplays` (the fake's delivery held
+    shut, more than `SyncPending` documents changed, one of them changed
+    once more and quiet after: once opened, a new epoch's replay, that
+    document with its last bytes, nothing missing), `TestSyncPendingOnce`
+    (a document saved 100 times while delivery is held: delivered once,
+    its last state), `TestSyncLargeDocInParts` (a 4 MiB run record: four
+    parts of one path, `Rev` and epoch whose bytes join to the file),
+    `TestSyncEpochAcrossRestarts` (two server lifetimes against one fake
+    that keeps its cursor: the second begins with a new epoch's replay, a
+    record deleted while no server ran absent from it, and a save whose
+    `Rev` equals one of the first lifetime's told apart by its epoch),
+    `TestSyncDefaultKeepsNothing`,
     `TestSyncCatalogMasksEnv` (a saved agent's env value never in the
     doc, every value `catalog.RedactedValue`),
     `TestSyncStartupCommits` (a restart with an unfinished managed run
@@ -1715,22 +1961,28 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   with a repair, several inputs, a checkpoint, a manifest, a cut file),
   `TestTaskFileContextSection` (the fence longer than the body's
   backticks), `TestContextCutFirst`, `TestEngineAsksContextOutsideTheLock`.
-- `internal/session` (PR-9): `TestAnswerAsChoice`,
+- `internal/session` (PR-9): `TestKept` (the own question set aside and
+  a held-over one listed, a shown one never, at most two), `TestAnswerAsChoice`,
   `TestAnswerAsOnlyChoices`, `TestAnswerAsHeldTurn`,
   `TestAnswerAsAgainstAViewer` (the two at once, exactly one written,
   `-count=30`), `TestAnswerAsRecordsTheName`.
 - `internal/proto` (PR-10): `TestHostAnswerAsBounds` (each field at and
   past its bound, exactly one of input and text, the largest message under
-  `MaxHostMessage`), `TestRegisterAnswerAs`.
+  `MaxHostMessage`), `TestRegisterAnswerAs`, `TestHostAttentionKeptBounds`
+  (two ids taken, three or an invalid one refused, an older message
+  without the field unchanged).
 - `internal/hostagent` (PR-10): `TestAnswerAsApplied`,
   `TestAnswerAsInvalidDropped`, `TestAnswerAsNeverInTheControlLoop`,
   `TestAnswerAsQueueBounded` (a burst of text answers while the program
   reads nothing, stopped with SIGSTOP: at most four wait, the rest
   dropped and logged, one goroutine applying them, all ended with the
   connection), `TestSwitchyardAnswerAsRefused` (an uplink's register
-  says no `answerAs`; a `HostAnswerAs` sent anyway types nothing).
+  says no `answerAs`; a `HostAnswerAs` sent anyway types nothing; no
+  `kept` sent), `TestKeptSent` (a question set aside while the screen
+  shows another state: an attention message with only `kept` changed).
 - `internal/signal` (PR-10): `TestHostedAnswerAs` (sent only to a host
-  that said so).
+  that said so), `TestHostedKept` (an attention equal to the shown one
+  with a new `kept`: the kept ids taken, nothing recorded).
 - `internal/store` (PR-11): `TestObserveAfterRename` (a failing rename:
   no event), `TestObserveInheritedBySub`, `TestPlainFileNoBytes`,
   `TestObserveInCommitOrder` (two writers of one document, through the
@@ -1760,7 +2012,18 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   a run finished and a new run made: restored and served, every managed
   run's record equals its ledger's), `TestReserve` (exclusive; a second
   refused with the file named; released after the renames),
-  `TestExportKeepsCatalogEnv`.
+  `TestExportKeepsCatalogEnv`, `TestExportResolvesInheritedEnv` (a
+  configured agent with an env value, edited so that its saved override
+  stores the mask and omits its adapter: exported, restored into a
+  directory served with no config, the agent's env value and adapter the
+  source's; restored where the config holds the same value, masked again
+  at start), `TestRestoreRefusesReservedPaths` (an archive holding
+  `restore.lock`, `tls/x`, `ext/p/x`, `workbench-token`, a `-wal` file, a
+  `.tmp` file: each refused before a byte is written),
+  `TestRestoreNeverRenamesOver` (a fresh directory holding an unrelated
+  `config.json`: an archive with `data/config.json` refused before any
+  rename, the file as it was; an archive without it installed, the file
+  kept).
 - `internal/opencore` (PR-5, PR-14): `TestModuleKeepsTheRules`,
   `TestEachRuleCatchesItsPlant`, `TestPlatformTagsMatchTheToolchain`;
   PR-14 adds the `entitlements` fixture.
@@ -1768,15 +2031,26 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   `FakeHost` and `FakeRuntime` among them);
   `TestSuitePassesEveryDefault` (`RunAll` over `ext/local`'s defaults);
   `TestSuitePassesEveryFake`; `TestSuiteCatchesABreach` (a provider that
-  answers late, one that says ok for an empty token, one that returns
-  nine blocks, a `Start` that waits on its host: each failing check
-  named, through a recording `exttest.T`).
+  dials its service under the call's context, one that waits on its
+  network on the call's path under a context of its own (the gate shut),
+  one that says ok for an empty token, one that returns nine blocks, a
+  `Start` that waits on its host: each failing check named, through a
+  recording `exttest.T`), `TestRestoreMayStream` (a fake `Restore`
+  streaming from an `httptest` server through the `Network`: passed;
+  ended by ctx while the gate is shut: ctx's error).
 
 **Web** (PR-10, PR-16): `web/app/utils/capabilities.test.ts` (the words for
-none, some and a failed provider; `has`); Playwright `settings.spec.ts`'s
+none, some and a failed provider; `has`); `web/app/composables/useCapabilities.test.ts`
+(fake timers and a stubbed fetch: a reply with a provider `starting`,
+then one `ready`: read again, the words without "(starting)", and no
+read after; nothing re-read while none is starting); Playwright `settings.spec.ts`'s
 "in a browser, Settings says what the server is and who sponsors it" also
 reads `[data-about-row="extensions"]`: "None: the open-source feature set"
-on the e2e server, a plain build. PR-10 changes `protocol.ts`'s types
+on the e2e server, a plain build; and a test of its own that answers
+`/api/capabilities` through `page.route`, first with a provider
+`starting`, then `ready`, waits for the second request
+(`page.waitForRequest`) and then for the row to read `ready`, with no
+reload and the same token. PR-10 changes `protocol.ts`'s types
 only; its typecheck, vitest and Playwright run as for any web change.
 
 **By hand**, what tests cannot reach:
@@ -2038,9 +2312,11 @@ from section 2.4, as a row amending it.
   first, all of them, as main sends them, and a provider's follow, at most
   eight of its own; `GET /api/ice` answers the configured STUN URLs only,
   as main does, and never asks the provider.
-- **E11, a provider's notice.** Typed `provider`, sent to every sink but
-  the sender's own; a webhook cannot list it (the config's validation
-  knows no such event), so webhooks behave as before.
+- **E11, a provider's notice.** Typed `provider`, sent only to the sinks
+  that list `TypeProvider`, and a provider with such a sink cannot send
+  notices, so no notice loops between providers; a webhook cannot list it
+  (the config's validation knows no such event), so webhooks behave as
+  before.
 - **E12, a route in the activity.** A route that names destinations is one
   `status` entry in the session's activity; the empty route records
   nothing, so the free build's activity is unchanged.
@@ -2049,8 +2325,12 @@ from section 2.4, as a row amending it.
   never a token, a saved agent's env value (the catalog goes masked, as
   `GET /api/catalog` shows it), a share link's hash, a certificate, the
   hook assets or a provider's own directory. The bytes of a plain file
-  never leave `internal/store`. Export, the person's own file, keeps the
-  catalog whole and says so.
+  never leave `internal/store`. Each document is delivered with its state
+  when delivered, in parts past 1 MiB, and every epoch (each server's
+  start, an overflow) begins with a replay of the whole state, so a store
+  can always catch up from what it is given. Export, the person's own
+  file, keeps the catalog whole, resolved against the configuration so it
+  stands without it, and says so.
 - **E14, export's contents and restore's target.** The data directory
   minus its secrets, locks, temporary files and providers' state, the two
   databases snapshotted; restore only into a data directory with no server
@@ -2062,7 +2342,9 @@ from section 2.4, as a row amending it.
   --provider`, with no server running; never at start, where it would make
   the server wait on a service. `Restore` is given its own directory (it
   is never started there) and may return any part of `data/` the
-  installer's checks pass; what it must hold to be useful is CS1's.
+  installer's checks pass; what it must hold to be useful is CS1's. It is
+  the one call that may reach the service on its own path, for as long as
+  its download takes, ended by the person and leaving nothing behind.
 - **E16, capabilities for the admin.** The route needs the workbench token
   (BK0 may open it to an agent later); a provider whose `Start` has not yet
   succeeded is listed as `starting`, so Settings never claims a feature
@@ -2080,10 +2362,12 @@ from section 2.4, as a row amending it.
   at most 16 providers in a list, which bounds the capabilities reply and
   the hub's fan-out.
 - **E21, the waits and queues.** Identity 1 s, a route 5 s, context 5 s,
-  ICE 2 s, a start 5 s, a delivery 10 s, and 250 ms for the suite's check
-  that a call answers locally; queues of 256 for sinks (a
-  webhook's), 1,024 for sync docs and file touches, 256 for questions to
-  route with 16 routed at once, 4 routed answers waiting on a host; 16
+  ICE 2 s, a start 5 s, a delivery 10 s (the suite checks that a call
+  answers locally by its network, never by a time); queues of 256 for sinks (a
+  webhook's), 1,024 for file touches, a pending set of 65,536 sync
+  documents (a replay past it), a set of dirty sessions for the router
+  (one entry per session, nothing dropped) with 16 routed at once, 4
+  routed answers waiting on a host; one `Start` at a time per provider; 16
   direct calls in flight per provider and kind. They bound a hang, not a
   normal answer: a provider answers from what it holds (article 8), and
   the contract suite checks that it does.
