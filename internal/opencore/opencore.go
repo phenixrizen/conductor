@@ -365,7 +365,8 @@ type modFile struct {
 
 // checkGoMod applies the go-mod rule to the text of go.mod or go.work
 // (name) and returns its problems and what it names; an error is a line
-// too long to read. It reads the directives the go command writes, one
+// too long to read or a string the go command would refuse (modTokens
+// splits each line). It reads the directives the go command writes, one
 // per line or in a parenthesised block: require, replace (either side of
 // the arrow; a directory on the right, unless it replaces Module itself),
 // tool and use (a directory other than the root's).
@@ -376,12 +377,10 @@ func checkGoMod(name string, data []byte) ([]Problem, modFile, error) {
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for n := 1; sc.Scan(); n++ {
-		text := sc.Text()
-		if i := strings.Index(text, "//"); i >= 0 {
-			text = text[:i]
+		fields, err := modTokens(sc.Text())
+		if err != nil {
+			return nil, modFile{}, fmt.Errorf("opencore: %s:%d: %w", name, n, err)
 		}
-		text = strings.NewReplacer("(", " ( ", ")", " ) ", "=>", " => ").Replace(text)
-		fields := strings.Fields(text)
 		if len(fields) == 0 {
 			continue
 		}
@@ -442,6 +441,63 @@ func checkGoMod(name string, data []byte) ([]Problem, modFile, error) {
 		return nil, modFile{}, fmt.Errorf("opencore: %s: %w", name, err)
 	}
 	return problems, file, nil
+}
+
+// modTokens splits a line of go.mod or go.work into tokens as the go
+// command's lexer does: outside a string, "//" begins a comment that ends
+// the line; a Go string ("..." with escapes) is one token, kept quoted,
+// whatever it holds (a "//", a space, a parenthesis); ( ) [ ] { } and ,
+// are tokens of their own; anything else runs to a space, one of those
+// marks or a comment. "=>" is split out of a word too, which the go
+// command would refuse, so the reading is never laxer than the build's. A
+// string not closed on its line or not a valid Go string, and a `...`
+// string, are errors, as they are to the go command.
+func modTokens(line string) ([]string, error) {
+	const marks = "()[]{},"
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f' }
+	var out []string
+	for i := 0; i < len(line); {
+		c := line[i]
+		switch {
+		case space(c):
+			i++
+		case strings.HasPrefix(line[i:], "//"):
+			return out, nil
+		case strings.IndexByte(marks, c) >= 0:
+			out = append(out, line[i:i+1])
+			i++
+		case strings.HasPrefix(line[i:], "=>"):
+			out = append(out, "=>")
+			i += 2
+		case c == '`':
+			return nil, fmt.Errorf("a `...` string, which the go command refuses: %s", line[i:])
+		case c == '"':
+			j := i + 1
+			for ; j < len(line) && line[j] != c; j++ {
+				if line[j] == '\\' {
+					j++
+				}
+			}
+			if j >= len(line) {
+				return nil, fmt.Errorf("a string not closed on its line: %s", line[i:])
+			}
+			tok := line[i : j+1]
+			if _, err := strconv.Unquote(tok); err != nil {
+				return nil, fmt.Errorf("string %s: %w", tok, err)
+			}
+			out = append(out, tok)
+			i = j + 1
+		default:
+			j := i
+			for j < len(line) && !space(line[j]) && strings.IndexByte(marks, line[j]) < 0 &&
+				!strings.HasPrefix(line[j:], "//") && !strings.HasPrefix(line[j:], "=>") {
+				j++
+			}
+			out = append(out, line[i:j])
+			i = j
+		}
+	}
+	return out, nil
 }
 
 // localPath reports whether a replacement is a directory rather than a

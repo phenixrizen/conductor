@@ -1,6 +1,7 @@
 package opencore
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,6 +220,51 @@ replace github.com/coder/websocket v1.8.15 => /src/websocket
 	}
 }
 
+// TestGoModQuotedTokens: a path written as a Go string is one token
+// whatever it holds, in go.mod and in go.work alike: a "//" inside it is
+// not a comment, and a space or a parenthesis does not split it, so a
+// quoted directory on the right of a replace is reported like a bare one.
+// A comment after a string is still a comment.
+func TestGoModQuotedTokens(t *testing.T) {
+	directives := "replace example.com/helper => \"./testdata//helper\"\n" +
+		"replace example.com/spaced => \"./my dir/helper\" // github.com/rocksolidlabs/in-a-comment\n" +
+		"replace (\n\texample.com/paren => \"./a(b)\"\n)\n" +
+		"replace \"example.com/q\" => \"github.com/rocksolidlabs//x\" v1.0.0\n"
+	want := []string{
+		"%s:%d: go-mod: replace example.com/helper with the directory ./testdata//helper",
+		"%s:%d: go-mod: replace example.com/spaced with the directory ./my dir/helper",
+		"%s:%d: go-mod: replace example.com/paren with the directory ./a(b)",
+		"%s:%d: go-mod: replace github.com/rocksolidlabs//x",
+	}
+	lines := []int{1, 2, 4, 6}
+	for _, name := range []string{"go.mod", "go.work"} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{"go.mod": "module " + Module + "\n", "x.go": "package x\n"}
+			head := "go 1.26.0\nuse \"./\" // the root\n"
+			if name == "go.mod" {
+				head = "module \"" + Module + "\" // quoted\ngo 1.26.0\n"
+			}
+			files[name] = head + directives
+			dir := t.TempDir()
+			writeFiles(t, dir, files)
+			problems, err := Check(dir)
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			var got, wanted []string
+			for _, p := range problems {
+				got = append(got, p.String()[:strings.Index(p.String(), ",")])
+			}
+			for i, w := range want {
+				wanted = append(wanted, fmt.Sprintf(w, name, lines[i]+2))
+			}
+			if !slices.Equal(got, wanted) {
+				t.Errorf("problems =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wanted, "\n"))
+			}
+		})
+	}
+}
+
 // TestExtStdKnowsADotlessModule: an import under ext/ with no dot in its
 // first element is the standard library's only when no module go.mod or
 // go.work requires or replaces holds it; helper, replaced by another
@@ -330,6 +376,9 @@ func TestCheckRefuses(t *testing.T) {
 		"no go.mod":      {"x.go": "package x\n"},
 		"another module": {"go.mod": "module example.com/fork\n", "x.go": "package x\n"},
 		"a broken file":  {"go.mod": "module " + Module + "\n", "x.go": "package x\n\nimport (\n"},
+		"an open string": {"go.mod": "module " + Module + "\n\nreplace example.com/h => \"./testdata//h\n", "x.go": "package x\n"},
+		"a raw string":   {"go.mod": "module " + Module + "\n\nreplace example.com/h => `./testdata//h`\n", "x.go": "package x\n"},
+		"a bad string":   {"go.mod": "module " + Module + "\n", "go.work": "go 1.26.0\n\nreplace example.com/h => \"./h\\q\"\n", "x.go": "package x\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
