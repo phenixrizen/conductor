@@ -406,10 +406,14 @@ type attempt struct {
 	// trees are the trees the attempt made usable (steps.go): its
 	// worktree, its checkout; they end once it closes. ks numbers the
 	// receipts of each id on the attempt (nextK). uncounted says it closed
-	// as its worktree could not be made usable (failUnusable).
+	// as its worktree could not be made usable (failUnusable). preview is
+	// its worktree's preview URL from the worktree's tree.ready until the
+	// first of its close and a service of the worktree exiting on its own,
+	// "" otherwise (steps.go: treeReady, watchService).
 	trees     []*tree
 	ks        map[string]int
 	uncounted bool
+	preview   string
 }
 
 // input is a result a task starts from or has at hand.
@@ -461,6 +465,12 @@ type AttemptState struct {
 	// Steps are the attempt's receipts, its checks' and its trees' steps,
 	// in a task's own read from the ledger; the run's read leaves them out.
 	Steps []StepState `json:"steps,omitempty"`
+	// Preview is the URL a person opens to look at the attempt's work: its
+	// worktree's preview, from the worktree's tree.ready until the first
+	// of the attempt's close and a service of the worktree exiting on its
+	// own; "" otherwise, for a run that is stopping, and for a run the
+	// engine has let go (steps.go).
+	Preview string `json:"preview,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -507,7 +517,7 @@ func (r *run) taskStates() []TaskState {
 			st.Blocker = &Blocker{Reason: b.reason, Message: b.message, By: b.by, At: b.at}
 		}
 		if n := len(t.attempts); n > 0 {
-			as := attemptStateOf(t.attempts[n-1])
+			as := r.attemptState(t.attempts[n-1])
 			st.Attempt = &as
 		}
 		if res := t.result; res != nil {
@@ -523,7 +533,18 @@ func (r *run) taskStateOf(t *task) TaskState {
 	return r.taskStates()[slices.Index(r.tasks, t)]
 }
 
-// attemptStateOf is a as reported. The caller holds e.mu.
+// attemptState is a as r reports it: with its preview, but for a run that
+// is stopping, whose teardown has begun. The caller holds e.mu.
+func (r *run) attemptState(a *attempt) AttemptState {
+	as := attemptStateOf(a)
+	if !r.stopping {
+		as.Preview = a.preview
+	}
+	return as
+}
+
+// attemptStateOf is a as reported, without its preview. The caller holds
+// e.mu.
 func attemptStateOf(a *attempt) AttemptState {
 	as := AttemptState{N: a.n, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch, Start: a.start, Result: a.result, State: a.state, Stage: a.stage, Error: a.err}
 	if !a.launchedAt.IsZero() {
@@ -1269,6 +1290,9 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 func (e *Engine) endAttempt(r *run, a *attempt, state, stage, errText string) {
 	a.state, a.stage, a.err, a.closedAt = state, stage, errText, time.Now().UTC()
 	a.provisional = false // closed, it is an attempt made, whatever it got to
+	// Its preview goes with the close, before its trees' end signals a
+	// service and before their ports are let go (steps.go).
+	a.preview = ""
 	if state == ledger.AttemptCancelled {
 		// Its context ends once the cancel is committed (pendingCancels).
 		r.pendingCancels = append(r.pendingCancels, a.cancel)
@@ -1380,11 +1404,12 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 // step recorded before it is taken: the member's previous session let go,
 // the place among the sessions reserved, the attempt reserved in the
 // ledger, the worktree at the start commit, the project manifest resolved
-// for it, the task files, the manifest's setup phase, the launch, the
-// line. A failure fails the attempt at its stage; a refusal at the
-// reservation spends nothing; a worktree the manifest could not make
-// usable fails it uncounted (failUnusable). It runs on a goroutine of its
-// own, on the attempt's context, and ends the start it was reserved under.
+// for it, the task files, the manifest's phases (setup, services, ready
+// probes, then tree.ready), the launch, the line. A failure fails the
+// attempt at its stage; a refusal at the reservation spends nothing; a
+// worktree the manifest could not make usable fails it uncounted
+// (failUnusable). It runs on a goroutine of its own, on the attempt's
+// context, and ends the start it was reserved under.
 func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	defer r.starts.Done()
 	t, m := a.t, a.m
@@ -1527,13 +1552,29 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// The project manifest, resolved for the worktree at its commit,
 	// before the task files are written, so they carry what it made; one
 	// that cannot be is the worktree's failure, uncounted.
+	// The worktree comes back held (resolveTree) and stays held through
+	// the task files, the phases and the launch, until its session is
+	// recorded: a close that comes meanwhile ends the tree, and runs its
+	// cleanup, only once the hold is let go (release), which every way out
+	// does; one that comes during the launch stops no session, there being
+	// none yet, so the tree's end waits on the hold and then for the
+	// session the record stops (endTree).
 	var tr *tree
+	held := false
+	release := func() {
+		if held {
+			held = false
+			tr.busy.Done()
+		}
+	}
 	if r.hasManifest() {
 		tr, err = e.resolveTree(ctx, r, a, ledger.TreeWorktree, a.worktree, cwd, a.start)
+		held = tr != nil
 		if errors.Is(err, errAttemptClosed) {
 			return // cancelled or stopped meanwhile: what closed it wrote it
 		}
 		if err != nil {
+			release()
 			fail("manifest", err, false, true)
 			return
 		}
@@ -1546,36 +1587,32 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		err = writeTaskFiles(a.worktree, r.prefix, md, js, more)
 	}
 	if err != nil {
+		release()
 		fail("task file", err, false, false)
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
 		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
 	}, giveUp); err != nil {
+		release()
 		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false, false)
 		return
 	}
-	// The manifest's setup phase, in the worktree, before the member
-	// starts: a step that fails here is the host's or the manifest's, not
-	// the agent's, which has typed nothing yet. The worktree stays held
-	// through the launch, until its session is recorded: a close that
-	// comes meanwhile stops no session, there being none yet, so the
-	// tree's end waits on the hold and then for the session the record
-	// stops (endTree).
-	held := false
-	release := func() {
-		if held {
-			held = false
-			tr.busy.Done()
-		}
-	}
+	// The manifest's phases, in the worktree, before the member starts:
+	// its setup steps, its services, its ready probes and tree.ready, so
+	// the session starts in a tree that answers. A step, a service or a
+	// probe that fails here is the host's or the manifest's, not the
+	// agent's, which has typed nothing yet.
 	if tr != nil {
-		if !e.hold(tr) {
+		if e.ending(tr) {
+			release()
 			return // closed meanwhile: its tree is ending
 		}
-		held = true
 		if stage, err := e.prepareTree(ctx, r, a, tr); err != nil {
 			release()
+			if errors.Is(err, errAttemptClosed) {
+				return // closed meanwhile: what closed it wrote it
+			}
 			fail(stage, err, false, true)
 			return
 		}

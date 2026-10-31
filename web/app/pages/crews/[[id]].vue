@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -112,7 +112,7 @@ async function loadSelected() {
     const fresh = await api.getCrew(id)
     const before = full.value[id]
     const d = drafts.value[id]
-    if (d && before && crewKey(d) === crewKey(before)) drafts.value = { ...drafts.value, [id]: toDraft(fresh) }
+    if (d && before && crewKey(d) === crewKey(before)) drafts.value = { ...drafts.value, [id]: keepParked(toDraft(fresh), d) }
     full.value = { ...full.value, [id]: fresh }
   } catch (e) {
     const next = { ...full.value }
@@ -271,7 +271,8 @@ async function save(): Promise<CrewInfo | undefined> {
     if (key === NEW) total.value += 1
     // A new crew moves to its page before its draft goes, so /crews/new never shows without it in between.
     if (key === NEW) await router.replace(`/crews/${encodeURIComponent(c.id)}`)
-    const next = { ...drafts.value, [c.id]: toDraft(c) }
+    // The lists the file switch set aside stay with the draft: turning it off gives them back after the save.
+    const next = { ...drafts.value, [c.id]: keepParked(toDraft(c), d) }
     if (key === NEW) delete next[NEW]
     drafts.value = next
     return c

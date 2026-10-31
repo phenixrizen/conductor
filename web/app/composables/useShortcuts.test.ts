@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, PALETTE_SHORTCUTS, SESSION_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
+import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, DISPATCH_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, PALETTE_SHORTCUTS, SESSION_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
 
 const fRows = (g: ShortcutGroup) => g.rows.filter((r) => r.keys.length === 1 && r.keys[0] === 'F')
 
@@ -99,5 +99,25 @@ describe("the palette's reach (#303)", () => {
     expect(SESSION_SHORTCUTS.rows[0]).toEqual({ keys: ['S'], label: 'Share this session' })
     expect(SESSION_SHORTCUTS.rows[1]).toEqual({ keys: ['X'], label: 'Stop this session: the palette asks; Enter stops, Escape cancels', terminal: ['alt', 'X'] })
     expect(SESSION_SHORTCUTS.rows.slice(2)).toEqual(EDITOR_SHORTCUTS.rows)
+  })
+})
+
+describe("Dispatch's keys (docs/plans/dispatch.md, Owner decisions, 9 and 10)", () => {
+  it('go to Dispatch with G then D, and Alt+D from a terminal, which hands the D back', () => {
+    const row = GLOBAL_SHORTCUTS.rows.find((r) => r.keys[0] === 'G' && r.keys[1] === 'D')
+    expect(row).toEqual({ keys: ['G', 'D'], label: 'Go to Dispatch', terminal: ['alt', 'D'] })
+    // After Crews, as the sidebar's foot has it.
+    const i = GLOBAL_SHORTCUTS.rows.indexOf(row!)
+    expect(GLOBAL_SHORTCUTS.rows[i - 1]?.label).toBe('Go to Crews')
+    expect(ALT_PASSTHROUGH_CODES.has('KeyD')).toBe(true)
+  })
+  it("list the list's keys, none of them reaching past a terminal", () => {
+    expect(DISPATCH_SHORTCUTS.title).toBe('Dispatch')
+    expect(DISPATCH_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['J', 'K', 'enter', 'escape'])
+    for (const r of DISPATCH_SHORTCUTS.rows) {
+      expect(r.terminal).toBeUndefined()
+      expect(r.label).not.toMatch(/in a terminal/)
+    }
+    expect(DISPATCH_SHORTCUTS.rows[0]!.label).toMatch(/from the last, the first/)
   })
 })

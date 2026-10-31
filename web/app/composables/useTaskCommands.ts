@@ -1,5 +1,5 @@
 import type { RunTask } from '~/composables/useSessions'
-import { CommandRefused, sendCommand, type TaskCommand } from '~/utils/tasks'
+import { CommandRefused, commandBody, sendCommand, type TaskCommand } from '~/utils/tasks'
 
 /**
  * The commands a person sends a managed run's task (#334, row 7): retry,
@@ -22,7 +22,7 @@ export function useTaskCommands(runId: () => string) {
   async function send(t: Pick<RunTask, 'id'>, command: TaskCommand): Promise<boolean> {
     busy.value = `${t.id}:${command}`
     try {
-      const r = await sendCommand((body) => api.taskCommand(runId(), t.id, command, body))
+      const { receipt: r } = await sendCommand((body) => api.taskCommand(runId(), t.id, command, body), commandBody())
       toast.add({ title: done[command](t.id), description: r.repeat ? 'It was done already.' : undefined, icon: icons[command], color: 'success' })
       return true
     } catch (e) {

@@ -55,6 +55,9 @@ func cancelRuns(e *Engine) []*run {
 		r.stopping = true
 		runs = append(runs, r)
 		cancels = append(cancels, r.cancel)
+		// The services of its trees end with the teardown context they
+		// run under, killed with their groups, as at the shutdown's cut.
+		cancels = append(cancels, r.teardownCancel)
 	}
 	e.mu.Unlock()
 	for _, cancel := range cancels {
@@ -68,12 +71,29 @@ func cancelRuns(e *Engine) []*run {
 // waitRuns waits out the starts (the prerequisites among them), handoffs
 // and checks under way in runs, which cancelRuns ended: none is added after
 // it (each Add is made under e.mu by code that refuses a stopping run);
-// then the trees being ended, whose last commits follow their attempts'.
+// then the trees being ended, whose last commits follow their attempts';
+// then the watchers of every service a tree of theirs started, killed with
+// the teardown, each recording its end.
 func waitRuns(e *Engine, runs []*run) {
 	for _, r := range runs {
 		waitFor(context.Background(), &r.starts)
 		waitFor(context.Background(), &r.deliveries)
 		waitFor(context.Background(), &r.checks)
 		e.waitTrees(context.Background(), r)
+		e.mu.Lock()
+		var watched []chan struct{}
+		for _, t := range r.tasks {
+			for _, a := range t.attempts {
+				for _, tr := range a.trees {
+					for _, ts := range tr.services {
+						watched = append(watched, ts.watched)
+					}
+				}
+			}
+		}
+		e.mu.Unlock()
+		for _, w := range watched {
+			<-w
+		}
 	}
 }

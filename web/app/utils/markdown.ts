@@ -20,6 +20,11 @@ export interface RenderOptions {
   rawUrl?: (path: string) => string | null
   /** Whether images on the web are loaded (they tell a third party the file was opened). Off by default. */
   allowRemote?: boolean
+  /**
+   * Whether a relative link opens its file (`data-md-link`). False where the text has no folder to resolve one against (a Dispatch
+   * ticket's description): the link's words stay, as words, and nothing opens. On by default.
+   */
+  relativeLinks?: boolean
 }
 
 export interface Rendered {
@@ -119,6 +124,8 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     }
   })
 
+  // Each link's open says whether it was held as words (a relative link with relativeLinks off), for its close: links do not nest.
+  const held: boolean[] = []
   md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
     const t = tokens[idx]!
     const href = String(t.attrGet('href') ?? '')
@@ -129,12 +136,18 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
       t.attrSet('target', '_blank')
       t.attrSet('rel', 'noopener noreferrer')
     } else if (href && !href.startsWith('#')) {
+      if (opts.relativeLinks === false) {
+        held.push(true)
+        return `<span class="md-link-held" title="${escapeHtml(href)}">`
+      }
       // A file in the repository: the component opens it in a tab.
       t.attrSet('data-md-link', resolveRelative(opts.dir, localPath(href)))
       t.attrSet('href', '#')
     }
+    held.push(false)
     return self.renderToken(tokens, idx, options)
   }
+  md.renderer.rules.link_close = (tokens, idx, options, _env, self) => (held.pop() ? '</span>' : self.renderToken(tokens, idx, options))
 
   md.renderer.rules.image = (tokens, idx, options, env, self) => {
     const t = tokens[idx]!
