@@ -3065,7 +3065,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (#422), the host's names, the ports and the state directory (#426), the
   services, readiness and the preview (#441), verify and cleanup (#498), the
   crew editor's Project manifest section (#454) and the run page's receipts
-  and preview (this entry's PR, #399). A managed crew carries a project
+  and preview (#502). A managed crew carries a project
   manifest (never "workspace" for a tree; not the catalog's agent recipes):
   the crew's own, counted by the server at each change (`crew:<revision>` on
   every receipt), or `conductor.manifest.json`, read at each tree's commit
@@ -3085,11 +3085,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   SHA-256. On the run page (this PR): each attempt's receipts under it
   (`RunAttemptSteps.vue`, a held run and a let-go one alike: "exited 0 in
   4.2 s", "timed out after 60 s", "ready after 3 tries", "running since …",
-  "interrupted"), each with Log (fetched with the bearer header, shown with
-  its SHA-256, saved from a blob URL); the run's prerequisites above the
-  tasks; the header's `paused` badge titled with the run's own words and the
-  words beside it, and `cleaning up` while trees end; a ready task's words
-  "ready, the dispatch is paused: <why>"; and Open preview on the task's row
+  "interrupted", and "failed in 3.0 s (exited 0)" for a step that exited 0
+  and changed tracked files), each with Log (fetched with the bearer header,
+  shown with its SHA-256, saved from a blob URL as the bytes the server
+  hashed); the run's prerequisites above the tasks, or the run's words when a
+  manifest `env` name stopped them before any ran; the header's `paused`
+  badge titled with the run's own words and the words beside it, and
+  `cleaning up` while trees end; a ready task's words "ready, the dispatch is
+  paused: <why>" when its reason is the pause's; and Open preview on the task's row
   and in its palette row's → actions while the attempt's `preview` is set,
   in a new tab (the preview is on the server's loopback, not proxied, and an
   iframe would be mixed content under TLS). The example crew run by tasks

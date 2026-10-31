@@ -13,8 +13,10 @@ import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
 // task's row and in the palette's → actions while the attempt runs, opening
 // a new tab, and gone from both once the task succeeded, its tree ended
 // after with its service's process gone; a prerequisite that fails pauses
-// the run with the step named and Resume runs it again; a task cancelled
-// mid-step gets its tree's cleanup receipt. Each wait is on the state the
+// the run with the step named and Resume runs it again; a manifest env name
+// the server does not pass pauses it before any command, the manifest's
+// section saying why; a task cancelled mid-step gets its tree's cleanup
+// receipt. Each wait is on the state the
 // server reports (a receipt's state, the attempt's preview, the run's
 // cleaning count), never on the clock; a check that holds the attempt open
 // waits for a file the spec writes. Rows are found by their ids.
@@ -90,9 +92,16 @@ async function launch(api: Api, crewId: string): Promise<string> {
 }
 
 
-/** An attempt's receipts, from the steps route. */
+/**
+ * An attempt's receipts, from the steps route; none while the attempt is not in the ledger yet (its `attempt.reserved` commits after
+ * the launch answers, and the route says `404 not_found` until then). Any other refusal fails the test.
+ */
 async function steps(api: Api, run: string, n: number): Promise<Step[]> {
-  return (await api.ok<{ steps: Step[] }>('GET', `/api/runs/${encodeURIComponent(run)}/tasks/build/attempts/${n}/steps`)).steps
+  const path = `/api/runs/${encodeURIComponent(run)}/tasks/build/attempts/${n}/steps`
+  const r = await api.call<{ steps?: Step[]; error?: { code?: string } }>('GET', path)
+  if (r.status === 404 && r.body?.error?.code === 'not_found') return []
+  if (r.status >= 300) throw new Error(`GET ${path}: ${r.status} ${JSON.stringify(r.body)}`)
+  return r.body.steps ?? []
 }
 
 /** The receipt of phase:id:k, or undefined before it is put. */
@@ -164,7 +173,8 @@ test('the receipts and their logs, Open preview while the attempt runs and gone 
     'e2e manifest preview',
     {
       ports: ['web'],
-      setup: [{ id: 'state', argv: ['sh', '-c', 'echo made by setup | tee "$1"', 'sh', '${CONDUCTOR_STATE_DIR}/setup.txt'] }],
+      // The log ends inside a character (a byte the proc bound could cut it at): Save must keep the bytes the server hashed.
+      setup: [{ id: 'state', argv: ['sh', '-c', 'echo made by setup | tee "$1"; printf "cut \\342\\234"', 'sh', '${CONDUCTOR_STATE_DIR}/setup.txt'] }],
       services: [{ id: 'web', argv: ['sh', '-c', 'echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; exec python3 -m http.server "$CONDUCTOR_PORT_WEB" --bind 127.0.0.1'] }],
       ready: [{ id: 'up', url: 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/', intervalSeconds: 1, timeoutSeconds: 60 }],
       preview: 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/',
@@ -235,16 +245,20 @@ test('the receipts and their logs, Open preview while the attempt runs and gone 
   const shown = (await modal.locator('[data-step-log-sha]').textContent())?.trim() ?? ''
   const res = await fetch(`${api.server.baseURL}/api/runs/${encodeURIComponent(runId)}/tasks/build/attempts/1/steps/state/1/log`, { headers: { Authorization: `Bearer ${api.server.token}` } })
   expect(res.status).toBe(200)
-  const body = await res.text()
+  const bytes = Buffer.from(await res.arrayBuffer())
+  const body = new TextDecoder().decode(bytes)
+  expect(bytes.subarray(-6).toString('latin1')).toBe('cut \xe2\x9c')
   const header = res.headers.get('X-Conductor-Log-SHA256') ?? ''
   expect(header).toMatch(/^[0-9a-f]{64}$/)
-  expect(createHash('sha256').update(body).digest('hex')).toBe(header)
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(header)
   expect(shown).toBe(header)
   expect(await modal.locator('[data-step-log-text]').textContent()).toBe(body)
-  // Save downloads the log as it was read.
+  // Save downloads the log's bytes as the server sent them, so the file matches the hash shown.
   const [download] = await Promise.all([page.waitForEvent('download'), page.locator('[data-step-log-save]').click()])
   expect(download.suggestedFilename()).toBe(`${runId}-build-1-setup-state-1.log`)
-  expect(readFileSync(await download.path(), 'utf8')).toBe(body)
+  const saved = readFileSync(await download.path())
+  expect(saved.equals(bytes)).toBe(true)
+  expect(createHash('sha256').update(saved).digest('hex')).toBe(shown)
   await page.keyboard.press('Escape')
   await expect(modal).toHaveCount(0)
 
@@ -317,6 +331,30 @@ test('a prerequisite that fails pauses the run with the step named, and Resume r
     ['tool', 1, 'finished', 1, 'crew:1'],
     ['tool', 2, 'finished', 0, 'crew:1'],
   ])
+})
+
+test("a manifest env name the server does not pass pauses the run before any command, and the manifest's section says why", async ({ page, api }) => {
+  const name = 'EN1_E2E_NOT_PASSED'
+  const crewId = await manifestCrew(api, 'e2e manifest env', { env: [name], prerequisites: [{ id: 'tool', argv: ['true'] }] }, [{ id: 'unit', argv: ['true'] }])
+  const runId = await launch(api, crewId)
+  let run: Run = await api.run(runId)
+  await expect
+    .poll(async () => {
+      run = await api.run(runId)
+      return run.paused === true ? (run.pausedWhy ?? '') : ''
+    }, { timeout: 60_000, intervals: [250] })
+    .toBe(`the prerequisites failed: ${name} is not in the server's envPassthrough`)
+  // No command ran: no receipt, no attempt.
+  expect((await api.ok<{ steps: Step[] }>('GET', `/api/runs/${encodeURIComponent(runId)}/prerequisites`)).steps).toEqual([])
+  expect(task(run, 'build').attempts, 'no attempt is spent').toBe(0)
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  await expect(page.locator('[data-crew-run-header] [data-run-paused-why]')).toHaveText(run.pausedWhy!)
+  // The section says the run's words, never that the prerequisites have not run or that there are none.
+  const manifest = page.locator('[data-run-manifest]')
+  await expect(manifest.locator('[data-run-prereq-refused]')).toHaveText(run.pausedWhy!)
+  await expect(manifest).not.toContainText('have not run yet')
+  await expect(manifest).not.toContainText('No prerequisites.')
+  await expect(manifest.locator('[data-steps]')).toHaveCount(0)
 })
 
 test('a task cancelled mid-step gets its tree cleaned up: the step interrupted, the cleanup receipt after it', async ({ page, api }) => {
