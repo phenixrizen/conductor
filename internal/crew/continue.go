@@ -145,6 +145,13 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
+	// A run launched from a ticket goes on with its package: the same
+	// bytes, the same ticket, never a new launch.
+	pkg, err := packageOfRow(from.Run)
+	if err != nil {
+		undo()
+		return nil, err
+	}
 	// Prepared at its own base, never at the directory's HEAD: the
 	// commit its manifest and its prerequisites are read at.
 	p, err := e.prepare(ctx, c, from.Run.Base)
@@ -152,16 +159,28 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
-	r := e.add(c, p, label)
-	defer e.launched(r)
-	if e.afterAdd != nil {
-		e.afterAdd(r.id)
-	}
-	if err := e.startContinued(ctx, r, from, h, old); err != nil {
+	// Its id is minted against the runs the engine holds; one the ledger
+	// has (a planned run's) is refused by the continuation's first
+	// transaction before anything is made, and another is minted.
+	var r *run
+	for try := 1; ; try++ {
+		r, _ = e.addRun(c, p, label, "", pkg)
+		if e.afterAdd != nil {
+			e.afterAdd(r.id)
+		}
+		err := e.startContinued(ctx, r, from, h, old)
+		if err == nil {
+			break
+		}
 		e.abort(r)
+		e.launched(r)
+		if minted(err, try) {
+			continue
+		}
 		undo()
 		return nil, err
 	}
+	defer e.launched(r)
 	out, ok := e.Get(r.id)
 	if !ok {
 		return nil, ErrRunNotFound
@@ -711,10 +730,16 @@ func Recovered(rec Run, from Loaded) Run {
 			}
 			rec.Manifest = launchedManifest(c, from.Run.Manifest)
 		}
+		rec.Ticket = ticketOfRow(from.Run)
 		if !from.Run.ClosedAt.IsZero() && from.Run.State == ledger.RunStopped {
 			at := from.Run.ClosedAt
 			rec.StoppedAt = &at
 		}
+	}
+	if rec.Ticket == nil {
+		// Its input, which the row keeps: a record written before the
+		// run's binding was read says it too.
+		rec.Ticket = ticketOfRow(from.Run)
 	}
 	rec.ResumedBy = from.Run.ContinuedBy
 	if from.Run.ContinuedFrom != "" {

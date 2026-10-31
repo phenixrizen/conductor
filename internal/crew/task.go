@@ -55,6 +55,9 @@ const (
 // LedgerTx is a transaction's writer: ledger.Tx, or a test's fake.
 type LedgerTx interface {
 	Event(kind string, payload any) error
+	// CreateRun puts a new run's first row, refusing an id the ledger has
+	// (ledger.ErrRunExists, that row untouched); PutRun every later one.
+	CreateRun(ledger.RunRow) error
 	PutRun(ledger.RunRow) error
 	PutTask(ledger.TaskRow) error
 	PutAttempt(ledger.AttemptRow) error
@@ -589,7 +592,10 @@ func (r *run) dirty() bool {
 // snapshot is what one transition writes: the rows of what changed, as
 // they were when it was taken.
 type snapshot struct {
-	run      *ledger.RunRow
+	run *ledger.RunRow
+	// create says run is the run's first row (CreateRun), the run not yet
+	// in the ledger.
+	create   bool
 	tasks    []ledger.TaskRow
 	attempts []ledger.AttemptRow
 	ts       []*task
@@ -626,7 +632,11 @@ func (r *run) drain() snapshot {
 // before their attempts.
 func (s snapshot) write(tx LedgerTx) error {
 	if s.run != nil {
-		if err := tx.PutRun(*s.run); err != nil {
+		put := tx.PutRun
+		if s.create {
+			put = tx.CreateRun
+		}
+		if err := put(*s.run); err != nil {
 			return err
 		}
 	}
@@ -746,6 +756,17 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		e.mu.Unlock()
 		return nil
 	}
+	if r.unrecorded() {
+		// The run's first transaction, or one after a first that the
+		// ledger refused: it writes the run's row first, with an insert
+		// that refuses an id the ledger has, so nothing of it (an event, a
+		// row of its own) lands on another run's row.
+		if snap.run == nil {
+			row := r.runRow(r.crewJSON)
+			snap.run = &row
+		}
+		snap.create = true
+	}
 	r.committing = true
 	e.mu.Unlock()
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
@@ -777,6 +798,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		return err
 	}
 	r.revision = rev
+	if snap.create {
+		r.created = true
+	}
 	r.touch()
 	if r.endPending {
 		r.endPending = false
@@ -1197,7 +1221,13 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 			r.markTask(t)
 		}
 		r.armPrerequisites()
-		return ev("run.created", map[string]any{"base": r.base, "tasks": len(r.tasks)})
+		payload := map[string]any{"base": r.base, "tasks": len(r.tasks)}
+		if r.pkg != nil {
+			// Launched from a ticket (LaunchPlanned): which, and the
+			// package's digest, which its row keeps the bytes of.
+			payload["ticket"], payload["digest"] = r.pkg.p.Ticket.Key, r.pkg.digest
+		}
+		return ev("run.created", payload)
 	}, giveUp); err != nil {
 		return err
 	}
@@ -1394,6 +1424,9 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 		state = ledger.RunFinished
 	}
 	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, PausedWhy: r.pausedWhy, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy, Manifest: r.baseManRow}
+	if r.pkg != nil {
+		row.Ticket, row.Package = r.pkg.p.Ticket.ID, r.pkg.raw
+	}
 	if state != ledger.RunRunning {
 		row.ClosedAt = time.Now().UTC()
 	}

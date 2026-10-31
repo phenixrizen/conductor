@@ -245,6 +245,10 @@ type Run struct {
 	// Chat is the run's chat, oldest first, at most session.MaxRunChat
 	// messages: on a run read alone (Get) and in its record, not in a list.
 	Chat []proto.ChatMessage `json:"chat,omitempty"`
+	// Ticket is the Dispatch ticket and plan revision a managed run was
+	// launched from (LaunchPlanned), read from its package, which its
+	// continuations carry; absent for a run no ticket launched.
+	Ticket *RunTicket `json:"ticket,omitempty"`
 }
 
 // Managed is what a managed run's record carries beside the run: the
@@ -348,6 +352,9 @@ type Engine struct {
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
+	// newRunID, when set, mints a new run's id in place of a random one
+	// (mintRunID): a test makes a launch mint an id the ledger has.
+	newRunID func(crewID string) string
 	// tried, when set, is called by deliver after each attempt to type a
 	// handoff, with the member and whether it was typed: tests wait on it.
 	tried func(member string, typed bool)
@@ -422,6 +429,14 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// created says the run's row is in the ledger: its first transaction
+	// committed. Until then every transaction of the run writes the row
+	// first with CreateRun (transact), which refuses an id the ledger has,
+	// and nothing of the run reaches its record or OnForget (abort).
+	created bool
+	// pkg is the launch package of a run launched from a ticket
+	// (LaunchPlanned) or of a continuation of one; nil for any other run.
+	pkg *runPackage
 	// The run's project manifest (steps.go): the crew's effective one as
 	// launched (manifest, with File for the file form; a legacy setup
 	// lifted), its revision, and the manifest at the base (baseMan),
@@ -633,13 +648,23 @@ func (e *Engine) LaunchNamed(ctx context.Context, c Crew, label string) (*Run, f
 	if err != nil {
 		return nil, noop, err
 	}
-	r := e.add(c, p, label)
-	release := sync.OnceFunc(func() { e.launched(r) })
-	if e.afterAdd != nil {
-		e.afterAdd(r.id)
+	// A managed run's id is minted against the runs the engine holds; the
+	// ledger may have it (a planned run's, after a restart), which the
+	// run's first transaction finds: refused before anything is made, the
+	// launch mints another (maxMints).
+	for try := 1; ; try++ {
+		r := e.add(c, p, label)
+		release := sync.OnceFunc(func() { e.launched(r) })
+		if e.afterAdd != nil {
+			e.afterAdd(r.id)
+		}
+		run, err := e.startImmediate(ctx, r)
+		if minted(err, try) {
+			release()
+			continue
+		}
+		return run, release, err
 	}
-	run, err := e.startImmediate(ctx, r)
-	return run, release, err
 }
 
 // LaunchAdopting is LaunchHeld for a crew an agent forms around its own
@@ -996,8 +1021,16 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 }
 
 // add makes and keeps a run of c with every member pending, launching until
-// the caller calls launched.
+// the caller calls launched, under an id it mints.
 func (e *Engine) add(c Crew, p prepared, label string) *run {
+	r, _ := e.addRun(c, p, label, "", nil)
+	return r
+}
+
+// addRun is add with the run's id given (a planned launch's: ErrRunExists
+// when the engine holds a run of it), "" to mint one, and the run's launch
+// package, nil for none.
+func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (*run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
@@ -1031,6 +1064,7 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 			immediate++
 		}
 	}
+	r.pkg = pkg
 	// Under endMu as well: a run evict forgets has its record written
 	// (journalForgotten) in its turn among the saves, before the run is
 	// gone for a resume from that record to find.
@@ -1038,8 +1072,18 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 	defer e.endMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if id != "" {
+		if e.runs[id] != nil {
+			cancel()
+			if r.teardownCancel != nil {
+				r.teardownCancel()
+			}
+			return nil, ErrRunExists
+		}
+		r.id = id
+	}
 	for r.id == "" || e.runs[r.id] != nil {
-		r.id = c.ID + "-" + session.NewID()[:8]
+		r.id = e.mintRunID(c.ID)
 	}
 	e.evict()
 	e.runs[r.id] = r
@@ -1050,7 +1094,7 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 	} else {
 		r.note(session.ActivityStatus, "launched %s: %d members, %d starting now", c.Name, len(c.Members), immediate)
 	}
-	return r
+	return r, nil
 }
 
 // memberRunning reports whether r's member name runs: its prompt typed and
@@ -1748,6 +1792,14 @@ func (e *Engine) abort(r *run) {
 	e.endMu.Unlock()
 }
 
+// unrecorded reports whether r is a managed run the ledger has no row of
+// as its own: its first transaction never committed, refused, or refused
+// because the id is another run's (ErrRunExists). Nothing of it is
+// recorded or told as forgotten: its id may be that other run's, whose
+// record and links are not this one's to write or drop. The caller holds
+// e.mu.
+func (r *run) unrecorded() bool { return r.managed && !r.created }
+
 // evict forgets the oldest runs with nothing running until there is room for
 // one more. A run with a member starting or a live session stays, and so does
 // one being launched, so the engine may hold more than maxRuns while they run.
@@ -1814,7 +1866,7 @@ func (e *Engine) ForgetForTest(runID string) {
 // record, so the mark is never written over by it. The caller holds endMu
 // and e.mu, as the forget sites do.
 func (e *Engine) journalForgotten(r *run) {
-	if e.journal == nil {
+	if e.journal == nil || r.unrecorded() {
 		return
 	}
 	snap := r.snapshot(false, true)
@@ -1845,7 +1897,7 @@ func (e *Engine) forget(r *run) {
 	if r.teardownCancel != nil {
 		r.teardownCancel()
 	}
-	if e.OnForget != nil {
+	if e.OnForget != nil && !r.unrecorded() {
 		e.OnForget(r.snapshot(false, false))
 	}
 }
@@ -2003,6 +2055,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		out.Tasks = r.taskStates()
 		out.Manifest = r.manifestState()
 		out.Cleaning = r.trees.n
+		out.Ticket = r.pkg.ticket()
 	}
 	if withChat {
 		for _, m := range r.chat.History() {
