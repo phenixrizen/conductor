@@ -146,10 +146,13 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
-- A run's log is not its ledger. The engine notes a change in the run's
-  log inside the change and commits its rows and events after it, outside
-  the lock: a test that saw the note and reads the ledger at once can read
-  it before the commit. Wait on the ledger for what the ledger must hold.
+- A run's log is not its ledger, and neither is the rest of the engine's
+  view. The engine makes a change (its log line, a task's state, an
+  attempt's) inside the change and commits its rows and events after it,
+  outside the lock: a test that saw the change in the view (a log line,
+  `waitTask`, `attemptFailed`) and reads the ledger at once can read it
+  before the commit. Wait on the ledger for what the ledger must hold
+  (`attemptWhen`, `taskWhen`), every row and event the test then reads.
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
