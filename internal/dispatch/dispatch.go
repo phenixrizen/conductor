@@ -179,7 +179,8 @@ type Change struct {
 // holds past busyTimeout, or one the store may not write (proved by a
 // write the schema's transaction tries and rolls back, writable) opens
 // read-only, read when it can be and never written, and ReadOnly says
-// why; the file is made 0600 only once the store is known to write it.
+// why. The file is made private (0600, or 0400 when the owner may not
+// write it) before the schema's transaction.
 // It fails only when the directory cannot be made or the database file is
 // a symbolic link. A relative dir is taken under the working directory,
 // and the store keeps it absolute.
@@ -221,20 +222,21 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 		s.readBack(ctx)
 		return s, nil
 	}
-	if err := s.prepare(ctx, db); err != nil {
-		// Damaged, written by a newer Conductor, held by another writer,
-		// or a file the store may not write (#444): kept as it is, its
-		// mode too, read when it can be, never written.
+	// Private before the first transaction, which makes the -wal and -shm
+	// with the file's mode as it is then: a file the open has just made
+	// has the umask's.
+	if err := private(path); err != nil {
 		db.Close()
-		s.readOnly, s.why = true, err.Error()
+		s.readOnly, s.why = true, "the database's mode could not be set: "+err.Error()
 		s.readBack(ctx)
 		return s, nil
 	}
-	// The mode once the store is known to write the file, so a file it
-	// may not write keeps the mode it was found with.
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := s.prepare(ctx, db); err != nil {
+		// Damaged, written by a newer Conductor, held by another writer,
+		// or a file the store may not write (#444): kept as it is, read
+		// when it can be, never written.
 		db.Close()
-		s.readOnly, s.why = true, "the database's mode could not be set: "+err.Error()
+		s.readOnly, s.why = true, err.Error()
 		s.readBack(ctx)
 		return s, nil
 	}
@@ -467,6 +469,18 @@ func migrate(ctx context.Context, tx *sql.Tx, from int) error {
 
 func isNoTable(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// private takes the group's and others' permissions off the database
+// file and grants the owner none it lacks: 0644 becomes 0600, and a file
+// made 0400 stays 0400, so a file the store may not write stays so and
+// opens read-only (#444).
+func private(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(path, fi.Mode().Perm()&0o600)
 }
 
 // writable proves that the connection writes, with a write the

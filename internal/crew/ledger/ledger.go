@@ -277,11 +277,17 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 	}
 	l.db = db
 	if !l.readOnly {
+		// Private before the first transaction, which makes the -wal and
+		// -shm with the file's mode as it is then: a file the open has
+		// just made has the umask's. Its error waits for the write's
+		// proof, so a file the server may not write is read-only, not a
+		// failed Open.
+		modeErr := private(path)
 		if err := writable(ctx, db); err != nil {
 			// The owner, but the connection does not write: a file in WAL
 			// mode, or the WAL beside it, that the server may not write,
 			// which SQLite opens read-only without an error (#444). Kept
-			// as it is, its mode too, read when it can be, never written.
+			// as it is, read when it can be, never written.
 			db.Close()
 			l.readOnly, l.why = true, fmt.Sprintf("ledger: %s cannot be written: %v", path, err)
 			if db, err = l.open(ctx, path, true); err != nil {
@@ -292,11 +298,11 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 			l.db = db
 			return nil
 		}
-		if err := os.Chmod(path, 0o600); err != nil {
+		if modeErr != nil {
 			db.Close()
 			l.db = nil
 			l.release()
-			return err
+			return modeErr
 		}
 		if err := l.prepare(ctx); err != nil {
 			// A damaged database, or one a later binary wrote: kept as it
@@ -411,6 +417,18 @@ func (l *Ledger) open(ctx context.Context, path string, readOnly bool) (*sql.DB,
 		return nil, fmt.Errorf("ledger: %s: %w", path, err)
 	}
 	return db, nil
+}
+
+// private takes the group's and others' permissions off the database
+// file and grants the owner none it lacks: 0644 becomes 0600, and a file
+// made 0400 stays 0400, so a file the server may not write stays so and
+// opens read-only (#444).
+func private(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(path, fi.Mode().Perm()&0o600)
 }
 
 // writable proves that the connection writes, with a write it rolls
