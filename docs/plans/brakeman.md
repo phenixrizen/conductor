@@ -60,7 +60,7 @@ The other Program items this plan meets, in plain words:
   on what `main` already has and the DS2 parts wait for DS2 (PR-10, PR-11).
 - **C1 to C9**, the extension seams (`docs/plans/ext.md`, issues #473 to
   #489): the public package `ext`, its registry and free defaults, the
-  provider's one door into the app (`ext.Host`), and, as C9, `GET
+  provider's one door into the app (`ext.Host`, ext's PR-4, #476), and, as C9, `GET
   /api/capabilities` (#488), which names the registered providers. BK0's
   guide reads it once it exists (PR-9); until then the guide says so.
 - **C10**, the Runtime seam (`docs/plans/runtime.md`): where an attempt's
@@ -94,8 +94,12 @@ The other Program items this plan meets, in plain words:
    approves no plan revision and passes no gate, and its writes never
    reach a route that would (Events, orderings and invariants).
 5. Dependencies one way: no new module, no new Go or npm dependency; the
-   new package `internal/brakeman` imports the standard library, the
-   `internal/store` documents and nothing of `ext`.
+   new package `internal/brakeman` imports the standard library and
+   `internal/store` alone (what it cannot check itself, an agent or a crew
+   body, it asks of `Facts`, an interface `internal/api` implements), so it
+   never imports `internal/crew` and `internal/crew` never imports it;
+   `internal/api` wires the two (PR-14's role loop). Nothing of `ext` until
+   PR-17, where `internal/api`, never `internal/brakeman`, calls `ext.Host`.
 6. No feature build tag: none added. The one test tier used is the existing
    `recipes` tag, for the agents' model flags (Tests per surface).
 7. The free default is `main`: every route, tool and page added here is new
@@ -111,26 +115,35 @@ The other Program items this plan meets, in plain words:
     for the pages; no WebSocket frame or control message, so
     `internal/proto` and `web/app/utils/protocol.ts` are untouched, and
     `docs/protocol.md` gains the HTTP routes and one Server-Sent Event,
-    `brakeman`, with its size limit and its test; no new dependency, so
+    `brakeman`, with its size limit and its test. A Server-Sent Event is
+    typed as the `run` and DS1's `dispatch` events are: in
+    `docs/protocol.md` and the composable that reads it
+    (`web/app/composables/useAttention.ts` reads `dispatch`), since
+    `protocol.ts` mirrors `internal/proto`'s frames and control messages
+    and holds no event of `GET /api/events`; no new dependency, so
     `make notices` has nothing to regenerate.
 11. Names: Brakeman, Yardmaster, Dispatch and Switchman keep their meaning;
     "brief", "request" and "turn" are new words with one meaning each
     (above); "graph" stays the crew and task view, and Brakeman's reads are
     never called a graph.
 12. Execution behind one seam: a Brakeman turn starts only through the
-    engine (`Engine.LaunchNamed`, then `crew.Launcher`), as every run's
-    member does; Brakeman runs no command itself; Boxcar constraints below
-    takes the eight one by one.
+    engine (`Engine.LaunchNamedWith`, then `crew.Launcher`), as every run's
+    member does, and from PR-17 through `ext.Host`; Brakeman runs no
+    command itself; Boxcar constraints below takes the eight one by one.
 
 ## Why and what happens
 
 The person running crews overnight comes back to many runs, tasks,
-attempts, check receipts, blockers, questions, messages and tickets. Every
-fact is already recorded: the ledger (`runs/managed.sqlite`) keeps each
-run's transitions, events, receipts and check logs with their SHA-256;
-Dispatch keeps tickets, comments and each field's history; the sessions
-keep their attention (OPEN, CLAIMED, RESOLVED) and activity; the touched
-index keeps the files agents touched. What is missing is someone who reads
+attempts, check receipts, blockers, questions, messages and tickets. Most
+facts are already recorded durably: the ledger (`runs/managed.sqlite`)
+keeps each run's transitions, events, receipts and check logs with their
+SHA-256; Dispatch keeps tickets, comments and each field's history; the
+touched index keeps the files agents touched. A session's attention (OPEN,
+CLAIMED, RESOLVED) and activity live only in the server's memory (the last
+`MaxActivity`, 200, entries a session, while the session is listed), so
+Brakeman reads them as a live window and says where the window has a gap
+(What Brakeman reads); durable decision records are Program item DR1's,
+not this plan's. What is missing is someone who reads
 it all and says, with links, what happened, what failed and how we know,
 what only looks stuck, what needs the person and what answering would
 authorize. The Program asks for that someone to be an agent the person
@@ -169,11 +182,13 @@ After the first slice (PR-1 to PR-8) ships, a person sees:
   agent whose adapter registers Conductor's MCP server: Claude Code or
   Codex today), the account (the folder that agent's login lives in, or its
   default login on this machine), the model (for an agent whose model flag
-  Conductor knows; empty for its default), the folder its turns run in, the
-  yolo choice (off by default), what it may see (runs, tasks and checks;
-  Dispatch; sessions; touched files; terminal screens, off by default), its
-  scope (all projects and crews, or chosen ones), and its budget (minutes
-  a turn, reads a turn, turns a day).
+  Conductor knows; empty for its default), the folder its turns run in
+  (always in the agent's own read-only mode, never yolo), what it may see
+  (runs, tasks and checks; check logs; Dispatch; sessions; touched files;
+  terminal screens, off by default), its scope (all of it, or chosen
+  projects, repositories, crews, runs and sessions), what it may do
+  (observe only, or also draft and propose), and its budget (minutes a
+  turn, reads a turn, turns a day).
 - **Ask Brakeman.** On the Brakeman page (`/brakeman`), from the palette,
   and from a run's or a task's menu: "Brief me since…", "Explain this",
   "Prepare a decision", "Draft tickets", "Propose a crew", "Prepare a
@@ -196,10 +211,14 @@ After the first slice (PR-1 to PR-8) ships, a person sees:
   and version produced it, for which request, as of when.
 - Nothing Brakeman does takes the focus: a brief arriving adds a count to
   the sidebar's Brakeman row and to the page, with no dialog, no toast that
-  takes the keyboard and no navigation.
+  takes the keyboard and no navigation. A question Brakeman's own session
+  asks (a trust question, a tool approval) is shown in Needs you labelled
+  "Brakeman · br-n", and notifies (a browser notification, Chime, a
+  webhook) only for a request a person made; a background turn's question
+  (BK3) notifies nothing, and its deadline ends it unanswered.
 - After a restart of the server, or with another agent or model chosen,
   "What changed since your last brief?" reads the earlier briefs and their
-  cursors from the data directory, not from any conversation: every turn is
+  coverage from the data directory, not from any conversation: every turn is
   a fresh session.
 
 An agent in any Conductor session (BK0) can call the `guide` tool or run
@@ -212,8 +231,9 @@ and their probed versions), the receipt formats, and the providers (empty,
 and said to be unknown, until C9; PR-9).
 
 Later, gated PRs add: DS2's plan revisions, launches and candidates as
-Brakeman's evidence and drafts (PR-10, PR-11); the four granted actions of
-BK2 (PR-12, PR-13); and BK3's background role (PR-14, PR-15).
+Brakeman's evidence and drafts (PR-10, PR-11); `ext.Host` in front of
+every Brakeman launch (PR-17); the four granted actions of BK2 (PR-12,
+PR-13, PR-18); and BK3's background role (PR-14, PR-15).
 
 ## The changes
 
@@ -221,7 +241,8 @@ BK2 (PR-12, PR-13); and BK3's background role (PR-14, PR-15).
 
 A package with no HTTP, no session and no process, like `internal/dispatch`:
 the API, the CLI and the tests are its callers. It imports the standard
-library and `internal/store` (atomic JSON documents) alone.
+library and `internal/store` (atomic JSON documents and the owner lock)
+alone; what it cannot check itself it asks of `Facts`, below.
 
 **The configuration** (`config.go`), one document `brakeman/config.json`
 in the data directory, written only through the admin's route:
@@ -237,7 +258,8 @@ type Config struct {
 	Account string `json:"account,omitempty"`
 	Model   string `json:"model,omitempty"` // "" is the agent's default
 	Cwd     string `json:"cwd"`             // the folder its turns run in
-	Yolo    bool   `json:"yolo"`            // the agent's yolo recipe; off by default
+	// No yolo field: a turn always runs in its adapter's read-only mode
+	// (Adapter.ReadOnlyArgs, PR-3a) and never with the yolo recipe.
 	// AllowConductorTools lets the agent call Conductor's MCP tools
 	// without asking, where its adapter can say so (Claude Code).
 	AllowConductorTools bool        `json:"allowConductorTools"`
@@ -250,20 +272,28 @@ type Config struct {
 	UpdatedAt           time.Time   `json:"updatedAt"`
 }
 type Visibility struct {
-	Runs      bool `json:"runs"`      // runs, tasks, attempts, check receipts and logs, messages, blockers
+	Runs      bool `json:"runs"`      // runs, tasks, attempts, check receipts, messages, blockers
+	Logs      bool `json:"logs"`      // check logs' text; without it a receipt carries its exit, subject and SHA-256
 	Dispatch  bool `json:"dispatch"`  // projects, tickets, comments, history
 	Sessions  bool `json:"sessions"`  // the sessions list: names, states, questions, quiet time
 	Touched   bool `json:"touched"`   // the touched index
 	Terminals bool `json:"terminals"` // a session's screen text; off by default
 }
 type Scope struct {
-	Projects []string `json:"projects,omitempty"` // Dispatch project keys; none is all
-	Crews    []string `json:"crews,omitempty"`    // crew ids; none is all
+	// A selector left empty is all; one given narrows (at most 50 entries
+	// each). Scope.Admits, below, combines them.
+	Projects []string `json:"projects,omitempty"` // Dispatch project keys
+	Repos    []string `json:"repos,omitempty"`    // absolute repository roots
+	Crews    []string `json:"crews,omitempty"`    // crew ids
+	Runs     []string `json:"runs,omitempty"`     // run ids
+	Sessions []string `json:"sessions,omitempty"` // session ids
 }
 type Permissions struct {
-	// Observe, Draft and Propose are true in BK1 and cannot be turned off
-	// one by one (Enabled is the switch). Act names the operations BK2
-	// grants; it must be empty until PR-12.
+	// Observe is true whenever Enabled is. Draft (draft_ticket/1,
+	// draft_crew/1, handoff/1) and Propose (proposal/1, decision/1) are
+	// the person's to turn off; both off is observe only, and a brief
+	// with an item they do not allow is refused (invalid_brief). Act
+	// names the operations BK2 grants; it must be empty until PR-12.
 	Observe bool     `json:"observe"`
 	Draft   bool     `json:"draft"`
 	Propose bool     `json:"propose"`
@@ -283,15 +313,35 @@ type Budget struct {
 asks `Facts` (an interface the API implements over the catalog and the
 adapters) what the package cannot know: the agent exists, is not hidden,
 has an adapter with an MCP registration (`agents.Adapter.MCP`, today Claude
-Code and Codex), and takes a model only when its adapter has `ModelArgs`
-(PR-3). The model is `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$`, an argument
+Code and Codex) and a read-only mode (`Adapter.ReadOnlyArgs`), and takes a
+model only when its adapter has `ModelArgs` (PR-3a). `Facts.CheckCrew`
+checks a draft crew's body as `POST /api/crews` does (the API answers it
+with `crew.Crew`'s strict decoding and `Validate`), so the package needs
+no `internal/crew`. The model is `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$`, an argument
 of the adapter's own flag, never free arguments; the account and the folder
 are absolute, at most 4,096 bytes, checked by the API (the account a
 directory owned by the server's user, the folder through `resolveCwd`). A
 save names the `rev` it read (`409 stale_revision` otherwise), bumps it and
 stamps `updatedAt`. The defaults, written on the first read: off, no
-agent, the server's default folder, yolo off, visibility on but terminals,
-all of scope, the budget above, mode invoked.
+agent, the server's default folder, visibility on but terminals, all of
+scope, observe, draft and propose, the budget above, mode invoked.
+
+`Scope.Admits(item)` is the one function observation, resolution and
+(PR-12) actions ask. An item is in scope when it matches every non-empty
+selector that applies to its kind: a run and what is under it (tasks,
+attempts, checks, commands, events, messages, commits) by `Crews`, `Runs`,
+`Repos` (the repository root of the run's folder) and `Projects` (the
+project of the ticket its run is linked to; a run linked to none is
+outside a non-empty `Projects`); a session by `Sessions`, `Repos` (its
+folder's root) and, for a run's member, its run's selectors, while a
+session in no run is outside a non-empty `Crews`, `Runs` or `Projects`
+unless `Sessions` names it; a ticket, comment or Dispatch receipt by
+`Projects`, and by `Runs` and `Crews` through the runs linked to it (a
+ticket linked to none is outside either when it is non-empty); a
+touched-index entry by its session's; an earlier brief always, its refs
+resolved again against the scope now. Evidence is narrowed by the
+visibility: check logs, terminals, sessions and the rest each by its own
+switch.
 
 **A request** (`request.go`) is one thing a person asked of Brakeman,
 kept as `brakeman/requests/br-<n>.json`:
@@ -320,17 +370,22 @@ type Request struct {
 	BriefAt   time.Time `json:"briefAt,omitzero"`
 	Resolved  []Resolved `json:"resolved,omitempty"` // each ref of the brief as Conductor found it
 	Made      []Made     `json:"made,omitempty"`     // drafts made work by a person: pending op, outcome
+	Edges     []Edge     `json:"edges,omitempty"`    // draft tickets' blocks: from, to, pending or made
+	StrayRun  string     `json:"strayRun,omitempty"` // a run its launch returned after it closed, stopped then
+	Batch     string     `json:"batch,omitempty"`    // a wake request's batch (PR-14)
+	Coverage  *Coverage  `json:"coverage,omitempty"` // the server's watermarks of what the turn read
 	ClosedAt  time.Time  `json:"closedAt,omitzero"`
 }
 ```
 
 The kinds: `briefing` (what changed since `Since`, else since the last
-briefing's cursors, else the last 24 hours), `explain` (one subject: a run,
+complete briefing's watermarks, else the last 24 hours), `explain` (one subject: a run,
 task, attempt, session, question or ticket), `decision` (a question, a task
 that failed or is blocked, a ticket), `draft_tickets` (a ticket or comment,
 or the note as the discussion), `propose_crew` (a ticket), `handoff` (a
 task, attempt or session), `locate` (the note as the question),
-`overlaps`, and `ask` (the note, any subjects). The states and their
+`overlaps`, `ask` (the note, any subjects) and, from PR-14, `wake` (a
+batch, no subjects). The states and their
 transitions are in Events, orderings and invariants. A record is at most
 1 MiB (`LoadLimit`); one of a later schema is skipped, logged once and
 never rewritten.
@@ -345,7 +400,9 @@ type Brief struct {
 	Summary     string `json:"summary"`     // Brakeman's reading, Markdown, at most 4 KiB
 	Uncertainty string `json:"uncertainty,omitempty"` // at most 2 KiB
 	Items       []Item `json:"items"`       // at most 100
-	AsOf        AsOf   `json:"asOf"`        // the cursors it read to: each run's last event seq, Dispatch's last change, the time
+	// No asOf: what the brief covers is the server's record of the turn's
+	// reads (Request.Coverage, What Brakeman reads), never the agent's
+	// word; a brief that carries one is refused (invalid_brief).
 }
 type Item struct {
 	Kind string `json:"kind"` // fact/1, interpretation/1, proposal/1, outcome/1, decision/1,
@@ -366,20 +423,23 @@ Each kind's fields and rules, enforced by `Validate`:
 | `comparison/1` | `title`, `columns` (2 to 6), `rows` (1 to 20, a label and one cell of 500 bytes per column), `evidence` | |
 | `evidence/1` | `title`, `refs` (1 to 50) | An evidence panel. |
 | `draft_ticket/1` | `project` (a key), `title` (200 characters), `description` (16 KiB), `acceptance` (8 KiB), `priority` (0 to 4), `blocks` (indexes of other draft tickets of the brief), `from` (refs) | At most 20 a brief; `blocks` has no cycle. |
-| `draft_crew/1` | `crew` (the body `POST /api/crews` takes), `gates` (up to 10 notes: a task id and the decision a person makes before it), `from` (refs) | The crew passes `crew.Crew.Validate` at submission. |
+| `draft_crew/1` | `crew` (the body `POST /api/crews` takes), `gates` (up to 10 notes: a task id and the decision a person makes before it), `from` (refs) | The crew passes `Facts.CheckCrew` (the API's `crew.Crew.Validate`) at submission. |
 | `handoff/1` | `objective`, `constraints`, `decisions` (up to 20), `revision` (a `commit:` ref), `questions` (up to 20), `evidence` | Built from Conductor's records; never an agent's conversation. |
 | `overlap/1` | `paths` (1 to 50), `between` (2 to 8 refs of attempts or sessions), `evidence` | |
 
 The four kinds a brief's reader must never confuse are four kinds: a fact
 names evidence, an interpretation names facts, a proposal names an
-operation, an outcome names a receipt. Text fields are cleaned as session
-messages are (`session.CleanMessage`) and bounded in bytes before they are
-kept.
+operation, an outcome names a receipt. Text fields lose their control
+characters but newline and tab, as session messages do, through the
+package's own `cleanText`, which never cuts: `session.CleanMessage` cuts at
+500 bytes (`MaxAttentionMessage`), which would shorten a 4 KiB summary or a
+16 KiB description without a word. A field past its own bound is refused
+with its name and bound (`invalid_brief`), never shortened.
 
 **Evidence references** (`refs.go`): a ref is a string of a kind and its
 parts, at most 512 bytes, parsed once into a typed `Ref`:
 
-| Ref | Names | Resolved (PR-3) to |
+| Ref | Names | Resolved (PR-3b) to |
 |---|---|---|
 | `run:<run>` | a run | the run page; its state and revision |
 | `task:<run>/<task>` | a managed task | `?task=` on the run page; its state |
@@ -389,7 +449,7 @@ parts, at most 512 bytes, parsed once into a typed `Ref`:
 | `event:<run>/<seq>` | a run's ledger event | its kind and time |
 | `message:<run>/<seq>` | a members' message | its sender and delivery |
 | `session:<id>` | a session | the session page; its state and attention |
-| `question:<session>/<question>` | a question the session asks or asked | its state (OPEN, CLAIMED, RESOLVED) and options |
+| `question:<session>/<question>` | a question the session asks or asked | its state (OPEN, CLAIMED, RESOLVED) and options while the session is listed and the question in its window; else `unavailable`, beside what the turn observed |
 | `ticket:<KEY-n>` | a ticket | the ticket page; its `rev` |
 | `comment:<KEY-n>/<id>` | a comment | the ticket page at it; its `rev` |
 | `op:<actor>/<opId>` | a Dispatch receipt | its status |
@@ -402,15 +462,30 @@ PR-10 adds `plan:<KEY-n>/<revision>`, `launch:<id>` and
 with PR-12.
 
 **The store** (`store.go`): `Open(*store.Store)` takes `brakeman/` under
-the data directory (`store.Sub`, 0700). `Config`, `SaveConfig`; `Create`
+the data directory (`store.Sub`, 0700) and its owner lock,
+`brakeman/owner.lock`: the ledger's lock (`ownerLock`, moved in PR-1 from
+`internal/crew/ledger` to `internal/store` as `store.OwnerLock`, the
+ledger's behaviour and tests unchanged). Two servers may share a data
+directory, as the ledger allows: the one holding the lock owns the desk;
+another opens Brakeman read-only (reads served from the files, every write
+and every turn answered `503 brakeman_not_owner` with the owner's words),
+keeps trying for the lock as the ledger's `awaitLock` does, and concludes
+what was left open only once it holds it. Where the lock is unsupported
+(`lock_other.go`), the desk behaves as the ledger does there.
+`Config`, `SaveConfig`; `Create`
 (the next number from `brakeman/state.json`, written before the request's
 own file, so a number is never reused, even after a crash between the two);
 `Get`, `List(after, limit)` newest first in pages of at most 100;
 `Update(id, func(*Request) error)` under one mutex, the request read, changed
 and written atomically; `Prune`, which keeps the newest 500 requests and
-never one that is not closed; `TurnsToday(now)`; `Open` concluding what the
-last server left open (`queued` stays queued; `starting` and `running`
-become `interrupted`, with why). The clock is a field, so the tests drive it.
+never one that is not closed; the day's count, kept apart from the
+requests in `state.json` (`days`: the turns started on each of the last 8
+local days, bumped in the same write that makes a request `starting`), so
+pruning or cancelling requests never lowers it, and `TurnsToday(now)`
+reads it; `Open`, once it holds the lock, concluding what the last owner
+left open (`queued` stays queued; `starting` and `running` become
+`interrupted`, with why; a pending `made` or edge completed, below) before
+any route serves. The clock is a field, so the tests drive it.
 
 ### `internal/api`: the operating guide (PR-2, BK0's first form)
 
@@ -421,7 +496,11 @@ list and the tests read:
 ```go
 type Operation struct {
 	Name    string         `json:"name"`    // task_result, observe, ticket_comment, run_pause…
-	Summary string         `json:"summary"` // at most 300 bytes
+	Summary string         `json:"summary"` // the guide's line, at most 300 bytes
+	// Description is the MCP tool's description, verbatim (main's
+	// sixteen byte for byte, the longest task_result's 556 bytes): at
+	// most 1 KiB, apart from Summary so neither bound breaks the other.
+	Description string     `json:"description,omitempty"`
 	Scope   string         `json:"scope"`   // admin | session | task | ticket | observe | draft | propose | act
 	Method  string         `json:"method"`
 	Path    string         `json:"path"`    // the mux pattern
@@ -438,12 +517,15 @@ The first table lists every agent route and tool of `main` (the sixteen
 MCP tools and the session routes they call), the admin operations a
 proposal may name (a run's pause and unpause, stop and resume; a task's
 cancel, retry and accept; a ticket's create, edit, comment and link; a
-crew's create; a crew's launch), and the guide itself; PR-3 to PR-5 add
-Brakeman's. `internal/cli`'s `mcpTools()` builds its list from the
-entries with an `MCP` name, their `Summary` as the description and `Input`
-as the schema, so the tools and the guide cannot drift; a golden test
-holds the existing tools' `tools/list` reply byte for byte as it is on
-`main`.
+crew's create; a crew's launch), and the guide itself; PR-3c and PR-4 add
+Brakeman's with their routes, MCP names and schemas, so `internal/cli`
+never holds a schema of its own. `internal/cli`'s `mcpTools()` builds its
+list from the entries with an `MCP` name that it has a handler for, their
+`Description` as the description and `Input` as the schema, so the tools
+and the guide cannot drift; an entry with an MCP name and no handler is
+not listed (`TestAnUnhandledToolIsNotListed` names them: Brakeman's, until
+PR-5); a golden test holds the existing tools' `tools/list` reply byte for
+byte as it is on `main`.
 
 The guide (`Guide`, one JSON document, computed per caller, never cached
 across a configuration change):
@@ -489,26 +571,33 @@ else with `--server`, `--token` and `--insecure` as `conductor dispatch`
 takes them. The MCP server's `initialize` instructions gain one sentence:
 "Call guide to learn what you may do here."
 
-### `internal/api`, `internal/agents`, `internal/crew`: a Brakeman turn (PR-3)
+### `internal/api`, `internal/agents`, `internal/crew`: a Brakeman turn (PR-3a, PR-3b, PR-3c)
 
-`brakeman.go` (new) holds the **desk**, the server's one owner of
+PR-3 is three PRs: PR-3a the adapters (`internal/agents`), PR-3b the
+resolution of refs (`brakeman_refs.go`), PR-3c the desk, the turn, its
+routes and its refusals; "PR-3" below names the three together.
+
+`brakeman.go` (new, PR-3c) holds the **desk**, the server's one owner of
 Brakeman's requests: the store, the request in progress, the queue, the
 watchdog. `New` opens it beside the ledger and Dispatch when the server
 has a data directory (none on a switchyard, which answers `403` on every
 Brakeman route, as `launching` does).
 
 **A turn is a run Yardmaster launches.** The desk takes the oldest queued
-request when none is starting or running, writes it `starting` with its
-deadline and its configuration snapshot, and launches, through the engine,
-an unsaved one-member crew:
+request when no turn holds the slot (starting, running, or its run not yet
+ended: the watchdog), writes it `starting` with its deadline and its
+configuration snapshot, and launches, through the engine, an unsaved
+one-member crew:
 
 ```go
+no := false
 crew.Crew{
 	ID: "brakeman", Name: "Brakeman", Cwd: cfg.Cwd, Where: "server", Isolation: "none",
-	Goal: "Brakeman request " + req.ID, Yolo: &cfg.Yolo,
+	Goal: "Brakeman request " + req.ID, Yolo: &no,
 	Members: []crew.Member{{
-		// the adapter's ModelArgs(cfg.Model), then AllowTools("conductor")
-		// when AllowConductorTools is set; nothing a person typed
+		// the adapter's ReadOnlyArgs(), then ModelArgs(cfg.Model), then
+		// AllowTools("conductor") when AllowConductorTools is set;
+		// nothing a person typed
 		Name: "brakeman", AgentID: cfg.AgentID, Args: args,
 		Start: crew.Start{When: "immediately"},
 		Prompt: line, // below
@@ -516,8 +605,29 @@ crew.Crew{
 }
 ```
 
-with `Engine.LaunchNamed(ctx, c, "Brakeman · <kind> " + req.ID)`, the run
-taking the configuration's yolo choice as a saved crew's run takes its own.
+through the desk's one launch door, `(*Server).launchTurn(ctx, c, label,
+crew.LaunchOpts{Class: crew.ClassBrakeman, Request: req.ID})`, which
+resolves the folder through `openCwd`, refuses a crew whose `Yolo` is not
+false or whose member lacks its adapter's read-only arguments, and calls
+`Engine.LaunchNamedWith` (new: `LaunchNamed` with options; `LaunchNamed`
+calls it with none, its callers unchanged). The label is "Brakeman ·
+<kind> br-n". PR-17 puts `ext.Host` in front of `launchTurn` (Boxcar
+constraints, 1).
+
+**Read-only, whatever the folder.** A worktree is no sandbox and the
+folder is the person's choice, so the turn's own agent is held to reading,
+not only Conductor's routes. `Adapter.ReadOnlyArgs` (PR-3a) is the
+adapter's own read-only mode: Claude Code's `--disallowedTools` rule for
+every tool that writes or runs a command (Bash, Edit, Write,
+NotebookEdit), its file reads and Conductor's MCP tools left; Codex's
+`--sandbox read-only`. Each is checked against the CLI's `--help` in the
+PR and nightly under the `recipes` tier, and whether Codex's MCP server
+still reaches Conductor under its sandbox is tried in the PR: if it does
+not, Codex is refused as Brakeman's agent (`Validate`, through `Facts`)
+and Settings says why. No adapter without a read-only mode can be
+Brakeman's, and yolo is never applied to a turn, whatever a crew or the
+server's default says.
+
 The engine starts the member through `crew.Launcher` (`api.Server.Launch`)
 and types the prompt once the session is ready, as for any member, through
 `Local.Submit`: a trust or startup question shows as the session's question
@@ -527,23 +637,35 @@ and is answered by a person, never typed into. The line, at most 300 bytes:
 > or "conductor brakeman request", and submit one brief with brief_submit
 > or "conductor brakeman brief". Call guide for what you may read.
 
-`Server.Launch` sets, for a member of a run the desk owns, Conductor's own
-names in the session (`createSessionRequest.inject`, unfiltered as an
-attempt's are): `CONDUCTOR_BRAKEMAN=<request id>`; and the account as the
-adapter's `ConfigDirEnv` in `Env` (the launch already installs the skill
-under that folder, `InstallSkillIn`). The run id and the session id are
-written into the request (`running`) once `LaunchNamed` returns. A launch
-that fails writes `failed` with the engine's words. A Brakeman run is an
-ordinary run: the run page, the sidebar's run block (labelled "Brakeman ·
-…"), Stop, the records; it is never a managed run, so the ledger holds
-nothing of it and the 409 `managed_run` boundary is untouched. The desk
-knows its runs by its records (each request names its run), and a run its
-records missed (a server that died between the launch and the write) by
-the crew the run was launched with, the id `brakeman` with the goal
-`Brakeman request br-<n>`, so it knows them after a restart too. Three refusals keep a turn
-Brakeman's and never a scheduler: a run the desk's records name is not
-resumed and takes no member (`POST /api/runs/{run}/resume`, `…/members` and
-`…/members/{name}/resume` answer `409 brakeman_run`, "ask Brakeman again");
+`LaunchNamedWith` stamps the run with its `LaunchOpts` (its class and its
+request, kept in the run's record) before its member starts, and the
+engine hands both to `crew.Launcher` in the `LaunchSpec`, so
+`Server.Launch` knows a turn's member from the spec itself, never from the
+crew's id or goal, which a person's crew could match. For such a member it
+sets Conductor's own names in the session (`createSessionRequest.inject`,
+unfiltered as an attempt's are): `CONDUCTOR_BRAKEMAN=<request id>`; and the
+account as the adapter's `ConfigDirEnv` in `Env` (the launch already
+installs the skill under that folder, `InstallSkillIn`). The run id and the
+session id are written into the request (`running`) once `LaunchNamedWith`
+returns; the session routes find a session's request by its run's
+`Request` and serve it while the request is `starting` or `running`, so a
+member that calls before that write is served. A launch that fails writes
+`failed` with the engine's words. A Brakeman run is an ordinary run: the
+run page, the sidebar's run block (labelled "Brakeman · …"), Stop, the
+records; it is never a managed run, so the ledger holds nothing of it and
+the 409 `managed_run` boundary is untouched. The desk knows its runs by
+their class and request, after a restart too, and a person's crew named
+like it is never taken for one. The engine keeps Brakeman's runs apart
+from the person's: `evict` and the records' `prune` bound each class on
+its own, the default class by `maxRuns` (100) and `maxRecords` (500) as
+today, `brakeman` by 10 runs and 50 records, the oldest ended turn first,
+so a day of turns never pushes a person's run out of the engine or out of
+the records that `run:` refs and `GET /api/runs/{run}` read. Four refusals
+keep a turn Brakeman's and never a scheduler: a run of class `brakeman` is
+not resumed, takes no member (`POST /api/runs/{run}/resume`, `…/members` and
+`…/members/{name}/resume` answer `409 brakeman_run`, "ask Brakeman again")
+and is never linked to a ticket (Dispatch's run link answers `409
+brakeman_run`);
 the crew store reserves `brakeman` beside `new` (`reservedID`, which no
 derived id takes), so a crew a person names Brakeman is saved as
 `brakeman-2` (one saved under that
@@ -551,9 +673,14 @@ id before PR-3 keeps it, and its runs list then shows the turns too, each
 labelled); and a Brakeman session cannot form a crew or add a member to one
 (`POST /api/sessions/{id}/crew` and `…/run/members` answer `403
 brakeman_cannot`, and the MCP server does not list `form_crew` and
-`add_member` there).
+`add_member` there); and a Brakeman session reaches no ticket through the
+session routes every run member has (`GET /api/sessions/{id}/ticket` and
+its comment route answer `403 brakeman_cannot`, and the MCP server does
+not list `ticket_read` and `ticket_comment` there), so even a run linked
+to a ticket gives Brakeman's token no write.
 
-`internal/agents` (PR-3): `Adapter.ModelArgs func(model string) []string`,
+`internal/agents` (PR-3a): `Adapter.ReadOnlyArgs func() []string` (above);
+`Adapter.ModelArgs func(model string) []string`,
 set for Claude Code (`--model <m>`) and Codex (`--model <m>`), each checked
 against the CLI's `--help` on this machine in the PR and nightly by the
 `recipes` tier; nil for every other adapter, so a model cannot be set for
@@ -562,14 +689,33 @@ alone (`--allowedTools mcp__conductor`, its rule for every tool of one MCP
 server), checked the same way; applied only with `AllowConductorTools`.
 Codex's handling of MCP tool approvals is read from the CLI in the PR and
 written into `docs/features.md`; without a verified flag, Brakeman under
-Codex asks before each tool unless yolo is on, and Settings says so.
+Codex asks before each Conductor tool (yolo is never applied to a turn),
+and Settings says so.
 
-**The watchdog**: at the deadline (`TurnMinutes` after `starting`) a
-running request becomes `timed_out` and the run is stopped (`Engine.Stop`);
-a member session that ends with no brief makes it `ended` (the desk reads
-the session's end from the server's session change hook, the one that feeds
-`Engine.OnChange`); a person's cancel, or Brakeman turned off, makes it
-`cancelled` and stops the run. Each is written before the stop.
+**The watchdog**: the deadline (`TurnMinutes` after `starting`) covers
+`starting` as well as `running`. The launch runs under a context the desk
+cancels at the deadline, on a person's cancel and when Brakeman is turned
+off; the request is written `timed_out` or `cancelled` first, then the run
+is stopped (`Engine.Stop`). A run that `LaunchNamedWith` returns after its
+request closed (the launch finished as it was cancelled, its prompt
+perhaps already on its way) is stopped at once and its id written into the
+closed request as `strayRun`; one whose launch never returned is found by
+its class and request through the session change hook and stopped the same
+way. A member session that ends with no brief makes it `ended` (the desk
+reads the session's end from the server's session change hook, the one
+that feeds `Engine.OnChange`), unless the agent never read its request
+(no call to the request route), which makes it `failed` with the
+session's exit and last line ("the agent exited before it read its
+request: is it logged in?"), so a logged-out agent is told from a turn
+that read and gave up.
+
+The slot (one turn at a time) is held from `starting` until the turn's run
+is seen to end, not until its request closes: `state.json` names the run
+draining, and the next queued request waits for it. A stop is retried
+every 10 s; after six failures the desk takes no new turn (`503
+brakeman_stuck`, "the last turn's run did not stop: stop it from its run
+page") until the run ends; at the server's shutdown the run ends as every
+run does, and a restart finds it interrupted.
 
 **Admin routes** (`brakeman.go`), every one `requireAdmin` and a
 switchyard's 403:
@@ -584,14 +730,17 @@ switchyard's 403:
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
 
 **Session routes** (`brakeman_session.go`), the Brakeman session's own
-token only (`agentTokenOK`) for the request the session's run belongs to,
-while it is `running`; the admin's token is refused for the brief (`403
+token only (`agentTokenOK`) for the request its run names, while it is
+`starting` or `running`. The brief's route looks its `opId` up first: the
+same `opId` and brief answer `200` with the request whatever its state now
+(a lost reply asked again after the request became `briefed`); only a new
+submission is held to the state, the bounds and the refs. The admin's token is refused for the brief (`403
 agent_only`, as a task result is: a brief is always Brakeman's own) and
 taken for the reads, so a person can inspect what Brakeman was given:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request}`: kind, subjects as resolved, note, since, the last briefing's `asOf`, the scope and visibility it may use, the budget left; `404 not_brakeman` for another session |
+| `GET /api/sessions/{id}/brakeman/request` | `{request}`: kind, subjects as resolved, note, since, the last complete briefing's coverage, the scope and visibility it may use, the budget left; `404 not_brakeman` for another session |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`; the same `opId` and brief `200`; another brief `409 brief_exists`; `422 bad_refs` naming each ref that resolves to nothing or lies outside the scope or visibility; `400 invalid_brief` with the item's index and why; `413 bound` past 256 KiB as JSON |
 
 **Resolution** (`brakeman_refs.go`): each ref of a submitted brief is
@@ -599,10 +748,20 @@ looked up in the record it names (the ledger's reads, Dispatch's
 `Ticket`, `Comment` and `Receipt`, the registry and the session's
 attention, the touched index, git through `internal/gitcli` for a
 commit, the desk's own requests) and checked against the request's scope
-and visibility; the brief is kept with each ref's `Resolved` snapshot
-(`{ref, url, state, rev, sha256, at}`), so a later reader sees what
-Brakeman saw and whether it has changed since. A ref to something deleted
-since is shown as such, never dropped.
+and visibility. Every answer a turn reads (PR-4) is noted in the
+request's read log (`brakeman/requests/br-<n>.reads.json`: each item's
+ref, revision or state, and time; at most 5,000 entries, the oldest
+dropped and the drop said), and each ref of the brief is kept with two
+snapshots of `{ref, url, state, rev, sha256, at}`: `seen`, what the turn
+read (from the log; `unobserved` for a ref it never read, which
+resolution then reads), and `now`, what it is as the brief is kept. A
+later reader sees what Brakeman read, what was true when it wrote, and
+whether it has changed since. A `decision/1`'s `subjectRevision` and a
+proposal's `expectedRevision` must equal their target's `seen` revision
+(`422 bad_refs`, "you read revision 7"), and Conductor's controls send
+that revision, so advice from an older read is refused, never applied to
+a newer state. A ref to something deleted since is shown as such, never
+dropped.
 
 **The `brakeman` event** on `GET /api/events`: `{id, state}` after each
 change of a request's state, at most 200 bytes, state a page cannot do
@@ -612,43 +771,72 @@ the event, the request's states, the brief's schema and the refs.
 
 ### `internal/api`: what Brakeman reads, and drafts made work (PR-4)
 
-`brakeman_observe.go` (new): `GET /api/sessions/{id}/brakeman/observe/{what}`,
-the Brakeman session's token (or the admin's), counted against the
-request's `ReadsPerTurn` (`429 reads_spent` past it), each answer at most
-256 KiB and every item carrying the ref a brief cites it by:
+Brakeman reads through the routes every client reads, not a second set
+of its own. A request whose bearer is a turn's session token and whose
+`X-Conductor-Session` header names that session (the session's
+`AgentTokenOK`, its run's request `starting` or `running`) authenticates
+as the principal `brakeman`, and `s.reader(w, r)` (new) takes the admin
+or that principal on exactly these existing reads, each answered by its
+own handler, the principal's reply filtered by `Scope.Admits` and the
+visibility and counted against the request's `ReadsPerTurn` (`429
+reads_spent` past it), every item carrying the ref a brief cites it by:
+`GET /api/runs` and `GET /api/runs/{run}` with its tasks', attempts',
+commands' and messages' reads (runs), the step log route with its
+`X-Conductor-Log-SHA256` (check logs), `GET /api/dispatch/projects`,
+`…/tickets`, `…/tickets/{key}`, `…/history` and `…/comments` (Dispatch),
+`GET /api/sessions` (sessions) and `GET /api/touched` (touched files).
+Each keeps its own bound (a ticket's read its 3 MiB, `maxTicketReply`,
+with its comments past the last 50 through `…/comments`), which the guide
+lists; the admin's answers do not change. Every other admin route
+refuses the principal. What no route serves today is new and typed, the
+admin's too, under `GET /api/brakeman/`, each answer at most 256 KiB:
 
-| `what` | Query | Answer |
+| Route | Query | Answer |
 |---|---|---|
-| `changes` | `since` (a time) or none (the last briefing's cursors), `cursor`, `limit` (at most 200) | what changed: runs launched, ended, paused or continued; tasks that changed state, with how Conductor knows (below); questions opened and answered; messages; tickets created, edited or closed and comments added; each with its ref and time; `next` for the rest |
-| `run` | `run` | a run with its tasks, attempts, check receipts (no logs), messages and blockers, as the admin's reads give them |
-| `log` | a `check:` ref, `tail` (at most 64 KiB) | the log's last bytes and its SHA-256 |
-| `tickets` | the Dispatch list's query (`project`, `status`, `q`, `sort`) | a page of summaries |
-| `ticket` | `key` | the ticket as `GET /api/dispatch/tickets/{key}` reads it |
-| `history` | `key`, `after` | a page of its history |
-| `sessions` | none | each session in scope: name, agent, state, the question it asks with its options, quiet for how long |
-| `screen` | `session`, `lines` (at most 200) | the screen's last lines; `403 not_visible` unless terminals are visible |
-| `touched` | `session` (optional) | touched-index entries in scope, at most 500 |
-| `overlaps` | none | paths changed by two or more live attempts or sessions in git work trees (`gitcli.GetStatus` against each one's base, at most 32 trees, 2,000 paths), each with the refs |
-| `briefs` | `q`, `after` | earlier briefs, title, summary and items' refs, newest first, at most 20 a page |
+| `…/changes` | `since` (a time) or none (the last complete briefing's watermarks), `cursor`, `limit` (at most 200) | what changed: runs launched, ended, paused or continued; tasks that changed state, with how Conductor knows (below); questions opened and answered, from each listed session's activity window, with a `gap` where the window starts after `since` or the session is gone; messages; tickets created, edited or closed, and comments added or edited, from Dispatch's change sequence (below); each with its ref and time; `next` for the rest |
+| `…/status` | `run` or `session` | each task's, or the session's, status as Conductor computes it (below) |
+| `…/screen` | `session`, `lines` (at most 200) | a server session's screen's last lines; `403 not_visible` unless terminals are visible; `409 unavailable` for a hosted session, whose screen the server does not hold |
+| `…/overlaps` | none | paths changed in two or more live attempts' or sessions' git work trees, each tree's committed changes since its base (`gitcli.ChangedSince`, new: `git diff --name-only -z <base>...HEAD`) with its working tree's (`gitcli.GetStatus`), at most 32 trees and 2,000 paths, each with the refs |
+| `…/briefs` | `q`, `after` | earlier briefs, title, summary and items' refs, newest first, at most 20 a page |
+
+The MCP tool `observe` (PR-5) and `conductor brakeman observe` send each
+`what` to its route by the guide's table, on the client side: the server
+has no dispatcher of its own.
+
+**What a briefing covers is the server's record.** The desk notes, per
+turn, how far the `changes` pages it delivered reach: for each run the
+last event seq delivered with nothing skipped before it, Dispatch's
+change seq likewise, each session's window. A page cut by its limit and
+not followed, a run marked `truncated` or a window with a `gap` leaves
+that part `partial`. The request's `Coverage` is that record, never the
+agent's word, and the next briefing starts from each part's last complete
+watermark, so pages Brakeman never read are read again. A run, project or
+session newly in scope (the scope widened) has no watermark and starts at
+the earlier briefing's time, labelled newly in scope.
 
 **How Conductor knows, computed, never inferred by the agent.** Each task
-and session in `changes`, `run` and `sessions` carries `status`, one of:
+and session in `…/changes` and `…/status` carries `status`, one of:
 `failed` with the receipt that proves it (a check's non-zero exit or
 timeout, a refused result, attempts spent); `blocked` with the blocker the
 attempt reported; `waiting_on_person` with the open question; `quiet` with
 how long the terminal has written nothing (`LastOutputAt`, at least 10
-minutes) and `proof: none`; `running`; `succeeded` with its result commit;
+minutes) and `proof: none`, for a server session only (a hosted session's
+output is the host's, so its quiet time is `unknown`, never `quiet`);
+`running`; `succeeded` with its result commit;
 `stopped` or `interrupted` with the record's words. Brakeman's brief can
 then tell inactivity from proven failure because Conductor already did, and
 its fact cites the receipt or says there is none.
 
 The ledger gains one read, no schema change: `Ledger.LastEvent(ctx, run)
 (int64, error)` (`SELECT MAX(seq)`), so `changes` reads each run's events
-after the last briefing's cursor, or, given a time, the newest 5,000 of a
-run's events (`Events` after `LastEvent - 5000`) filtered by their time in
-Go; a run with more since then is marked `truncated`. Dispatch's tickets
-since a time are the list sorted by `updated`, descending, read until a
-ticket's `updatedAt` is before it.
+after the last briefing's watermark, or, given a time, the newest 5,000 of
+a run's events (`Events` after `LastEvent - 5000`) filtered by their time
+in Go; a run with more since then is marked `truncated`. Dispatch gains
+one read, no schema change: `Store.ChangesAfter(ctx, after, limit)` over
+its `changes` table by `seq`, every project's, so a comment added to or
+edited on an old ticket is seen, which a ticket's `updatedAt` does not
+record (a comment's change bumps no ticket); given a time, the newest
+5,000 changes filtered by their time, `truncated` past them.
 
 **Drafts made work, by a person** (admin): `POST
 /api/brakeman/requests/{id}/items/{i}/make` with `{opId, by, edit}`, `edit`
@@ -656,26 +844,35 @@ the form as the person changed it (the same shape as the draft):
 
 - a `draft_ticket/1` becomes a ticket through Dispatch's own operation
   (`Store.CreateTicket` under the actor `admin`, the person's `by`, the
-  person's `opId`), then its `blocks` relations to tickets already made
-  from the same brief (`AddRelation`, op ids `<opId>-r<j>`); the request
-  records `Made{item, pending: opId}` before the store's operation and
-  `{key, receipt}` after it; a repeat with the same `opId` answers from
-  Dispatch's receipt, and an item already made answers `409 already_made`
-  with its key;
-- a `draft_crew/1` becomes a saved crew through the crew store, as `POST
-  /api/crews` saves one (validated again), recorded the same way; a crew is
-  never launched by this route;
+  person's `opId`); the request records `Made{item, pending: opId}` before
+  the store's operation and `{key, receipt}` after it; a repeat with the
+  same `opId` answers from Dispatch's receipt, and an item already made
+  answers `409 already_made` with its key. The brief's `blocks` are
+  written into the request as edges (`Edges: {from, to, pending}`) by the
+  first make, and every make then adds each pending edge whose two ends
+  are tickets now (`AddRelation`, op id `<brief opId>-e<from>-<to>`, the
+  same whichever end is made last), so A then B and B then A give the one
+  relation; an edge is marked made after Dispatch's receipt;
+- a `draft_crew/1` becomes a saved crew through the crew store's
+  `CreateFrom(c, origin)` (new), as `POST /api/crews` saves one (validated
+  again): the crew document gains `origin`
+  (`brakeman:<request>/<item>/<opId>`, kept by every later save of it), and
+  a create whose origin a crew holds answers that crew. The request
+  records `Made{item, pending: opId, input}` (the crew as the person edited
+  it) before the save and `{crew, rev}` after; a crew is never launched by
+  this route;
 - every other kind answers `400 not_a_draft`.
 
-Brakeman's own token reaches none of these: its routes are under
-`/api/sessions/{id}/brakeman/` and are reads, the request and the brief.
+Brakeman's own token reaches none of these: it reads the routes above and
+writes only its brief.
 
 ### `internal/cli` and `internal/agents`: Brakeman's tools and command (PR-5)
 
 MCP tools, listed only in a session whose environment has
-`CONDUCTOR_BRAKEMAN` (set by the server, PR-3): `brakeman_request` (the
-request), `observe` (`what` and its query, one tool for the eleven reads,
-its schema a `oneOf` from the guide's table), and `brief_submit` (`opId`
+`CONDUCTOR_BRAKEMAN` (set by the server, PR-3c): `brakeman_request` (the
+request), `observe` (`what` and its query, one tool for the reads of
+PR-4, its schema a `oneOf` from the guide's table, each `what` sent to its
+own route), and `brief_submit` (`opId`
 minted by the tool when absent, and `brief`; a reply lost to the network
 is asked once more with the same `opId`, as the Dispatch writes do).
 `conductor brakeman request|observe WHAT [--k v]…|brief --file F` in a
@@ -688,7 +885,8 @@ token, `conductor brakeman ask KIND [--subject REF]… [--note-file F]
 short section, "If you are Brakeman" (six lines: `CONDUCTOR_BRAKEMAN` is
 set; call `guide` first; read before you write; every fact cites evidence;
 nothing you write becomes work; one brief, then your turn ends), and nothing
-else, so no agent carries a large static prompt. `web/e2e/stub-agent.sh`
+else, so no agent carries a large static prompt. In PR-6, the UI surface
+whose specs run it, `web/e2e/stub-agent.sh`
 gains `STUB_BRAKEMAN=1`: on its request line the stub reads its request with
 `conductor brakeman request`, observes `changes`, and submits a brief whose
 fact cites its own session and run (and a check receipt when
@@ -733,10 +931,14 @@ fact cites its own session and run (and a check receipt when
   routes: for an open question, its options as the session reports them and
   "Answer in the session", which opens the session page at its reply bar (the
   one place a question is answered, with the control role); for a failed or
-  blocked task, Retry, Accept anyway (asked first, as on the run page) and
-  Cancel, sent through `useTaskCommands` with `expectedRevision` the run's
-  revision the brief resolved, so a run that moved since is refused `409
-  stale_revision` and the card says what changed; for a ticket, its page. The
+  blocked task, the commands its state allows, by the run page's own rules
+  (`taskActions` in `utils/tasks.ts`, which follow
+  `internal/crew/commands.go`): a failed task Retry, and Accept anyway
+  (asked first, as on the run page) only for a work task with a submitted
+  result; a blocked task Cancel; sent through `useTaskCommands` with
+  `expectedRevision` the run's revision the turn read (`seen`), so a run
+  that moved since is refused `409 stale_revision` and the card says what
+  changed; for a ticket, its page. The
   card says who may answer ("you, the operator"; DR1 and HM1 add named
   people) and what answering authorizes, from the brief.
 - `components/BrakemanProposal.vue`: a proposal's text and its operation
@@ -768,7 +970,7 @@ the by-hand turn (Acceptance). The README gains a Brakeman paragraph;
 `docs/architecture.md` a Brakeman section (a turn is a run; the guide; the
 records). `docs/protocol.md` is each PR's own.
 
-### Later PRs: DS2's records, BK2's actions, BK3's role (PR-9 to PR-16)
+### Later PRs: DS2's records, BK2's actions, BK3's role (PR-9 to PR-18)
 
 **PR-9 (C9's providers).** Once C9's `GET /api/capabilities` (#488) has
 merged, the guide's `providers` section is that route's answer (`known:
@@ -798,17 +1000,21 @@ their operations and BK1 is Done:
   on a candidate, a Yardmaster repair transition), `prepare_followup`
   (DS2's proposal of a follow-up revision from the approved one, which a
   person still approves), `route_decision` (DR1's routing of a decision
-  record to the operator or to a human member label of HM1's; never its
-  answer). Only the admin's configuration route writes grants; no route
-  Brakeman's token reaches does.
-- `POST /api/sessions/{id}/brakeman/act` `{opId, op, target, args,
-  expectedRevision}`: the op must be granted, in scope, and its target in
-  the state the operation requires; it runs through the same function the
-  admin's route for that operation runs (moved into one function both
-  call, as `docs/plans/ext.md` does for `ext.Host.Launch` with
-  `launchSaved`), under the actor `brakeman`, with the request's id and the
-  op's `opId` as its idempotency key, and answers that operation's own
-  receipt, also kept in the request. Approving a plan revision, answering
+  record to the operator; to a human member's label once HM1 serves them,
+  PR-18; never its answer). Only the admin's configuration route writes
+  grants; no route Brakeman's token reaches does.
+- No act route of Brakeman's own: each granted operation is sent to that
+  operation's own typed route (DS2's launch from a revision, #464; RV1's
+  request changes; DS2's follow-up proposal; DR1's routing), which takes
+  the `brakeman` principal (PR-4) when the configuration grants it that
+  operation, checks the op is in scope and its target in the state the
+  operation requires, and runs its one handler under the actor
+  `brakeman`, the request's id and the op's `opId` its idempotency key
+  (`<request>-<opId>`), answering its own receipt, which the request
+  copies. The launch goes through `ext.Host` (PR-17's
+  `Host.LaunchApproved`, answered by DS2's launch function, never
+  `launchSaved`, which launches a saved crew and not an approved
+  revision). Approving a plan revision, answering
   a decision, changing a gate, accepting a task, editing the
   configuration and every Dispatch close are not operations it can be
   granted; DS2 refuses an approval by any actor but the operator, DR1 an
@@ -816,13 +1022,20 @@ their operations and BK1 is Done:
 - Visibility and grants stay two fields checked apart: a grant gives no
   read, a read gives no grant; with visibility narrowed, an act whose
   target is no longer visible is refused.
-- PR-13: the MCP tool `act` and `conductor brakeman act`; Settings' grants;
+- PR-13: the MCP tool `act` and `conductor brakeman act`, which send each
+  operation to its route by the guide's table; Settings' grants;
   a brief's proposals that Brakeman ran show "Brakeman did this" with the
   receipt; the guide lists the granted operations.
 
 **PR-14 and PR-15 (BK3, the background role; O2's default, Owner decisions,
-2).** Yardmaster's engine gains a role loop (`internal/crew/role.go`): a
-role is a record, not a process: an identity (`brakeman`), its preferences,
+2).** Yardmaster's engine gains a role loop (`internal/crew/role.go`),
+generic: it knows a role's lifecycle, wakes, window, cooldown and budget,
+and asks an interface, `crew.RoleRecords`, for its records and
+`Fire(batch) error` to start a turn. The desk in `internal/api`
+implements both over `internal/brakeman`'s store, so `internal/crew`
+imports neither `internal/brakeman` nor `internal/api` and
+`internal/brakeman` imports no `internal/crew`. A role is a record, not a
+process: an identity (`brakeman`), its preferences,
 its durable notes (at most 64 KiB, kept by Conductor: a brief's fact or
 interpretation the person chooses to keep, readable and clearable on the
 page, never something Brakeman writes there by itself), and its lifecycle,
@@ -833,10 +1046,16 @@ login refused, the budget spent), each change written before what it
 starts. Wake sources, all event-driven, none a poll of a model: a task
 failed with proof, a question open longer than a threshold, a run ended or
 paused, a ticket moved to ready, a person's explicit request, and
-configured briefing times in the server's local zone. Each wake is a row in
+configured briefing times in the server's local zone. No source fires for
+Brakeman's own runs and sessions (class `brakeman`) or for what a turn's
+request made, so a briefing never wakes the next. Each wake is a row in
 the role's log; the batch window (default 120 s, 10 to 900) gathers the
-wakes that fire in it into one request of kind `wake` with the wakes as
-subjects; the cooldown (default 30 min, 0 to 1,440) holds the next batch;
+wakes that fire in it into one batch (`wb-<n>`, its id written to the
+role's record when it opens), fired as one request of kind `wake` naming
+the batch (`Batch`), not its wakes as subjects: the turn reads the batch
+through its request, at most 200 wakes, the same kind and subject
+coalesced with a count, past 200 an `overflow` count with the first and
+last times; the cooldown (default 30 min, 0 to 1,440) holds the next batch;
 the budget (turns a day, minutes a day) refuses a turn and says so. A turn
 is BK1's turn, unchanged: a fresh run of a fresh session that rebuilds
 everything from the records. After a restart the role's state, its open
@@ -863,44 +1082,47 @@ or control message changes; the one new Server-Sent Event is `brakeman`.
 
 | State | Meaning | Goes to |
 |---|---|---|
-| `queued` | written, waiting for the desk | `starting`, `cancelled` |
-| `starting` | taken by the desk; deadline and configuration snapshot written; the launch under way | `running`, `failed`, `cancelled`, `interrupted` |
+| `queued` | written, waiting for the desk | `starting`, `cancelled`, `over_budget` |
+| `starting` | taken by the desk; deadline and configuration snapshot written; the launch under way | `running`, `failed`, `timed_out`, `cancelled`, `interrupted` |
 | `running` | its run and session recorded; the session may read and submit | `briefed`, `timed_out`, `ended`, `cancelled`, `interrupted` |
 | `briefed` | a brief kept | none |
 | `timed_out` | the deadline passed with no brief | none |
 | `ended` | the session ended with no brief | none |
-| `failed` | the launch failed (the engine's words) | none |
+| `failed` | the launch failed (the engine's words), or the agent exited before it read its request | none |
+| `over_budget` | at the dequeue, the day's turns were spent (after midnight, or a lowered `TurnsPerDay`) | none |
 | `cancelled` | a person cancelled it, or turned Brakeman off | none |
 | `interrupted` | the server stopped while it was starting or running | none |
 
 Every other transition is refused by `brakeman.Request.To` (a table test
-walks every pair). The last six are closed: `closedAt` is set and nothing
-of the request changes again but its `made` list.
+walks every pair). The last seven are closed: `closedAt` is set and
+nothing of the request changes again but its `made` list, its edges and
+its `strayRun`.
 
 **What is written before what.**
 
 1. A request's number is written to `brakeman/state.json` before the
    request's file, and the file (`queued`) before the reply: a number is
    never reused and a reply never names a request that is not kept.
-2. `starting`, with its deadline and snapshot, is written before
-   `Engine.LaunchNamed`; `running`, with the run and session, after it
+2. `starting`, with its deadline, snapshot and the day's count, is written
+   before `launchTurn`; `running`, with the run and session, after it
    returns. A server that dies between them leaves `starting`, which the
    next start makes `interrupted`; the engine's record of the run is
    interrupted at start as every legacy run's is, and the run, known by
-   its crew as launched, is never resumed (the `brakeman_run` refusal).
+   its class and request, is never resumed (the `brakeman_run` refusal).
 3. A brief is validated, its refs resolved, and the request written
    `briefed` with the brief and the resolutions before the reply; the run is
    stopped after the reply, after a grace of 20 s so the agent's last output
-   reaches its terminal. A stop that fails is logged; the record is the
-   truth.
+   reaches its terminal. The slot stays held until the run is seen to end,
+   a failed stop retried (the watchdog); the record is the truth.
 4. A deadline, a cancel and turning Brakeman off write the closing state
    first and stop the run after.
 5. A draft made work: `made {item, pending: opId}` is written before
    Dispatch's operation (or the crew's save), and `{key | crew, receipt}`
    after it. A server that dies between them leaves the pending entry,
-   which the next read of the request completes from Dispatch's receipt for
-   that `(admin, opId)`; for a crew, from the saved crew of that name and
-   content made after the pending stamp.
+   which `Open` completes before any route serves, so no person can edit or
+   delete in between: a ticket from Dispatch's receipt for that `(admin,
+   opId)`, a pending edge by its op id; a crew by the crew holding its
+   `origin`, or, with none, by saving the recorded input again under it.
 
 **Invariants.**
 
@@ -910,23 +1132,33 @@ of the request changes again but its `made` list.
   again answers it (`200`), other content `409 op_conflict`;
   `state.json` keeps the last 1,000 `opId`s with their request.
 - A brief is kept once. Its `opId` again with the same brief answers it;
-  any other brief `409 brief_exists`. Only the session of the request's
-  run submits it, only while `running`, only with its own token.
+  any other brief `409 brief_exists`, whatever the request's state. Only
+  the session of the request's run submits a new one, only while
+  `starting` or `running`, only with its own token.
 - Every fact names at least one ref; every ref of a kept brief resolved,
-  inside the request's scope and visibility, when it was kept; the
-  resolution is kept beside it and never rewritten.
+  inside the request's scope and visibility, when it was kept; what the
+  turn read (`seen`) and what was true then (`now`) are kept beside it
+  and never rewritten.
 - A turn's reads use the snapshot taken at `starting` intersected with the
   configuration now: a person narrowing what Brakeman may see takes effect
   at once; widening takes effect at the next request.
 - Brakeman's token reaches the routes any session's token reaches today
-  (its own attention, reports and view link), the guide, and the
-  `/api/sessions/{id}/brakeman/` routes, which read and submit a brief; it
-  is refused by every admin route (a test walks them), by the self-crew
-  routes and, until PR-12's grants, by anything that changes a run, a
-  ticket or a crew.
+  (its own attention, reports and view link) but the ticket routes, the
+  guide, its request and brief routes, and as the `brakeman` principal
+  the reads of PR-4; it is refused by every other admin route, by the
+  self-crew routes, by `…/ticket` and its comment route whether or not its
+  run is linked, and, until PR-12's grants, by anything that changes a
+  run, a ticket or a crew. A test walks every route of the mux with it,
+  each with the answer it must give.
 - The day's budget: a request is refused at creation when the turns
   started today plus those queued reach `TurnsPerDay`; a turn counts once
-  it is `starting`.
+  it is `starting`, in `state.json`'s `days`, kept apart from the
+  requests, so no prune or cancel lowers it; the dequeue checks the day's
+  count again and closes a request that would pass it as `over_budget`.
+- A question a Brakeman session asks is shown in Needs you labelled
+  "Brakeman · br-n"; it reaches browser notifications, Chime and webhooks
+  only when the request's kind is not `wake`, so a background turn pages
+  no one.
 - Nothing Brakeman submits changes a ticket's status, a run's state, a
   task's outcome, a verification or an acceptance: those stay separate
   facts with their own owners (the Program, section 1.4), and a brief only
@@ -938,7 +1170,10 @@ measured by `TestTheBrakemanEventIsBounded`. Like a `run` event it is state
 a page cannot do without: a client that cannot keep up is dropped and
 reads again on its next snapshot.
 
-**BK2 (PR-12).** An act is checked, in this order, against: the session
+**BK2 (PR-12).** An act first looks up its idempotency key: a receipt the
+operation's store holds for it answers the repeat, whatever the target's
+state now, so a retry after a lost reply is never refused because the act
+itself moved the target. A new act is checked, in this order, against: the session
 being the running request's; the grant (snapshot intersected with now);
 the scope and visibility of its target; the target's state as the
 operation requires (the revision `expectedRevision` names, or the
@@ -946,7 +1181,7 @@ operation's own state check); then it runs through the operation's one
 function under the actor `brakeman` with `<request>-<opId>` as its
 idempotency key, whose receipt is written by the operation's own store
 (the ledger's commands, Dispatch's ops, DR1's records) and copied into the
-request after. A repeat answers the same receipt; the request's copy is
+request after. The request's copy is
 completed from the store's receipt after a crash, as `made` is. No
 operation in the grant list changes an approval, a gate, a decision's
 answer or the configuration.
@@ -954,16 +1189,22 @@ answer or the configuration.
 **BK3 (PR-14).** The role's lifecycle, written to `brakeman/role.json`
 before what each change starts: `idle` → `gathering` when a wake source
 fires (the wake appended to the role's log, at most 1,000 kept) → after
-the window, a request of kind `wake` is created (rule 1 above) and the role
-is `briefing` → when that request closes, `cooling` until the cooldown ends
-→ `idle`. `paused` from any state by a person (a request already running
-runs to its end); `unavailable` when a turn cannot start (the request
-`failed`), until a person's request or the next configured briefing tries
-again. Wakes that fire while `briefing` or `cooling` join the next batch.
-An invoked request and a wake batch share the one queue. At start the role
-is read back: `gathering` keeps its open batch and fires once its window
-has passed; `briefing` follows its request, which rule 2 made
-`interrupted`, to `cooling`. The engine's loop holds no process between
+the window, a request of kind `wake` is created with the op id
+`wake-<batch>` (rule 1 above; a create again with it answers the request
+already made) and the role is `briefing` → when that request closes,
+`cooling` until the cooldown ends → `idle`. `paused` from any state by a
+person (a request already running runs to its end); `unavailable` when a
+turn cannot start (the request `failed`: a launch refused, or an agent
+that exited before it read its request, as a logged-out CLI does), until
+a person's request or the next configured briefing tries again. Wakes
+that fire while `briefing` or `cooling` join the next batch. An invoked
+request and a wake batch share the one queue. At start the role is read
+back: `gathering` keeps its open batch and, once its window has passed,
+creates its request with the same op id, which finds the one a crash
+left between the request's write and the role's, so a batch fires once;
+`briefing` follows its request, which rule 2 made `interrupted`, to
+`cooling`. A `wake` turn's own question notifies no one (the invariant
+above), and its deadline ends it unanswered. The engine's loop holds no process between
 turns and polls no model: it is woken by the activity sink, the engine's
 run changes, Dispatch's `OnChange` and one timer for the next configured
 briefing or window end.
@@ -972,7 +1213,8 @@ briefing or window end.
 
 - Brakeman as a scheduler: it launches nothing, adds no member, forms no
   crew and rewrites no task graph; BK2's launch is of a plan revision a
-  person approved, through DS2's own launch. Supervisor lifecycles beyond
+  person approved, through DS2's own launch by way of `ext.Host` (PR-17).
+  Supervisor lifecycles beyond
   BK3's role, dynamic crew reshaping and live plan revision are the
   Program's later work (section 7).
 - Answering a question, approving a plan revision, accepting a task or a
@@ -1007,15 +1249,21 @@ spec); a PR touching both runs both. The named tests each PR adds:
 
 **PR-1, `internal/brakeman`** (Go race): `config_test.go`:
 `TestConfigBoundsEachField` (every field at its bound and one past),
-`TestAModelNeedsAnAdapterThatTakesOne`, `TestAConfigSaveNamesItsRevision`,
-`TestTheDefaultsAreOffAndTerminalsHidden`, `TestActMustBeEmptyInThisBuild`.
+`TestAModelNeedsAnAdapterThatTakesOne`, `TestAnAgentWithoutAReadOnlyModeIsRefused`,
+`TestAConfigSaveNamesItsRevision`, `TestTheDefaultsAreOffAndTerminalsHidden`,
+`TestActMustBeEmptyInThisBuild`, `TestScopeAdmits` (each selector alone and
+together, a session in no run, a ticket linked to no run, a repository
+root), `TestObserveOnlyRefusesDraftsAndProposals`.
 `request_test.go`: `TestEveryRequestTransition` (the table, every pair),
 `TestAClosedRequestOnlyGainsMade`, `TestEachKindTakesItsSubjects`.
 `brief_test.go`: `TestBriefBounds` (each field and count at its bound and
 one past, the whole at 256 KiB), `TestAFactWithoutEvidenceIsRefused`,
 `TestAnInterpretationReadsFactsOfItsBrief`, `TestAnOutcomeNamesAReceipt`,
 `TestADecisionCardIsWhole`, `TestDraftTicketsBlockWithoutACycle`,
-`TestADraftCrewPassesValidate`, `TestTextIsCleanedBeforeItIsKept`.
+`TestADraftCrewIsCheckedByFacts`, `TestTextIsCleanedBeforeItIsKept`,
+`TestTextPastByte500Survives` (a summary of 4 KiB and a description of
+16 KiB kept whole), `TestAFieldPastItsBoundIsRefusedNotCut`,
+`TestABriefCarryingAsOfIsRefused`.
 `refs_test.go`: `TestRefGrammar` (each kind's valid and invalid forms, the
 512-byte bound), `TestARefPrintsAsParsed`. `store_test.go`:
 `TestANumberIsNeverReused` (the state written, the request's file failing),
@@ -1023,7 +1271,13 @@ one past, the whole at 256 KiB), `TestAFactWithoutEvidenceIsRefused`,
 `TestOpenInterruptsWhatWasStartingOrRunning`,
 `TestALaterSchemaIsSkippedNotRewritten`,
 `TestTurnsTodayCountsByTheLocalDay` (a fake clock across midnight),
-`TestUpdateIsAtomicUnderConcurrency` (32 goroutines).
+`TestTheDaysCountSurvivesPruneAndCancel` (600 cancelled requests),
+`TestUpdateIsAtomicUnderConcurrency` (32 goroutines),
+`TestASecondOpenIsReadOnlyUntilItHoldsTheLock` (two stores on one
+directory: the second refuses writes, interrupts nothing, and takes the
+desk once the first closes), `TestAPendingMakeIsCompletedAtOpen`.
+`internal/store`: `TestOwnerLock` (the ledger's lock tests, moved);
+`internal/crew/ledger`'s own tests unchanged.
 
 **PR-2, `internal/api` and `internal/cli`** (Go race):
 `api/guide_test.go`: `TestTheGuideNamesThisBuild`,
@@ -1034,12 +1288,25 @@ other than the mux's 404), `TestEverySessionRouteIsInTheTable`,
 member of a run with a ticket), `TestTheGuideRefusesAnotherSessionsToken`,
 `TestASwitchyardAnswersItsOwnGuide`, `TestProvidersAreUnknownBeforeC9`.
 `cli/mcp_test.go`: `TestToolsListIsUnchanged` (the sixteen existing
-tools' entries against a golden file of `main`'s reply),
-`TestEveryToolIsAnOperation`, `TestTheGuideToolReadsTheServer`,
+tools' entries against a golden file of `main`'s reply, their
+descriptions from `Description`), `TestSummaryAndDescriptionAreBounded`,
+`TestEveryToolIsAnOperation`, `TestAnUnhandledToolIsNotListed`,
+`TestTheGuideToolReadsTheServer`,
 `TestTheGuideToolSaysWhenVersionsDiffer`. `cli/guide_test.go`:
 `TestGuideInASession`, `TestGuideWithTheWorkbenchToken`, `TestGuideJSON`.
 
-**PR-3, `internal/api`, `internal/agents`, `internal/crew`** (Go race):
+**PR-3a, `internal/agents`** (Go race): `agents/adapter_test.go`:
+`TestOnlyVerifiedAdaptersTakeAModel`, `TestClaudeAllowsConductorsTools`,
+`TestOnlyClaudeAndCodexHaveAReadOnlyMode`; under the `recipes` tag
+(nightly, `make test-recipes`): `TestModelFlagsMatchTheCLIs`,
+`TestClaudeAllowedToolsMatchesTheCLI`, `TestReadOnlyArgsMatchTheCLIs`.
+
+**PR-3b, `internal/api`** (Go race): `api/brakeman_refs_test.go`:
+`TestEachRefKindResolves` (every kind against its store),
+`TestARefOutsideTheScopeIsRefused`, `TestADeletedTargetResolvesAsDeleted`,
+`TestAnEvictedQuestionIsUnavailable`.
+
+**PR-3c, `internal/api`, `internal/crew`** (Go race):
 `api/brakeman_test.go`: `TestARequestIsRefusedWhileBrakemanIsOff`,
 `TestATurnIsAOneMemberRunThatTypesItsLine` (the API tests' scripted
 agent, which submits its brief over HTTP with its own token),
@@ -1056,16 +1323,40 @@ stop), `TestABriefNamesOnlyRefsThatResolve` (`422 bad_refs` with each ref),
 on the same data), `TestABrakemanRunIsNotResumed`,
 `TestABrakemanSessionFormsNoCrew`, `TestBrakemansTokenReachesNoAdminRoute`
 (walks every `requireAdmin` and `launching` route with it),
-`TestTheDaysBudgetRefuses`, `TestCancelStopsTheTurn`,
+`TestTheDaysBudgetRefuses`, `TestTheDequeueRechecksTheBudget` (a fake
+clock across midnight, a lowered `TurnsPerDay`), `TestCancelStopsTheTurn`,
 `TestTurningBrakemanOffStopsTheTurn`, `TestTheBrakemanEventIsBounded`,
-`TestASwitchyardRefusesBrakeman`. `agents/adapter_test.go`:
-`TestOnlyVerifiedAdaptersTakeAModel`, `TestClaudeAllowsConductorsTools`;
-under the `recipes` tag (nightly, `make test-recipes`):
-`TestModelFlagsMatchTheCLIs`, `TestClaudeAllowedToolsMatchesTheCLI`.
-`crew/store_test.go`: `TestBrakemanIsATakenID`.
+`TestASwitchyardRefusesBrakeman`, `TestATurnLaunchesReadOnly` (the
+adapter's read-only arguments in the argv), `TestBrakemanNeverTakesYolo`
+(a crew's and the server's yolo on: no yolo argument),
+`TestTheDeadlineCoversStarting` and `TestCancelDuringLaunchStopsTheRunItReturns`
+(a gate inside the launch seam), `TestTheNextTurnWaitsForTheLastRunToEnd`,
+`TestAStopThatFailsHoldsTheSlot`, `TestAnAgentThatExitsBeforeReadingFails`,
+`TestABriefWhileStartingIsTaken`, `TestALostBriefReplyIsAnsweredAfterBriefed`,
+`TestAPersonsCrewNamedBrakemanIsNotATurn`,
+`TestBrakemanCannotReachATicket` (its run linked through a seam: `…/ticket`
+and the comment route refused), `TestABrakemanRunIsNotLinkedToATicket`,
+`TestABrakemanQuestionIsLabelledAndNotifiesOnlyForAPerson`,
+`TestASecondServerRunsNoTurn` (two servers on one data directory).
+`crew/store_test.go`: `TestBrakemanIsATakenID`; `crew/run_test.go`:
+`TestLaunchNamedWithStampsClassAndRequest` (in the `LaunchSpec` before
+the member starts), `TestBrakemanRunsEvictNoPersonsRun` (101 turns beside
+one person's run), `TestBrakemanRecordsArePrunedApart`.
 
 **PR-4, `internal/api`, `internal/crew/ledger`** (Go race):
-`api/brakeman_observe_test.go`: `TestChangesSinceTheLastBriefUseItsCursors`,
+`api/brakeman_observe_test.go`: `TestChangesSinceTheLastBriefUseItsWatermarks`,
+`TestTheAdminsReadsAreUnchanged` (each shared route's existing answers),
+`TestBrakemansPrincipalReadsOnlyTheNamedRoutes` (every admin route walked),
+`TestASharedReadIsTheRoutesOwnAnswerFiltered`,
+`TestACommentOnlyChangeIsSeen` (a comment on an old ticket),
+`TestAHostedSessionsScreenIsUnavailable`, `TestAHostedSessionIsNeverQuiet`,
+`TestOverlapsSeeCommittedChanges` (two clean worktrees that committed the
+same file), `TestCoverageIsTheServers` (an unread page, a truncated run, a
+gap: the next briefing reads them again), `TestAWidenedScopeStartsAtTheLastBriefing`,
+`TestASeenRevisionIsKeptBesideNow`, `TestAStaleSubjectRevisionIsRefused`,
+`TestDraftTicketsKeepTheirBlocksInEitherOrder` (A then B, B then A, and a
+crash seam between a create and an edge), `TestADraftCrewIsFoundByItsOrigin`
+(a crash seam between the save and `made`),
 `TestChangesSinceATimeAreBoundedAndSayTruncated`,
 `TestAFailedTaskCarriesItsReceipt`, `TestAQuietSessionIsNotAFailure`
 (`LastOutputAt` through a seam), `TestAnOpenQuestionIsWaitingOnAPerson`,
@@ -1075,9 +1366,11 @@ worktrees of a real repository in `t.TempDir()`), `TestALogTailCarriesItsSHA`
 (against the step log route's `X-Conductor-Log-SHA256`),
 `TestEachReplyIsBounded`, `TestADraftTicketIsMadeOnce` (the same `opId`
 twice; a crash seam between Dispatch's commit and `made`'s write),
-`TestDraftTicketsKeepTheirBlocks`, `TestADraftCrewIsSavedNotLaunched`,
-`TestBrakemansTokenMakesNothing`. `ledger/ledger_test.go`:
-`TestLastEvent`.
+`TestADraftCrewIsSavedNotLaunched`, `TestBrakemansTokenMakesNothing`.
+`ledger/ledger_test.go`: `TestLastEvent`; `dispatch/dispatch_test.go`:
+`TestChangesAfter`; `gitcli/gitcli_test.go`: `TestChangedSince`;
+`crew/store_test.go`: `TestCreateFromAnswersByOrigin`,
+`TestAnUpdateKeepsTheOrigin`.
 
 **PR-5, `internal/cli`, `internal/agents`** (Go race): `cli/mcp_test.go`:
 `TestBrakemansToolsOnlyInABrakemanSession`, `TestNoCrewToolsForBrakeman`,
@@ -1086,8 +1379,8 @@ twice; a crash seam between Dispatch's commit and `made`'s write),
 `TestBrakemanBriefFromAFile`, `TestBrakemanOutsideASessionIsLoud`.
 `agents/codex_test.go`: `TestCodexMCPEnvNamesBrakeman`;
 `agents/skill_test.go`: `TestTheSkillsBrakemanSectionIsShort` (at most six
-lines, names `guide`). The stub's Brakeman mode is exercised by PR-6's
-spec.
+lines, names `guide`). The stub's Brakeman mode is PR-6's, with the spec
+that drives it.
 
 **PR-6, `web/app`, `web/e2e`**: vitest `utils/brakeman.test.ts` (the
 kinds' and states' words, every ref kind to its route and label, the
@@ -1104,10 +1397,13 @@ they were and adds the sidebar's count; a server of its own restarted on
 the same data shows the same brief.
 
 **PR-7, `web/app`, `web/e2e`**: vitest `utils/brakemanCards.test.ts` (a
-card's controls from the live record of each `about` kind, the stale
-revision's words). Playwright `brakeman-cards.spec.ts`: a crew whose check
-always fails (the `tasks.spec.ts` fixture) gets a decision card with Retry,
-Accept anyway and Cancel; Retry with the brief's revision after the run
+card's controls from the live record of each `about` kind and state, by
+`taskActions`' rules: a failed work task with a submitted result, one
+without, a blocked task; the stale revision's words). Playwright
+`brakeman-cards.spec.ts`: a crew whose check always fails (the
+`tasks.spec.ts` fixture) gets a decision card with Retry and, its result
+submitted, Accept anyway, and no Cancel; a blocked task's card offers
+Cancel and no Retry; Retry with the brief's revision after the run
 moved is refused with words; a draft of two tickets, one blocking the
 other, edited and made: both tickets exist with the relation, Make again
 makes nothing; a draft crew is saved and opens in the editor, not
@@ -1130,6 +1426,7 @@ card's Approve control).
 `TestAGrantGivesNoRead`, `TestAReadGivesNoGrant`,
 `TestAnActRunsTheOperationsOwnFunction` (the same receipt as the admin's
 route, actor `brakeman`), `TestAnActIsKeptOnce`, `TestAStaleTargetIsRefused`,
+`TestAnActRetryAfterTheTargetMovedAnswersItsReceipt`,
 `TestNoGrantApprovesAnswersOrAccepts` (each refused operation),
 `TestBrakemanCannotGrantItself` (every route its token reaches, none writes
 `Permissions`); Playwright `brakeman-act.spec.ts` (a granted
@@ -1143,26 +1440,42 @@ page; an ungranted one shown as a proposal only).
 a wake), `TestARestartFiresAnOpenBatchOnce`,
 `TestAnUnavailableRoleHoldsNothingElse` (a crew runs, a question is
 answered, while the role is unavailable),
-`TestBriefingTimesInTheLocalZone`; Playwright `brakeman-role.spec.ts` (a
+`TestBriefingTimesInTheLocalZone`, `TestABriefingWakesNothing` (one
+external failure: one turn, and the turn's own run ending wakes nothing),
+`TestACrashBetweenTheRequestAndTheRoleFiresOnce`,
+`TestABatchPastTwoHundredWakesOverflows` (eleven failures, then 201),
+`TestALoggedOutAgentMakesTheRoleUnavailable` (a stub that exits at once),
+`TestAWakeTurnsQuestionNotifiesNobody`; Playwright `brakeman-role.spec.ts` (a
 task failing wakes Brakeman, one brief, the role cooling, the log; paused,
 nothing wakes it).
 
 **What tests cannot cover, by hand** (Acceptance): a real agent on the
 owner's own subscription (Claude Code and Codex) doing real turns against a
-night of real crews; Claude Code's `--allowedTools` rule and Codex's MCP
-approvals as the CLIs of the day behave; the Windows app (WSL) and the Mac
-rows of `make preflight` for PR-3, PR-6 and PR-14, the PRs that change a
+night of real crews; Claude Code's `--allowedTools` and `--disallowedTools`
+rules, Codex's read-only sandbox and its MCP approvals as the CLIs of the
+day behave; the Windows app (WSL) and the Mac
+rows of `make preflight` for PR-3c, PR-6 and PR-14, the PRs that change a
 launch, the pages and the engine.
 
 ## Boxcar constraints
 
 1. **The engine starts an attempt only through `crew.Launcher`; Brakeman
    goes through `ext.Host`, never exec.** A turn is a run the engine
-   launches (`LaunchNamed`), its member started through `crew.Launcher`;
-   Brakeman runs no command. BK2's one launch, of an approved plan, runs
-   DS2's launch function, the one `ext.Host.Launch` calls once C1 has
-   built it (`launchSaved`, `docs/plans/ext.md`), so a launch by Brakeman
-   and one by a provider are the same code.
+   launches (`LaunchNamedWith`), its member started through
+   `crew.Launcher`; Brakeman runs no command and nothing of it calls
+   `os/exec`. `ext.Host.Launch` is `launchSaved`, the launch of a saved
+   crew (`docs/plans/ext.md`, Host and Start), which neither a turn (an
+   unsaved crew) nor BK2's launch (DS2's launch from an approved
+   revision, #464) is. PR-17, once ext's PR-4 (#476) has merged, gives
+   `ext.Host` the two launches Brakeman makes, `LaunchTurn` (answered by
+   `launchTurn`) and `LaunchApproved` (answered by DS2's launch function),
+   with ext's own request types, and the desk then holds an `ext.Host`
+   from the composition root and launches through it alone; BK2's PR-12
+   waits for PR-17, so every Brakeman launch of BK2 goes through
+   `ext.Host` from its first PR. Until PR-17, PR-3c's turns call
+   `launchTurn` directly, the same function the Host method will answer
+   with: a departure from this constraint for BK1's first slice, which
+   is the owner's to approve at this plan's review (Owner decisions, 22).
 2. **`session.Local` drives a `session.Process`.** A turn's session is an
    ordinary server session; nothing here reaches a pid or a tty; a turn is
    stopped through `Engine.Stop`.
@@ -1182,8 +1495,11 @@ launch, the pages and the engine.
    receipt Brakeman cites is resolved from the ledger as it stands, and
    once C10 lands its `where` is carried in the resolution as it is.
 8. **`hostagent` is a launch site.** Not touched: Brakeman runs only on the
-   server and starts nothing on a host; a hosted session is observed
-   through the registry like any other.
+   server and starts nothing on a host. A hosted session is observed
+   through what the server holds of it (the registry's `Info`, its
+   attention as relayed): its screen and its quiet time are the host's and
+   are answered as unavailable (`…/screen` `409 unavailable`, quiet time
+   `unknown`), with no new host request or protocol.
 
 ## Open-core checklist
 
@@ -1217,35 +1533,43 @@ DS2's PRs grew past their estimates in review, which is why none here is
 planned larger than about 1,500.
 
 **The cut for Monday 2026-11-02.** PR-1 to PR-8 need nothing that is not on
-`main` today and can ship before Monday: in waves, PR-1 and PR-2 together,
-then PR-3, then PR-4 and PR-5 together (PR-6 joining PR-4 once PR-5 has
-merged), then PR-7, then PR-8. After them the owner configures Brakeman
-with the owner's own agent and uses it. PR-9 to PR-16 wait, each on the
+`main` today and can ship before Monday: in waves, PR-1, PR-2 and PR-3a
+together, then PR-3b, then PR-3c, then PR-4, then PR-5, then PR-6, then
+PR-7, then PR-8. Each of PR-3b to PR-6 needs the one before it: PR-3b and
+PR-3c share `internal/api` with PR-2, PR-5's tools are listed from the
+table entries PR-4 adds and call its routes, and PR-6's spec drives a
+stub that reads them. After them the owner configures Brakeman with the
+owner's own agent and uses it. PR-9 to PR-18 wait, each on the
 prerequisite named in its row.
 
 | PR | Title | Touches | Depends on | Parallel with | Size | When |
 |---|---|---|---|---|---|---|
-| PR-1 | brakeman: the configuration, requests, briefs (schema 1) and evidence references, and their records | `internal/brakeman` | none | PR-2 | ~1,400 | before Monday |
-| PR-2 | api, cli, mcp: the operating guide from the running server, and the tools listed from one table (BK0, first form) | `internal/api`, `internal/cli`, `docs/protocol.md` | none | PR-1 | ~1,200 | before Monday |
-| PR-3 | api, agents, crew: a Brakeman turn as a one-member Yardmaster run, its requests over HTTP and the brief its session submits | `internal/api`, `internal/agents`, `internal/crew`, `docs/protocol.md` | PR-1, PR-2 | none | ~1,500 | before Monday |
-| PR-4 | api, ledger: what Brakeman reads, the status Conductor computes, and a draft made work by the operator | `internal/api`, `internal/crew/ledger`, `docs/protocol.md` | PR-3 | PR-5, PR-6 | ~1,500 | before Monday |
-| PR-5 | cli, agents: Brakeman's MCP tools and `conductor brakeman`, the skill's section, the e2e stub's Brakeman | `internal/cli`, `internal/agents`, `web/e2e` (`stub-agent.sh`) | PR-3 | PR-4 | ~900 | before Monday |
-| PR-6 | web: Brakeman's settings, the Brakeman page and a brief as Conductor renders it | `web/app`, `web/e2e` | PR-3, PR-5 | PR-4 | ~1,400 | before Monday |
+| PR-1 | brakeman, store: the configuration, requests, briefs (schema 1) and evidence references, their records, and the owner lock shared with the ledger | `internal/brakeman`, `internal/store`, `internal/crew/ledger` | none | PR-2, PR-3a | ~1,500 | before Monday |
+| PR-2 | api, cli, mcp: the operating guide from the running server, and the tools listed from one table (BK0, first form) | `internal/api`, `internal/cli`, `docs/protocol.md` | none | PR-1, PR-3a | ~1,200 | before Monday |
+| PR-3a | agents: the read-only mode, the model flag and the Conductor tools rule, each checked against the CLIs | `internal/agents` | none | PR-1, PR-2 | ~400 | before Monday |
+| PR-3b | api: a brief's refs resolved against the records, the scope and what the turn read | `internal/api` | PR-1, PR-2 | PR-3a | ~700 | before Monday |
+| PR-3c | api, crew: a Brakeman turn as a read-only one-member Yardmaster run, its requests over HTTP and the brief its session submits | `internal/api`, `internal/crew`, `docs/protocol.md` | PR-3a, PR-3b | none | ~1,300 | before Monday |
+| PR-4 | api, crew, ledger, dispatch, gitcli: what Brakeman reads through the shared routes and the new ones, the status Conductor computes, the server's coverage, and a draft made work by the operator | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/dispatch`, `internal/gitcli`, `docs/protocol.md` | PR-3c | none | ~1,500 | before Monday |
+| PR-5 | cli, agents: Brakeman's MCP tools and `conductor brakeman`, the skill's section | `internal/cli`, `internal/agents` | PR-4 | none | ~700 | before Monday |
+| PR-6 | web: Brakeman's settings, the Brakeman page, a brief as Conductor renders it, and the e2e stub's Brakeman | `web/app`, `web/e2e` | PR-4, PR-5 | none | ~1,500 | before Monday |
 | PR-7 | web: decision cards with Conductor's controls, drafts made work, handoffs, the palette and run page entries | `web/app`, `web/e2e` | PR-4, PR-6 | none | ~1,300 | before Monday |
 | PR-8 | docs: the first slice's features entry, the README, the repository map, the architecture | `docs`, `README.md` | PR-1 to PR-7 | none | ~250 | before Monday |
 | PR-9 | api, cli: the guide's providers and host capabilities from C9 | `internal/api`, `internal/cli`, `docs/protocol.md` | PR-2; waits for C9 (`GET /api/capabilities`, #488) | PR-11 | ~400 | waits: C9 |
 | PR-10 | brakeman, api: plan revisions, launches and candidates as evidence, and a plan revision drafted for the operator | `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-4; waits for DS2's PR-6 to PR-8 (#463 to #465) | none | ~1,100 | waits: DS2 |
 | PR-11 | web: DS2's records in briefs, "Propose as plan revision", Approve on a card, the ticket page's entries | `web/app`, `web/e2e` | PR-7, PR-10; waits for DS2's PR-10 and PR-11 (#467, #468) | PR-9 | ~900 | waits: DS2 |
-| PR-12 | brakeman, api: authorized actions: the grants, the act route, four operations with scope, state checks and receipts (BK2) | `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-8, PR-11; waits for DR1 and RV1 and BK1 Done | none | ~1,400 | waits: DR1, RV1 |
+| PR-12 | brakeman, api: authorized actions: the grants, each operation's own route taking Brakeman's principal, four operations with scope, state checks and receipts (BK2) | `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-8, PR-11, PR-17; waits for DR1 and RV1 and BK1 Done | none | ~1,400 | waits: DR1, RV1 |
 | PR-13 | cli, agents, web: the act tool and command, grants in Settings, actions and their receipts in a brief | `internal/cli`, `internal/agents`, `web/app`, `web/e2e` | PR-12 | none | ~1,100 | waits: DR1, RV1 |
 | PR-14 | crew, brakeman, api: the background role in Yardmaster: wake sources, batching, cooldowns, budgets, records (BK3) | `internal/crew`, `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-13; waits for BK2 Done | none | ~1,500 | waits: BK2 |
 | PR-15 | web, cli: the role's controls, its wake log and its unavailable state | `web/app`, `web/e2e`, `internal/cli` | PR-14 | none | ~1,000 | waits: BK2 |
-| PR-16 | docs: the features entries of BK0 to BK3 and the by-hand records of their acceptance | `docs`, `README.md` | PR-9, PR-15 | none | ~250 | last |
+| PR-16 | docs: the features entries of BK0 to BK3 and the by-hand records of their acceptance | `docs`, `README.md` | PR-9, PR-15, PR-17 | none | ~250 | last |
+| PR-17 | ext, api: `ext.Host` launches a turn and an approved revision, and the desk launches through it | `ext`, `internal/api`, `docs/plans/ext.md` | PR-3c; waits for ext's PR-4 (`ext.Host`, #476) | none | ~500 | waits: C1 |
+| PR-18 | api, web: `route_decision` to a human member's label | `internal/api`, `web/app`, `web/e2e` | PR-13; waits for HM1 | none | ~400 | waits: HM1 |
 
-**PR-1** (`internal/brakeman`): `config.go`, `request.go`, `brief.go`,
-`refs.go`, `store.go` as The changes describe them, with `Facts` as an
-interface the API implements in PR-3. No caller yet; its tests reach all of
-it. Go only.
+**PR-1** (`internal/brakeman`, `internal/store`, `internal/crew/ledger`):
+`config.go`, `request.go`, `brief.go`, `refs.go`, `store.go` as The changes
+describe them, with `Facts` (`CheckCrew` among it) as an interface the API
+implements in PR-3c; the ledger's owner lock moved to `store.OwnerLock`,
+the ledger calling it. No caller yet; its tests reach all of it. Go only.
 
 **PR-2** (`internal/api`, `internal/cli`, `docs/protocol.md`): `guide.go`
 with the operations table for `main`'s agent routes and tools and the admin
@@ -1254,34 +1578,49 @@ from the table, held byte for byte by the golden test; the MCP tool
 `guide`, `initialize`'s one sentence, `conductor guide`; the protocol's
 "Guide" rows. Go only.
 
-**PR-3** (`internal/api`, `internal/agents`, `internal/crew`,
-`docs/protocol.md`): `brakeman.go` (the desk, the admin routes, the turn
-as a run, the watchdog, the restart, the refusals that keep a turn
-Brakeman's), `brakeman_session.go` (the request and brief routes),
-`brakeman_refs.go` (resolution), `Server.Launch`'s names for a turn, the
-`brakeman` event; `Adapter.ModelArgs` and `Adapter.AllowTools`; the crew
-store's taken id; the guide's table gains the routes; the protocol's
-Brakeman section. Go only; the Mac and Windows preflight rows run here (a
-launch changes).
+**PR-3a** (`internal/agents`): `Adapter.ReadOnlyArgs`, `Adapter.ModelArgs`
+and `Adapter.AllowTools` for Claude Code and Codex, each checked against
+the CLI in the PR and under the `recipes` tier. Go only.
 
-**PR-4** (`internal/api`, `internal/crew/ledger`, `docs/protocol.md`):
-`brakeman_observe.go` with the eleven reads and the computed status, the
-`make` route for drafts, `Ledger.LastEvent`; the table's entries; the
-protocol's rows. Go only.
+**PR-3b** (`internal/api`): `brakeman_refs.go`, the resolution of every
+ref kind against its store, `Scope.Admits` and the visibility, with `seen`
+read from a request's read log (empty until PR-4) and `now`; no route
+yet. Go only.
 
-**PR-5** (`internal/cli`, `internal/agents`, `web/e2e/stub-agent.sh`): the
-three MCP tools and their listing rule, the crew tools left out for
+**PR-3c** (`internal/api`, `internal/crew`, `docs/protocol.md`):
+`brakeman.go` (the desk, the owner lock's read-only mode, the admin
+routes, the turn as a read-only run through `launchTurn`, the watchdog and
+the slot, the restart, the refusals that keep a turn Brakeman's),
+`brakeman_session.go` (the request and brief routes), `Server.Launch`'s
+names for a turn, the label and notification rule for its questions, the
+`brakeman` event; `Engine.LaunchNamedWith`, the run's class and request,
+the classes' own caps, the crew store's taken id; the guide's table gains
+the routes with their MCP names; the protocol's Brakeman section. Go only;
+the Mac and Windows preflight rows run here (a launch changes).
+
+**PR-4** (`internal/api`, `internal/crew`, `internal/crew/ledger`,
+`internal/dispatch`, `internal/gitcli`, `docs/protocol.md`): the
+`brakeman` principal and `s.reader` on the shared reads, the new reads
+under `/api/brakeman/` with the computed status, the read log and the
+server's coverage, the `make` route for drafts with its edges and the
+crew's origin; `Ledger.LastEvent`, `dispatch.Store.ChangesAfter`,
+`gitcli.ChangedSince`, `crew.Store.CreateFrom`; the table's entries with
+`observe`'s MCP name; the protocol's rows. Go only.
+
+**PR-5** (`internal/cli`, `internal/agents`): the three MCP tools'
+handlers and their listing rule, the crew and ticket tools left out for
 Brakeman, `conductor brakeman`, its usage and completion; `codexMCPEnv`;
-the skill's section; the stub's `STUB_BRAKEMAN` mode, which PR-6's spec
-drives. Go only (PR-3's tests drive a turn with the API tests' own scripted
-agent, submitting the brief over HTTP with the session's token).
+the skill's section. Go only (PR-3c's tests drive a turn with the API
+tests' own scripted agent, submitting the brief over HTTP with the
+session's token); it changes no file a Playwright spec runs.
 
 **PR-6** (`web/app`, `web/e2e`): `useBrakeman.ts`, `utils/brakeman.ts`,
 `BrakemanSettings.vue` on the Settings page, `pages/brakeman.vue`,
 `BrakemanAsk.vue`, `BrakemanBrief.vue`, `BrakemanFact.vue`, the sidebar's
-Brakeman row; the e2e catalog gains a Brakeman stub agent
+Brakeman row; `web/e2e/stub-agent.sh`'s `STUB_BRAKEMAN` mode (moved here
+from PR-5, since every spec runs the stub); the e2e catalog gains a Brakeman stub agent
 (`web/e2e/conductor.e2e.json`: the stub under Claude Code's adapter, so the
-configuration takes it, the MCP and model arguments it is launched with
+configuration takes it, the MCP, read-only and model arguments it is launched with
 ignored by the stub, which uses the CLI path). Proposals show their
 operation's name and say the controls come next. UI only; the Mac and
 Windows preflight rows run here.
@@ -1311,9 +1650,11 @@ plan's form and "Propose as plan revision", the card's Approve from DS2's
 own control, the ticket page's Brakeman entries. UI only.
 
 **PR-12** (`internal/brakeman`, `internal/api`, `docs/protocol.md`), once
-DR1 and RV1 serve their operations and BK1 is Done: `Permissions.Act` and
-its closed list; `POST /api/sessions/{id}/brakeman/act`; each operation's
-one function shared with its admin route; the receipts. Go only.
+DR1 and RV1 serve their operations, PR-17 has merged and BK1 is Done:
+`Permissions.Act` and its closed list; each granted operation's own route
+taking the `brakeman` principal, its one handler and its receipt; the
+launch through `ext.Host.LaunchApproved`; `route_decision` to the operator
+only. Go only.
 
 **PR-13** (`internal/cli`, `internal/agents`, `web/app`, `web/e2e`): the MCP
 tool `act` (listed only with a grant) and `conductor brakeman act`, the
@@ -1334,6 +1675,23 @@ log and unavailable state on the Brakeman page and in Settings;
 
 **PR-16** (docs): the features entries of BK0, BK1, BK2 and BK3 with each
 acceptance's by-hand record; the README. Docs only.
+
+**PR-17** (`ext`, `internal/api`, `docs/plans/ext.md`), once ext's PR-4
+(#476) has merged: `ext.Host` gains `LaunchTurn(ctx, ext.TurnLaunch)` and
+`LaunchApproved(ctx, ext.ApprovedLaunch)`, with ext's own types (an agent
+id, a model, a folder, the line, the label, the request id; a ticket, a
+revision, a `By`), answered by `launchTurn` and DS2's launch function;
+`LaunchApproved` answers `ErrUnsupported` until DS2's launch has merged;
+the desk is given an `ext.Host` by the composition root and launches
+through it alone. Go race: `TestTheDeskLaunchesThroughTheHost` (a
+recording `ext.Host` from `ext/exttest`), `TestHostLaunchTurnIsLaunchTurn`
+(the same run as before), `TestLaunchApprovedRefusesAnUnapprovedRevision`.
+Go only.
+
+**PR-18** (`internal/api`, `web/app`, `web/e2e`), once HM1 serves human
+members' labels: `route_decision` to a label as well as to the operator,
+and Settings' words for it. Go race `TestRouteToALabel`; Playwright in
+`brakeman-act.spec.ts`. Go and UI.
 
 ## Owner decisions
 
@@ -1357,20 +1715,23 @@ make (the Program, section 3.1); the reasoning is why it was taken.
    alive for hours, whose state is the provider's and lost on a restart or
    a model change, which BK3 forbids relying on. The owner would overturn
    this if a long-lived session proves worth its cost in context and tokens.
-3. **BK1 and BK0 start before their prerequisites are Done.** The Program
-   takes an item whose prerequisites are all Done (section 2.2); the
-   owner's goal of 2026-10-31, a Brakeman usable before Monday, comes first
-   (the owner's brief beats the Program). PR-1 to PR-8 use only what `main`
-   has; the parts that need DS2 (PR-10, PR-11) and C9 (PR-9) wait for them,
-   and BK1 and BK0 are Done only after those PRs and their acceptance. A
-   status-log row records the start.
+3. **BK1 and BK0 start before their prerequisites are Done, if the owner
+   approves it at this plan's review.** The Program takes an item whose
+   prerequisites are all Done (section 2.2), and its default is to wait;
+   starting early is a departure that only the owner's approval of this
+   plan makes, recorded then as a status-log row, not a precedence this
+   plan claims. The reason to ask: the owner's request of 2026-10-31 for a
+   Brakeman usable before Monday. PR-1 to PR-8 use only what `main` has;
+   the parts that need DS2 (PR-10, PR-11) and C9 (PR-9) wait for them, and
+   BK1 and BK0 are Done only after those PRs and their acceptance. Without
+   the approval, PR-1 to PR-8 wait for DS2 and C9 as the rest do.
 4. **A turn is a one-member run Yardmaster launches**, not a managed task
    and not a bare session. A run gives Brakeman Yardmaster's launch path,
    the guarded typing of its line, Stop, the run page and the records with
    no new execution code; a managed task would need a worktree and a
    commit as its result, which a brief is not.
 5. **Every turn is a fresh session.** Nothing Brakeman knows lives in a
-   conversation: it reads its request, the earlier briefs and their cursors
+   conversation: it reads its request, the earlier briefs and their coverage
    from the data directory, so a restart or another model changes nothing
    it can know. The cost is the agent's start-up on each request.
 6. **Brakeman's records are JSON documents in the data directory**
@@ -1382,7 +1743,8 @@ make (the Program, section 3.1); the reasoning is why it was taken.
    `admin` with the person's name), as DS1's and DS2's plans already
    require of agents' drafts (DS2's decision 14). BK2's grants add four
    operations and nothing else.
-8. **Every fact names evidence, resolved when the brief is kept.** A brief
+8. **Every fact names evidence, resolved when the brief is kept and beside
+   what the turn read.** A brief
    with a ref that names nothing, or lies outside the scope, is refused
    with the ref, so the agent fixes it in its turn; a brief is never kept
    with claims a person cannot follow.
@@ -1397,19 +1759,24 @@ make (the Program, section 3.1); the reasoning is why it was taken.
 11. **The model through the adapter's own flag**, for Claude Code and Codex
     only, each verified against the CLI; no free arguments, so a model is
     never passed to an agent that would read it as something else.
-12. **The agent CLI's permissions**: yolo off by default; under Claude Code,
+12. **The agent CLI's permissions: read-only, never yolo.** A worktree is
+    not a sandbox and Brakeman's folder is the person's choice, so a turn
+    always runs in its adapter's read-only mode (Claude Code's rule
+    against the tools that write or run commands, Codex's read-only
+    sandbox, each checked against the CLI), an agent without one cannot
+    be Brakeman's, and yolo is never applied; under Claude Code,
     Conductor's MCP tools allowed without asking when the person ticks it
-    (the CLI's per-server rule), everything else still asked; under Codex,
-    what the PR finds the CLI does, said in Settings. A worktree is not a
-    sandbox, and Brakeman's folder is the person's choice.
+    (the CLI's per-server rule); under Codex, what the PR finds the CLI
+    does, said in Settings.
 13. **One turn at a time**, 8 queued, and a budget of 15 minutes and 300
     reads a turn and 40 turns a day, each changeable in Settings within
     its bounds.
 14. **A decision card's controls are Conductor's**: a question is answered
     on its session page, the one place a question is answered today, until
     DR1 and Program item MB0 give decisions a page of their own; a task's
-    Retry, Accept anyway and Cancel carry the revision Brakeman read, so a
-    run that moved is refused rather than acted on blind.
+    commands are those its state allows by the run page's rules, and carry
+    the revision Brakeman read, so a run that moved is refused rather than
+    acted on blind.
 15. **MCP is Brakeman's boundary and the cards are Conductor's own**: a
     small versioned set (`decision/1`, `comparison/1`, `evidence/1`, the
     drafts and the handoff) rendered by the web app. A2UI, AG-UI and MCP
@@ -1417,8 +1784,8 @@ make (the Program, section 3.1); the reasoning is why it was taken.
     have been used.
 16. **Brakeman's tools only in Brakeman's sessions, and one `observe`**:
     a worker never sees Brakeman's tools, and Brakeman reads through one
-    tool whose variants the guide describes, so neither carries eleven
-    tools' descriptions in its context.
+    tool whose variants the guide describes, each sent to its own typed
+    route, so neither carries a tool per read in its context.
 17. **The guide is per caller and in sections**, its providers unknown
     until C9: an agent reads a 4 KiB overview and asks for more, rather
     than a large static prompt.
@@ -1426,13 +1793,21 @@ make (the Program, section 3.1); the reasoning is why it was taken.
     tools refuse a Brakeman session, so the sidekick never schedules.
 19. **BK2's grants are a closed list of four**: launching an approved plan,
     requesting a supported repair, preparing a follow-up, routing a
-    decision; never approving, answering, accepting, closing or changing
+    decision (to the operator, and to an HM1 label once HM1 serves them,
+    PR-18); never approving, answering, accepting, closing or changing
     the configuration, whatever is granted.
 20. **BK3's briefing times are local**: they fire while the server runs, in
     its local zone; a briefing that must fire while the machine sleeps is
     Program item AU1's (paid, from the cloud).
-21. **The Monday cut is PR-1 to PR-8** (The PRs); the rest waits on the
-    prerequisite each names.
+21. **The Monday cut is PR-1 to PR-8** (The PRs, PR-3 as three); the rest
+    waits on the prerequisite each names.
+22. **BK1's first turns launch before `ext.Host` exists, if the owner
+    approves it at this plan's review.** Boxcar constraint 1 sends
+    Brakeman through `ext.Host`, which ext's PR-4 (#476) has not built;
+    PR-3c to PR-8 launch through `launchTurn`, the engine and
+    `crew.Launcher`, never `os/exec`, and PR-17 puts `ext.Host` in front
+    of it once #476 merges, before any BK2 launch. Without the approval,
+    PR-3c waits for #476 and PR-17 folds into it.
 
 No question is left open: each answer above lets the plan stand, and the
 owner overturns any of them with one row.
@@ -1452,13 +1827,14 @@ not ticked:
   since 18:00" yields a brief whose facts link to the runs, the tasks, the
   failing check's receipt (its log hash equal to the step log route's) and
   the open question; that tells the quiet session from the failed task;
-  and whose decision card for the spent task offers Retry, Accept anyway
-  and Cancel, one of which the owner presses with its receipt.
+  and whose decision card for the spent task offers the commands its state
+  allows (Retry, and Accept anyway when it submitted a result), one of
+  which the owner presses with its receipt.
 - "Draft tickets" from a real ticket's discussion yields drafts the owner
   edits and makes, with their blocking relation; "Propose a crew" yields a
   crew that saves and opens in the editor.
 - The server is restarted and the agent's model changed; "What changed
-  since your last brief?" reads the earlier brief and its cursors and
+  since your last brief?" reads the earlier brief and its coverage and
   answers from them, citing only what happened since.
 - The observation, and what was missing, slow or wrong, goes into
   `docs/features.md` (PR-8, or a later docs PR of the stream); a bug the
@@ -1468,33 +1844,37 @@ not ticked:
   its prerequisite), and the owner says the brief answered what happened,
   how Conductor knows, and what needs the owner.
 
-**BK0's boundary**: an agent with no static prompt discovers what this
-build supports and which providers are present. Observed after PR-2 for the
+**BK0's boundary**, in this plan's words: an agent told nothing but to ask
+the running server learns from it what this build can do and which
+providers it has registered. Observed after PR-2 for the
 first part: a Codex session with nothing but "call the guide tool" lists
 what it may do there and the limits it must keep, and a plain session's
 guide differs from an attempt's; after PR-9 for the second: the official
 app's build lists its providers, and a plain build says there are none.
 BK0 is Done then.
 
-**BK2's boundary**: a proposal executes with its receipt; a gate it would
-skip stays enforced; privileged telemetry is separate from mutation
-authority. Observed after PR-13: Brakeman, granted `launch_approved_plan`,
+**BK2's boundary**, in this plan's words: a granted proposal runs and
+leaves its receipt, a gate stays in force when Brakeman's act would pass
+it, and what Brakeman may read never lets it change anything. Observed
+after PR-13: Brakeman, granted `launch_approved_plan`,
 launches a ticket's approved revision and the run page and the brief show
 the receipt; asked to launch an unapproved revision, it is refused and says
 so; with every read granted and no grant to act, every act is refused; with
 a grant and a narrowed visibility, the act on what it cannot see is
 refused.
 
-**BK3's boundary**: Brakeman wakes on an event, briefs, and sleeps within
-its budget; after a restart it resumes from records, not conversation
-history. Observed after PR-15: a task failing overnight wakes it once, a
+**BK3's boundary**, in this plan's words: an event wakes Brakeman, it
+briefs and goes quiet again without passing its budget, and after a
+restart it carries on from Conductor's records rather than from any
+agent's conversation. Observed after PR-15: a task failing overnight wakes it once, a
 second failure inside the window joins the same brief, the cooldown holds
 the next, the day's budget stops it with words; the server restarted while
 a batch was gathering fires that batch once; with Brakeman's agent logged
 out, the role says it is unavailable while the crews run and their
 questions are answered as before.
 
-What needs the owner: the review of this plan and its decisions; cutting
+What needs the owner: the review of this plan and its decisions, with
+decisions 3 and 22 approved or refused in that review; cutting
 the issues; the owner's own agent and subscription for every observation
 above; the merges. A2UI, AG-UI and MCP Apps, and decision 2's role
 session, are the owner's to reopen.
