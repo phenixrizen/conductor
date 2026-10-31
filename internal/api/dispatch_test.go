@@ -1435,7 +1435,13 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	// The download reads an attachment of the ticket's, whose id its
 	// request names in place of the one dispatchRequests holds.
 	attachment := "/api/dispatch/attachments/" + entityOf(t, e.upload(t, "CND-1", "read.txt", "text/plain", []byte("read me"), http.StatusCreated, ""), "attachment")["id"].(string)
-	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment}
+	// The revision's read reads a plan revision of the ticket's, made
+	// through the store, in place of the id dispatchRequests holds.
+	rc := doneOf(t)(e.srv.dispatch.ProposePlan(context.Background(), adminOp(""), "CND-1", dispatch.PlanRequest{Crew: "team"},
+		dispatch.PlanBody{Base: strings.Repeat("a", 40), Crew: json.RawMessage(`{"id":"team","name":"Team","tasks":[{"id":"build"}]}`)}))
+	plan := "/api/dispatch/plans/" + rc.ID
+	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
+		"/api/dispatch/tickets/CND-1/plans", plan}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1449,6 +1455,9 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 				t.Fatalf("%s: %d %q", path, status, data)
 			}
 		} else {
+			if strings.HasPrefix(path, "/api/dispatch/plans/") {
+				path = plan
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1463,7 +1472,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 11 {
+	if reads != 13 {
 		t.Fatalf("%d reads", reads)
 	}
 }
