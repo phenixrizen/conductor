@@ -10,7 +10,8 @@ import { initials, relativeTime } from '~/utils/sessions'
  * status, its title, its labels, its milestone, its priority, its owner, its assignees as avatar chips (a person's initials, an agent as
  * the sidebar shows it) and when it was last updated. A row is a link to the ticket's page. The keyboard moves a roving focus over the
  * rows (utils/dispatch.ts: J and K, or the arrows, wrapping at the ends; a row gone hands the focus on; Enter opens the row, as a link
- * does). On a phone a row wraps: its key and title on one line, the rest below.
+ * does). On a phone a row wraps: its key and title on one line, the rest below. The tickets selected (X, the page's) are marked, and
+ * while any is, every row shows a box that selects it by a click.
  */
 const props = defineProps<{
   tickets: readonly TicketSummary[]
@@ -18,7 +19,10 @@ const props = defineProps<{
   milestones: ReadonlyMap<string, DispatchMilestone>
   agents: readonly AgentInfo[]
   now: number
+  /** The keys of the tickets selected. */
+  selected?: ReadonlySet<string>
 }>()
+const emit = defineEmits<{ toggle: [key: string] }>()
 
 /** The key of the row the roving focus is on, or none. */
 const focus = ref<string | null>(null)
@@ -37,6 +41,13 @@ function step(delta: 1 | -1) {
   void nextTick(() => {
     if (focus.value) rowOf(focus.value)?.focus()
   })
+}
+
+/** Gives a row the focus by its key (back from its ticket's page), when the list shows it. */
+function focusKey(key: string) {
+  if (!keys.value.includes(key)) return
+  focus.value = key
+  void nextTick(() => rowOf(key)?.focus())
 }
 
 /** Leaves the list: no row has the focus. */
@@ -74,7 +85,9 @@ function actorName(actor: string): string {
 
 const iconColor: Record<string, string> = { neutral: 'text-muted', primary: 'text-primary', success: 'text-success', info: 'text-info', warning: 'text-warning', error: 'text-error' }
 
-defineExpose({ step, leave, focus })
+const selecting = computed(() => !!props.selected?.size)
+
+defineExpose({ step, leave, focus, focusKey })
 </script>
 
 <template>
@@ -84,13 +97,19 @@ defineExpose({ step, leave, focus })
       :key="t.id"
       :to="ticketPath(t.key)"
       class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 outline-none hover:bg-elevated/50 focus-visible:bg-elevated focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary sm:flex-nowrap sm:px-6"
-      :class="focus === t.key && 'bg-elevated/60'"
+      :class="[focus === t.key && 'bg-elevated/60', selected?.has(t.key) && 'bg-primary/10 hover:bg-primary/15']"
       :data-ticket-row="t.key"
       :data-ticket-row-status="t.status"
+      :data-selected="selected?.has(t.key) ? '' : undefined"
+      :aria-current="selected?.has(t.key) ? 'true' : undefined"
       @focus="focus = t.key"
     >
       <!-- The key, the status and the title: one line, the whole width on a phone. -->
       <span class="flex min-w-0 basis-full items-center gap-2 sm:flex-1 sm:basis-auto">
+        <span v-if="selecting" class="grid size-5 flex-none place-items-center text-muted hover:text-highlighted" :title="selected?.has(t.key) ? `Leave ${t.key} out of the selection` : `Select ${t.key}`" data-row-select @click.prevent.stop="emit('toggle', t.key)">
+          <UIcon :name="selected?.has(t.key) ? 'i-lucide-square-check' : 'i-lucide-square'" class="size-4" :class="selected?.has(t.key) && 'text-primary'" />
+          <span class="sr-only">{{ selected?.has(t.key) ? 'selected' : 'not selected' }}</span>
+        </span>
         <UIcon :name="statusWord(t.status).icon" class="size-4 flex-none" :class="iconColor[statusWord(t.status).color]" :title="ticketWords(t).text" data-row-status-icon />
         <span class="sr-only">{{ ticketWords(t).text }}</span>
         <span class="w-[4.5rem] flex-none truncate font-mono text-xs text-muted" data-row-key>{{ t.key }}</span>
