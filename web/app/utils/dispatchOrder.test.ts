@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DispatchOrder, catchUp, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
+import { DispatchOrder, catchUp, editEach, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
 
 /** A request whose reply the test hands back, or fails, when it wants. */
 function deferred<T>() {
@@ -344,5 +344,153 @@ describe("an operation's catch-up, before the next operation is made", () => {
     expect(await catchUp(p.o)).toBe(true)
     expect(p.state.reads).toBe(3)
     expect(p.state.waits).toEqual([250])
+  })
+})
+
+/** A refusal, as the store answers a stale revision. */
+class Refused extends Error {}
+
+/**
+ * A board's card and the store behind it, for editEach: the page shows a row (`shown`), the store holds the ticket; an edit is refused
+ * when it expects a revision the store has moved past, and its reply carries the ticket, or its receipt alone (`receiptOnly`: the
+ * server's read after the commit failed). The page's moves go one after another, each made on the row shown when it is sent.
+ */
+function board(o: { receiptOnly?: boolean; caughtUp?: boolean } = {}) {
+  const store = { key: 'CND-1', status: 'backlog', rev: 1 }
+  const shown = { ...store }
+  const sent: Array<{ to: string; expectedRev: number }> = []
+  let reads = 0
+  let refusedCalls = 0
+  const move = serially((to: string) =>
+    editEach([{ ...shown }], {
+      make: (t) => (t.status === to ? null : to),
+      send: async (t, change) => {
+        sent.push({ to: change, expectedRev: t.rev })
+        if (t.rev !== store.rev) throw new Refused('stale_revision')
+        store.status = change
+        store.rev++
+        const reply = { receipt: { rev: store.rev }, ticket: o.receiptOnly ? null : { ...store } }
+        if (reply.ticket) Object.assign(shown, reply.ticket)
+        return reply
+      },
+      committed: (r) => r.ticket?.rev ?? r.receipt.rev,
+      caughtUp: async (_t, rev) => {
+        if (o.caughtUp === false) return
+        await catchUp({
+          shown: () => rev !== undefined && shown.rev >= rev,
+          read: async () => {
+            reads++
+            Object.assign(shown, store)
+            return true
+          },
+          left: () => false,
+          wait: async () => {},
+          firstMs: 1,
+          maxMs: 1,
+        })
+      },
+      refusal: (e) => e instanceof Refused,
+      refused: () => refusedCalls++,
+    }),
+  )
+  return { store, shown, sent, move, reads: () => reads, refusedCalls: () => refusedCalls }
+}
+
+describe("a page's edits of tickets, one operation each (editEach)", () => {
+  it('reads a ticket whose answer carried its receipt alone before the next edit: Backlog, Ready and back to Backlog sends both moves', async () => {
+    const b = board({ receiptOnly: true })
+    await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(b.sent).toEqual([
+      { to: 'ready', expectedRev: 1 },
+      { to: 'backlog', expectedRev: 2 },
+    ])
+    expect(b.store).toMatchObject({ status: 'backlog', rev: 3 })
+    expect(b.reads()).toBe(2)
+  })
+
+  it('without the read, the move back would be taken for no change and never sent (what the read is for)', async () => {
+    const b = board({ receiptOnly: true, caughtUp: false })
+    await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(b.sent).toEqual([{ to: 'ready', expectedRev: 1 }])
+    expect(b.store.status).toBe('ready')
+  })
+
+  it('reads nothing when the answer showed the ticket at the revision it committed', async () => {
+    const b = board()
+    await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(b.sent.map((s) => s.to)).toEqual(['ready', 'backlog'])
+    expect(b.reads()).toBe(0)
+  })
+
+  it('reads a ticket refused before the next edit, so a move queued behind is made on what the store holds', async () => {
+    const b = board()
+    // Another person moved it to In review: the page still shows Backlog at rev 1.
+    b.store.status = 'in_review'
+    b.store.rev = 2
+    const out = await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(out[0].failed).toHaveLength(1)
+    expect(b.sent).toEqual([
+      { to: 'ready', expectedRev: 1 },
+      { to: 'backlog', expectedRev: 2 },
+    ])
+    expect(b.store.status).toBe('backlog')
+    expect(b.refusedCalls()).toBe(1)
+  })
+
+  it("asks the page's own read once for a batch, however many of its edits were refused, each refused ticket read first", async () => {
+    const reads: string[] = []
+    let refused = 0
+    const targets = ['CND-1', 'CND-2', 'CND-3'].map((key) => ({ key, rev: 1 }))
+    const out = await editEach(targets, {
+      make: () => 'done',
+      send: async () => {
+        throw new Refused('close_policy')
+      },
+      committed: () => undefined,
+      caughtUp: async (t) => {
+        reads.push(t.key)
+      },
+      refusal: (e) => e instanceof Refused,
+      refused: () => refused++,
+    })
+    expect(out.failed.map((f) => f.t.key)).toEqual(['CND-1', 'CND-2', 'CND-3'])
+    expect(reads).toEqual(['CND-1', 'CND-2', 'CND-3'])
+    expect(refused).toBe(1)
+  })
+
+  it('reads nothing after a failure that is no refusal (the network), and asks no read of the page', async () => {
+    const reads: string[] = []
+    let refused = 0
+    const out = await editEach([{ key: 'CND-1', rev: 1 }], {
+      make: () => 'done',
+      send: async () => {
+        throw new Error('offline')
+      },
+      committed: () => undefined,
+      caughtUp: async (t) => {
+        reads.push(t.key)
+      },
+      refusal: (e) => e instanceof Refused,
+      refused: () => refused++,
+    })
+    expect(out.failed).toHaveLength(1)
+    expect(reads).toEqual([])
+    expect(refused).toBe(0)
+  })
+
+  it('counts a ticket holding the value already as done, with no operation', async () => {
+    let sends = 0
+    const out = await editEach([{ key: 'CND-1', rev: 1 }], {
+      make: () => null,
+      send: async () => {
+        sends++
+        return {}
+      },
+      committed: () => undefined,
+      caughtUp: async () => {},
+      refusal: () => false,
+    })
+    expect(out.done.map((t) => t.key)).toEqual(['CND-1'])
+    expect(sends).toBe(0)
   })
 })

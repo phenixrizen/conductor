@@ -367,3 +367,39 @@ test("Dispatch's tickets (#409): a key typed puts its ticket first and Enter ope
   await expect(page.locator('li').filter({ hasText: `${key}-3 made` }).last()).toBeVisible({ timeout: 15_000 })
   expect((await storedTicket(api, `${key}-3`)).title).toBe('Made from the palette')
 })
+
+test("Dispatch's tickets (#409): a read of them that fails after an event is asked again with no further event, the rows read before shown meanwhile", async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EP')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Read before the failure' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  const palette = page.locator('[data-palette]')
+  const input = palette.locator('input[data-palette-input]')
+  await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible()
+  await input.fill(`${key}-1`)
+  await expect(palette.locator(`[data-palette-row="ticket:${key}-1"] [data-palette-label]`)).toHaveText(`${key}-1 Read before the failure`)
+
+  // The next read of the tickets fails: the event of a ticket made reads them, the read fails, and it is asked again on its own.
+  let failed = 0
+  const tickets = (url: URL) => url.pathname === '/api/dispatch/tickets'
+  await page.route(tickets, async (route) => {
+    if (failed === 0) {
+      failed++
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'injected by the test' } }) })
+      return
+    }
+    await route.continue()
+  })
+  try {
+    await makeTicket(api, key, '2', { title: 'Made while the read failed' })
+    await input.fill(`${key}-2`)
+    await expect(palette.locator(`[data-palette-row="ticket:${key}-2"] [data-palette-label]`)).toHaveText(`${key}-2 Made while the read failed`)
+    expect(failed).toBe(1)
+    await input.fill(`${key}-1`)
+    await expect(palette.locator(`[data-palette-row="ticket:${key}-1"] [data-palette-label]`)).toHaveText(`${key}-1 Read before the failure`)
+  } finally {
+    await page.unroute(tickets)
+  }
+})

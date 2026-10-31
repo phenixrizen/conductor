@@ -46,6 +46,49 @@ test('J and K move through the list, wrapping; Enter opens the ticket; Escape co
   await expect(row(order[0]!)).toBeFocused()
 })
 
+test("Escape stays on a ticket's page while an editor is open, the focus on its Preview tab or its buttons, and the draft stays; closed, Escape goes back", async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EK')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Draft keeper' })
+  await page.goto(`/dispatch/${key}/1`)
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Draft keeper')
+  const description = page.locator('[data-ticket-markdown="description"]')
+
+  // The description's editor, a draft typed, the focus moved to its Preview tab: Escape leaves the page and the draft as they are.
+  await description.locator('[data-markdown-empty]').click()
+  await description.locator('[data-markdown-input]').fill('A draft not saved yet')
+  await description.getByRole('tab', { name: 'Preview' }).click()
+  await expect(description.locator('[data-markdown-draft-preview]')).toContainText('A draft not saved yet')
+  await expect(description.getByRole('tab', { name: 'Preview' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(description.locator('[data-markdown-draft-preview]')).toContainText('A draft not saved yet')
+  // The Save button focused: the same.
+  await description.locator('[data-markdown-save]').focus()
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await description.getByRole('tab', { name: 'Write' }).click()
+  await expect(description.locator('[data-markdown-input]')).toHaveValue('A draft not saved yet')
+
+  // The title's editor, its Cancel button focused: Escape stays too.
+  await description.getByRole('button', { name: 'Cancel' }).click()
+  await expect(description.locator('[data-markdown-editor]')).toHaveCount(0)
+  await page.locator('[data-title-edit]').click()
+  await page.locator('[data-title-input]').fill('A new title not saved')
+  await page.getByRole('button', { name: 'Cancel' }).focus()
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-title-input]')).toHaveValue('A new title not saved')
+
+  // Every editor closed: Escape goes back to the list.
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.locator('[data-title-input]')).toHaveCount(0)
+  await page.locator('body').focus()
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))
+  expect((await storedTicket(api, `${key}-1`)).title).toBe('Draft keeper')
+})
+
 test('S opens the status picker and a choice applies, P the priority; C makes a ticket, and letters typed into a field stay in it', async ({ page, api }) => {
   const key = await freeProjectKey(api, 'EK')
   await makeProject(api, key)

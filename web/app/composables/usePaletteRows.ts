@@ -19,7 +19,6 @@ import { skipWords } from '~/utils/crews'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
-import { DispatchOrder } from '~/utils/dispatchOrder'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -87,7 +86,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const quick = useQuickReply()
   const shortcutsModal = useShortcutsModal()
   const identity = useIdentity()
-  const ticketOps = useDispatchOps(new DispatchOrder())
+  // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
+  const ticketOps = useDispatchOps(palette.ticketsGate)
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 

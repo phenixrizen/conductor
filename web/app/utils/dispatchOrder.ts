@@ -179,3 +179,63 @@ export function serially<A extends unknown[], R>(f: (...args: A) => Promise<R>):
     return next
   }
 }
+
+/** How `editEach` sends one ticket's edit, waits until the page shows what it left, and tells a refusal from another failure. */
+export interface EachOptions<T, C, R> {
+  /** The edit of a ticket: null when it holds the value already, which is no operation (the store refuses an edit that changes nothing). */
+  make: (t: T) => C | null
+  /** Sends one ticket's edit as one operation: resolves to its reply, rejects with the refusal or the failure. */
+  send: (t: T, change: C) => Promise<R>
+  /** The revision an answer committed: its ticket's, else its receipt's (a reply whose read after the commit failed carries its receipt alone). */
+  committed: (reply: R) => number | undefined
+  /**
+   * Waits until the page shows the ticket at `rev` or later (catchUp), or, with no `rev` (after a refusal), once a read of it sent now is
+   * shown: the next edit of it is made on what the store holds.
+   */
+  caughtUp: (t: T, rev: number | undefined) => Promise<void>
+  /** Whether a failure is the store's refusal (a stale revision, the close policy), which says the page shows something the store has not. */
+  refusal: (e: unknown) => boolean
+  /** Called once after the edits when any was refused, for the page to read what the store holds now beside the tickets refused. */
+  refused?: () => void
+}
+
+/** What became of each ticket's edit: done (or holding the value already), or failed with its error. */
+export interface EachOutcome<T> {
+  done: T[]
+  failed: Array<{ t: T; error: unknown }>
+}
+
+/**
+ * Edits tickets one after another, one operation each (a pick over the tickets selected, a card moved): each is sent once the one before
+ * has answered, and the next is not made until the page shows what the one before left (`caughtUp`), as a ticket page's edits are
+ * (DispatchTicketPage.vue): at the revision it committed, read again when its reply carried none (the server's read after the commit
+ * failed) or the gate dropped it. A refusal reads the ticket refused again before the next edit, so that one, queued behind on the same
+ * ticket, expects the revision the store has and is made on what it holds: a card moved and moved back on a reply that showed nothing is
+ * moved back, not taken for no change. The page's own read after a refusal (`refused`) is asked once, however many were refused.
+ */
+export async function editEach<T, C, R>(targets: readonly T[], o: EachOptions<T, C, R>): Promise<EachOutcome<T>> {
+  const out: EachOutcome<T> = { done: [], failed: [] }
+  let refusals = 0
+  for (const t of targets) {
+    const change = o.make(t)
+    if (!change) {
+      out.done.push(t)
+      continue
+    }
+    let reply: R
+    try {
+      reply = await o.send(t, change)
+    } catch (e) {
+      out.failed.push({ t, error: e })
+      if (o.refusal(e)) {
+        refusals++
+        await o.caughtUp(t, undefined)
+      }
+      continue
+    }
+    out.done.push(t)
+    await o.caughtUp(t, o.committed(reply))
+  }
+  if (refusals) o.refused?.()
+  return out
+}

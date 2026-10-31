@@ -205,6 +205,60 @@ test('the roadmap: Now, Next, Later and a folded Not planned; Next and Now by â†
   await expect(milestone.locator('[data-milestone-count]')).toHaveText('1/2')
 })
 
+test('the roadmap: a Not planned ticket opened from its unfolded column and left by Escape has its card focused again, the column unfolded for it', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Unplanned and opened' })
+  await page.goto(`/dispatch/${key}?view=roadmap`)
+  const roadmap = page.locator('[data-roadmap]')
+  const none = roadmap.locator('[data-column="none"]')
+  await expect(none).toHaveAttribute('data-folded', '')
+  await none.locator('[data-column-unfold]').click()
+  const card = roadmap.locator(`[data-column="none"] [data-card="${key}-1"]`)
+  await card.click()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Unplanned and opened')
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}\\?view=roadmap$`))
+  // The roadmap drawn again folds Not planned; the card's way back unfolds it.
+  await expect(card).toBeFocused()
+  await expect(none).not.toHaveAttribute('data-folded', '')
+})
+
+test('the save dialog holds while its save is on its way: Escape and Cancel leave it as it is, and the answer closes it', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Held save', status: 'ready' })
+  await page.goto(`/dispatch/${key}?status=ready`)
+  await expect(page.locator('[data-views-bar]')).toHaveAttribute('data-loaded', '')
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const views = (url: URL) => url.pathname === '/api/dispatch/views'
+  await page.route(views, async (route) => {
+    if (route.request().method() === 'POST') await held
+    await route.continue()
+  })
+  try {
+    await page.locator('[data-view-save]').click()
+    const dialog = page.locator('[data-view-dialog]')
+    await expect(dialog).toBeVisible()
+    await dialog.locator('[data-view-name-input]').fill('Held')
+    const sent = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/dispatch/views')
+    await page.locator('[data-view-submit]').click()
+    await sent
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeVisible()
+    await expect(page.getByRole('dialog').filter({ has: dialog }).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await expect(dialog.locator('[data-view-name-input]')).toHaveValue('Held')
+    release()
+    await expect(dialog).toBeHidden()
+    await expect(page.locator('[data-views-bar] [data-view-chip][data-view-name="Held"]')).toHaveAttribute('data-active', '')
+  } finally {
+    release()
+    await page.unroute(views)
+  }
+})
+
 test("at a phone's width (390 px) the list's rows wrap, the board scrolls sideways and the ticket's page is one column, and the page itself never scrolls sideways", async ({ browser, api, state }) => {
   const key = await freeProjectKey(api, 'EV')
   await makeProject(api, key)

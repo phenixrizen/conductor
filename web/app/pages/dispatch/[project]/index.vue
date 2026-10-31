@@ -287,13 +287,19 @@ function current(key: string): TicketSummary | undefined {
   return row && (!known || row.rev >= known.rev) ? row : (known ?? row)
 }
 
+/** The page is gone: a ticket's read after an edit that fails is not asked again for it. */
+let gone = false
+onBeforeUnmount(() => (gone = true))
+
 /**
  * The page's edits, one after another (serially): each is made when it is sent, against the tickets as the edits before it left them, so a
- * card moved twice in a row, or moved back, ends where it was put last.
+ * card moved twice in a row, or moved back, ends where it was put last; editTickets reads a ticket again after an answer that showed
+ * nothing of it, and after a refusal, before the next edit is made. Refused, the page is read again once for the batch, through the live
+ * store, so that a read that fails is asked again.
  */
 const editQueue = serially(async (keys: readonly string[], make: (t: TicketSummary) => TicketEdit | null, done?: (keys: string[]) => string) => {
   const targets = keys.map(current).filter((t): t is TicketSummary => !!t)
-  return ops.editTickets(targets, make, { apply: showTicket, refused: () => void reload().catch(() => {}), done })
+  return ops.editTickets(targets, make, { apply: showTicket, refused: () => live.ask(reload), left: () => gone, done })
 })
 
 // The board's and the roadmap's moves: a card is shown in the column it was moved to until the store answers; refused (a move to Done
@@ -407,8 +413,9 @@ defineShortcuts({
 })
 
 // Back from a ticket by Escape (its page sets this): the focus returns to its row or card once the view shows the list read for the
-// filter; a ticket the filter leaves out is not waited for.
+// filter, a card's folded column (the roadmap's Not planned) unfolded first; a ticket the filter leaves out is not waited for.
 const backFocus = useState<string>('dispatchBackFocus', () => '')
+const cards = useTemplateRef<{ focusCard: (key: string) => Promise<boolean> }>('cards')
 watch(
   [shown, view, listed],
   () => {
@@ -417,7 +424,7 @@ watch(
     backFocus.value = ''
     if (!shown.value.some((t) => t.key === key)) return
     if (view.value === 'list') list.value?.focusKey(key)
-    else document.querySelector<HTMLElement>(`[data-card="${CSS.escape(key)}"]`)?.focus()
+    else void cards.value?.focusCard(key)
   },
   { flush: 'post' },
 )
@@ -542,8 +549,8 @@ palette.registerPage((): PageGroup => {
           </div>
         </template>
         <template v-else>
-          <DispatchBoard v-if="view === 'board'" :tickets="shown" :labels="labelsById" :agents="agents" :locked="archived" @move="(key: string, status: TicketStatus) => move(key, { status })" />
-          <DispatchRoadmap v-else :tickets="shown" :labels="labelsById" :milestones="projectRead?.milestones ?? []" :agents="agents" :locked="archived" @move="(key: string, horizon: Horizon) => move(key, { horizon })" />
+          <DispatchBoard v-if="view === 'board'" ref="cards" :tickets="shown" :labels="labelsById" :agents="agents" :locked="archived" @move="(key: string, status: TicketStatus) => move(key, { status })" />
+          <DispatchRoadmap v-else ref="cards" :tickets="shown" :labels="labelsById" :milestones="projectRead?.milestones ?? []" :agents="agents" :locked="archived" @move="(key: string, horizon: Horizon) => move(key, { horizon })" />
           <div v-if="next" class="flex flex-none justify-center border-t border-default p-2">
             <UButton :label="`More (${tickets.length} of ${total})`" icon="i-lucide-chevrons-down" color="neutral" variant="soft" size="sm" :loading="loading" data-list-more @click="more" />
           </div>
