@@ -1894,8 +1894,8 @@ func (e *Engine) startTrees(r *run) {
 // stopTimeout, read once the hold is let go: a launch the close came
 // during names its session on the tree only then), stops its services
 // (endServices: SIGTERM to each one's group, SIGKILL after the grace or at
-// the shutdown's cut-off, each one's end recorded) and records tree.ended
-// runs its cleanup steps (cleanTree), then records tree.ended with the
+// the shutdown's cut-off, each one's end recorded), runs its cleanup steps
+// (cleanTree), then records tree.ended with the
 // tree's row ended (with the first cleanup step that failed, and whether the
 // shutdown's cut-off came before every one had run), its ports let go once
 // that is committed (releaseEnded), so a number is the next tree's only
