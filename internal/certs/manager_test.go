@@ -1,9 +1,11 @@
 package certs
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -284,8 +286,9 @@ func TestStoreKeepsKeysPrivate(t *testing.T) {
 }
 
 // filePair is a certificate pair on disk for the files mode, each file
-// written with the mtime it is given so a check sees it as changed whatever
-// the file system's timestamp granularity.
+// published with the mtime it is given so a check sees it as changed
+// whatever the file system's timestamp granularity, and never sees the
+// wall-clock mtime a write leaves before its Chtimes.
 type filePair struct {
 	t                 *testing.T
 	ca                *fakeCA
@@ -301,13 +304,22 @@ func (p *filePair) issue(id string) *Issued {
 	return p.ca.issue(p.t, []string{id}, time.Now().Add(-time.Minute), time.Hour)
 }
 
-// put writes one file and sets its mtime. It reports with t.Error, so the
-// manager's goroutine can call it from the afterRead seam.
+// put publishes one file with its mtime already set: written and stamped
+// beside it, then renamed over it. A check that runs between a write and
+// its Chtimes would otherwise see, and could record, the write's wall-clock
+// mtime, which is later than the mtimes the test sets once setup has taken
+// a few seconds, and no later check would see the test's changes (#281).
+// It reports with t.Error, so the manager's goroutine can call it from the
+// afterRead seam.
 func (p *filePair) put(path string, data []byte, mtime time.Time) {
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		p.t.Error(err)
 	}
-	if err := os.Chtimes(path, mtime, mtime); err != nil {
+	if err := os.Chtimes(tmp, mtime, mtime); err != nil {
+		p.t.Error(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		p.t.Error(err)
 	}
 }
@@ -352,6 +364,30 @@ func TestFilesReloadWhenTheyChange(t *testing.T) {
 	}
 	if _, err := New(Options{CertFile: p.certPath, KeyFile: p.keyPath}); err == nil {
 		t.Fatal("a broken pair must refuse to start")
+	}
+}
+
+// In production nothing pokes a files-mode manager: Run checks the pair
+// again because step, which checks it, returns FileCheck and Run waits
+// that long. Called here directly, so nothing waits on the clock.
+func TestFilesCheckedEveryFileCheck(t *testing.T) {
+	p := newFilePair(t)
+	at := time.Now()
+	p.write(p.issue("one.example"), at)
+	for _, c := range []struct{ set, want time.Duration }{{0, time.Hour}, {7 * time.Minute, 7 * time.Minute}} {
+		m, err := New(Options{CertFile: p.certPath, KeyFile: p.keyPath, FileCheck: c.set})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at = at.Add(2 * time.Second)
+		id := fmt.Sprintf("check-%d.example", c.want/time.Minute)
+		p.write(p.issue(id), at)
+		if got := m.step(context.Background()); got != c.want {
+			t.Errorf("FileCheck %s: step waits %s before the next check, want %s", c.set, got, c.want)
+		}
+		if st := m.Status(); st.Identifiers[0] != id || st.LastError != "" {
+			t.Errorf("FileCheck %s: step did not check the pair: %+v", c.set, st)
+		}
 	}
 }
 
