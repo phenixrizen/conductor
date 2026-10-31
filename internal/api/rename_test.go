@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
@@ -216,6 +217,110 @@ func TestARenamedMemberResumesUnderItsName(t *testing.T) {
 	}
 	if got := e.waitMember(t, runID, "a", "running")["sessionId"]; got != next["id"] {
 		t.Fatalf("member's session %v, want %s", got, next["id"])
+	}
+
+	// Once more, from the resumed session, which nobody renamed itself: the
+	// name a person gave carries on, as it does for a session resumed alone.
+	nextID := next["id"].(string)
+	e.stopAndWait(nextID)
+	e.waitMember(t, runID, "a", "ended")
+	resp, out = e.do("POST", "/api/sessions/"+nextID+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume again: %d %v", resp.StatusCode, out)
+	}
+	again := out["session"].(map[string]any)
+	t.Cleanup(func() { e.stopAndWait(again["id"].(string)) })
+	if again["name"] != "API lead" || again["crew"].(map[string]any)["member"] != "a" {
+		t.Fatalf("resumed again: %v", again)
+	}
+}
+
+// A session adopted as a crew's self (POST /api/sessions/{id}/crew) keeps its
+// launch name until it ends; nobody renamed it, so its resume is the member's
+// and takes the member's name, not the launch's. A rename of the resumed
+// session is what a resume after it starts under.
+func TestAnAdoptedMemberResumesUnderTheMembersName(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	launchName := e.local(id).Info().Name
+	resp, out := e.do("POST", "/api/sessions/"+id+"/crew", agentOf(t, e, id), crewBody("lead", memberDef("lead", "cat", "manual")))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("form: %d %v", resp.StatusCode, out)
+	}
+	runID := out["run"].(map[string]any)["id"].(string)
+	if launchName == "lead" {
+		t.Fatalf("the launch name %q is the member's: the test tells nothing apart", launchName)
+	}
+	e.stopAndWait(id)
+	e.waitMember(t, runID, "lead", "ended")
+	resp, out = e.do("POST", "/api/sessions/"+id+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume: %d %v", resp.StatusCode, out)
+	}
+	next := out["session"].(map[string]any)
+	nextID := next["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(nextID) })
+	if next["name"] != "lead" || next["crew"].(map[string]any)["member"] != "lead" {
+		t.Fatalf("resumed as %v, want the member's name lead (launched as %q)", next["name"], launchName)
+	}
+
+	if resp, out := e.do("PATCH", "/api/sessions/"+nextID, adminToken, map[string]any{"name": "the lead"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename: %d %v", resp.StatusCode, out)
+	}
+	e.stopAndWait(nextID)
+	e.waitMember(t, runID, "lead", "ended")
+	resp, out = e.do("POST", "/api/sessions/"+nextID+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume the renamed: %d %v", resp.StatusCode, out)
+	}
+	again := out["session"].(map[string]any)
+	t.Cleanup(func() { e.stopAndWait(again["id"].(string)) })
+	if again["name"] != "the lead" {
+		t.Fatalf("resumed the renamed as %v", again["name"])
+	}
+}
+
+// A launch's name is cut to proto.MaxSessionName bytes at a character
+// boundary, as a rename's is: a cut inside a character would reach the
+// browsers as U+FFFD, longer than the bound, and the Rename dialog would
+// open on a name it calls too long.
+func TestALaunchNameIsCutAtACharacterBoundary(t *testing.T) {
+	e := newTestEnv(t, nil)
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "name": "  a" + strings.Repeat("名", 50)})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch: %d %v", resp.StatusCode, out)
+	}
+	id := out["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(id) })
+	name := e.local(id).Info().Name
+	if want := "a" + strings.Repeat("名", 39); name != want || !utf8.ValidString(name) || len(name) > proto.MaxSessionName || out["name"] != want {
+		t.Fatalf("launched as %q (reply %q), want %q", name, out["name"], want)
+	}
+}
+
+// The browsers hear a server session as it is when its event goes out, not
+// as a snapshot handed over late: a change computed before a rename (a
+// viewer's) and published after it cannot bring the old name back.
+func TestALateSnapshotCannotUndoARename(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	l := e.local(id)
+	stale := l.Info()
+	ch := e.srv.events.subscribe()
+	defer e.srv.events.unsubscribe(ch)
+	l.Rename("renamed")
+	// The snapshot taken before the rename reaches the hook after it.
+	e.srv.localChange(stale)
+	var names []any
+	for len(ch) > 0 {
+		data, ok := strings.CutPrefix(string(<-ch), "event: session\ndata: ")
+		var s map[string]any
+		if ok && json.Unmarshal([]byte(data), &s) == nil && s["id"] == id {
+			names = append(names, s["name"])
+		}
+	}
+	if len(names) < 2 || names[len(names)-1] != "renamed" || slices.Contains(names, any(stale.Name)) {
+		t.Fatalf("session events named %v: the late snapshot (%q) went out", names, stale.Name)
 	}
 }
 

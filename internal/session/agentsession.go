@@ -99,6 +99,10 @@ type Launched struct {
 	Args               []string
 	Env                map[string]string
 	Yolo               bool
+	// Renamed says Name is one a person gave the session (Rename), or the
+	// session it resumes: a crew member's resume starts under it, where it
+	// starts under the member's own name otherwise (api.Server.Launch).
+	Renamed bool
 }
 
 // Launched returns what the session was launched with (Options.Launched),
@@ -108,7 +112,7 @@ func (s *Local) Launched() Launched {
 	l := s.opts.Launched
 	s.mu.Lock()
 	if s.renamed {
-		l.Name = s.info.Name
+		l.Name, l.Renamed = s.info.Name, true
 	}
 	s.mu.Unlock()
 	l.Args = append([]string(nil), l.Args...)

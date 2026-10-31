@@ -1138,7 +1138,9 @@ run (see Crew runs), and no `crew` otherwise.
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
 header-authenticated `fetch`: `snapshot` with the full list first, then
-`session` per change, `removed{id}` when a session leaves the registry,
+`session` per change, a server session's as it is when the event goes out,
+so that one session's events never undo a later change (a rename) out of
+order, `removed{id}` when a session leaves the registry,
 `activity` for every activity entry, see Events, `run{id}` when a crew run
 changes in a way no session change carries, or `run{id, removed: true}` when
 the server forgets it, see Crew runs, and `dispatch{seq, entity, id, ticket,
@@ -2200,10 +2202,12 @@ not ready for its prompt gets it after 60 s.
 An ended member can be resumed (`POST /api/runs/{run}/members/{name}/resume`,
 or `POST /api/sessions/{id}/resume` on its session): a new session in its
 working directory, its worktree and branch untouched, tagged with the run and
-launched with the run's yolo choice. The session takes the name its last one
-has while that one is listed: the member's, or the one a person renamed it to
-(`PATCH /api/sessions/{id}`), as a member of a run resumed as a new run does;
-the member keeps its own name in the run. It resumes the member's agent session
+launched with the run's yolo choice. The session takes the member's name,
+whatever the session it follows was launched as (a session adopted as a
+crew's `self` included), unless a person renamed that session (`PATCH
+/api/sessions/{id}`, or the session it was itself resumed from) and it is
+still listed: then it takes the name they gave, as a member of a run resumed
+as a new run does. The member keeps its own name in the run. It resumes the member's agent session
 when the agent has a `session` recipe and that session had a turn, and gets no
 prompt; otherwise it starts anew and its role prompt is typed again once it is
 ready, and only a `done` after that prompt counts for the members after it. A
