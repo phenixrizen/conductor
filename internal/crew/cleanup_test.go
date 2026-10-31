@@ -902,6 +902,57 @@ func TestAnInterruptedCheckKeepsItsOutputAndProcess(t *testing.T) {
 	}
 }
 
+// A check whose attempt is cancelled while its checkout is compared is
+// concluded interrupted, not failed for a checkout that could not be
+// compared: the cancel cuts the comparison's git commands, so their error
+// says nothing of the check, and the receipt keeps what the process left
+// (Codex's review of #498). The test holds the comparison until the cancel
+// has ended the check's context.
+func TestACheckCancelledWhileItsCheckoutIsComparedIsInterrupted(t *testing.T) {
+	for _, kind := range checkKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			comparing, cut := make(chan struct{}, 1), make(chan struct{}, 1)
+			e.beforeCompare = func(ctx context.Context, id string) {
+				if id != "e2e" {
+					return
+				}
+				comparing <- struct{}{}
+				<-ctx.Done()
+				cut <- struct{}{}
+			}
+			run := launchManaged(t, e, kind.crew(dir, shStep("e2e", `echo "all green"`)))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			select {
+			case <-comparing:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the check's checkout was not compared after 30 s")
+			}
+			running, _ := rowOf(l.stepRows(run.ID, "build", 1), "e2e", 1)
+			if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+				t.Fatal(err)
+			}
+			<-cut
+			e2e := l.rowWhen(t, run.ID, "build", 1, "e2e", 1, func(c ledger.CheckRow) bool { return c.State != ledger.CheckRunning })
+			if e2e.State != ledger.CheckInterrupted || e2e.Error != kind.interrupted || e2e.Stable ||
+				e2e.PID == 0 || e2e.PID != running.PID || e2e.Group != running.Group || e2e.ProcessStartedAt.IsZero() || e2e.Exit != 0 ||
+				string(e2e.Log) != "all green\n" || e2e.LogSHA256 != sha(e2e.Log) || e2e.Tail != "all green\n" {
+				t.Fatalf("the check cancelled while its checkout was compared: %+v", e2e)
+			}
+			if strings.Contains(e2e.Error, "could not be compared") {
+				t.Fatalf("the cut comparison was read as the check's: %q", e2e.Error)
+			}
+			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
+			if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled {
+				t.Fatalf("the task: %+v", ts)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
 // A cleanup step that fails on its own is a failure even when the
 // shutdown's cut-off lands right after its receipt is committed: the
 // tree's end takes the cut from the step's own receipt, never from the

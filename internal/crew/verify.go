@@ -180,7 +180,8 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 // (step.started, step.running, step.finished) with its phase and the
 // manifest that ran it. A running row the ledger refuses ends its process
 // and fails it with the ledger's words, as runStep does; one the attempt's
-// close interrupts, under it or while it waits for its slot, is concluded
+// close interrupts, under it, while it waits for its slot or while its
+// checkout is compared, is concluded
 // interrupted with what its process left (its identity, its output). ok is
 // true when it passed; else the stage ("check <id>", "verify <id>") and
 // words of its failure, decided false when the attempt closed under it.
@@ -266,10 +267,11 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 	sum := sha256.Sum256(fin.Log)
 	fin.LogSHA256 = hex.EncodeToString(sum[:])
 	fin.Tail = string(lastOutput(res, checkTail))
-	if ctx.Err() != nil {
-		// Cancelled or stopped under the check, or before it had its
-		// slot: the attempt is closed by what cancelled it, with the
-		// check's end recorded.
+	// interrupted concludes the receipt as the attempt's close left it:
+	// cancelled or stopped under the check, before it had its slot or
+	// while its checkout was compared. The attempt is closed by what
+	// cancelled it, with the check's end recorded.
+	interrupted := func() {
 		fin.State = ledger.CheckInterrupted
 		fin.Error = "the attempt closed under the check"
 		if step {
@@ -284,6 +286,9 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 			return out
 		}, nil)
+	}
+	if ctx.Err() != nil {
+		interrupted()
 		return "", "", false, false
 	}
 	if refused != nil {
@@ -300,7 +305,18 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		}, nil)
 		return stage, words, true, false
 	}
+	if e.beforeCompare != nil {
+		e.beforeCompare(ctx, ch.ID)
+	}
 	moved, changed, untracked, cerr := checkoutIntact(ctx, dir, a.result)
+	if ctx.Err() != nil {
+		// Closed while the checkout was compared: its git commands were
+		// cut, so the comparison says nothing of the check, and the
+		// receipt is interrupted, not a checkout that could not be
+		// compared (Codex's review of #498).
+		interrupted()
+		return "", "", false, false
+	}
 	fin.State, fin.FinishedAt, fin.Stable = ledger.CheckFinished, time.Now().UTC(), cerr == nil && !moved && len(changed) == 0
 	words = checkWords(ch, res, moved, changed, cerr)
 	if ids := e.serviceIDs(tr); len(ids) > 0 && words != "" && words == intactWords(moved, changed, cerr) {

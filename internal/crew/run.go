@@ -380,6 +380,10 @@ type Engine struct {
 	// row is committed and before the start is registered on its tree
 	// (t.starting) and its process made: a test lands a stop there.
 	beforeServe func(id string)
+	// beforeCompare, when set, runs in runCheck once the check's process
+	// has ended and before its checkout is compared, with the check's
+	// context and id: a test closes the attempt there.
+	beforeCompare func(ctx context.Context, checkID string)
 	// beforePrereqEnd, when set, runs as a generation of the prerequisites
 	// ends, after its last commit and before it is counted out: a test
 	// lands an unpause there.
