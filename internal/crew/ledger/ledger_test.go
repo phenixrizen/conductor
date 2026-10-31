@@ -835,6 +835,83 @@ func TestARollbackJournalDatabaseItCannotWriteIsRead(t *testing.T) {
 	}
 }
 
+// A database in WAL mode, the mode the ledger leaves it in, that the
+// server cannot write opens read-only (#444). SQLite opens a file the
+// process may not write read-only without an error, and with the file
+// already in WAL mode the connection's journal_mode(WAL) has nothing to
+// write, so the open succeeds and only a write would show it: the ledger
+// tries one at open, rolled back. It reads what the file holds, refuses a
+// write as read-only rather than failing with SQLite's error, and leaves
+// the file's mode as it found it; made writable again, it is the owner's.
+func TestAWALDatabaseItCannotWriteIsReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a file whatever its mode")
+	}
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	newRun(t, l, "team-00000001")
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, File)
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+	again := openLedger(t, dir)
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	var mode string
+	if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("the journal mode: %q %v", mode, err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o400 {
+		t.Fatalf("the file's mode after the open: %v %v", fi.Mode(), err)
+	}
+	if runs, err := again.Runs(ctx); err != nil || len(runs) != 1 || runs[0].ID != "team-00000001" {
+		t.Fatalf("the runs: %+v %v", runs, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("launched", nil) }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write: %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file made writable again, the WAL and its index beside it are
+	// not: SQLite made them with the file's mode, and a connection that
+	// may not write the WAL does not write. The ledger says so, as it
+	// does for the file.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	half := openLedger(t, dir)
+	if ro, why := half.ReadOnly(); !ro || !strings.Contains(why, "readonly database") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if err := half.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// All three writable, the ledger is the owner's, and nothing of the
+	// opens' tries is in the file.
+	for _, p := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := openLedger(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	if rev, err := owner.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("launched", nil) }); err != nil || rev != 2 {
+		t.Fatalf("a write: rev %d err %v", rev, err)
+	}
+}
+
 // Locks unsupported where there is no database yet: nothing to read, the
 // ledger says so, and Open does not fail.
 func TestUnsupportedLocksWithNoDatabaseDoNotFailOpen(t *testing.T) {

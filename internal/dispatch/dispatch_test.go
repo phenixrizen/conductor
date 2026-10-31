@@ -403,6 +403,91 @@ func TestARollbackJournalDatabaseItCannotWriteIsRead(t *testing.T) {
 	}
 }
 
+// A database in WAL mode, the mode the store leaves it in, that the store
+// cannot write opens read-only (#444). SQLite opens a file the process may
+// not write read-only without an error, and with the file already in WAL
+// mode the connection's journal_mode(WAL) has nothing to write, so the
+// open succeeds and only a write would show it: the store tries one at
+// open, rolled back. It reads what the file holds, refuses a write as
+// read-only rather than failing with SQLite's error, and leaves the file's
+// mode as it found it; made writable again, it takes writes.
+func TestAWALDatabaseItCannotWriteIsReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a file whatever its mode")
+	}
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	rc, err := s.AddPerson(ctx, testOp("a1"), "Alice")
+	want(t, rc, err, StatusDone, "")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, File)
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+	again := openStore(t, dir)
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	var mode string
+	if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("the journal mode: %q %v", mode, err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o400 {
+		t.Fatalf("the file's mode after the open: %v %v", fi.Mode(), err)
+	}
+	if people, err := again.People(ctx); err != nil || len(people) != 1 || people[0].Name != "Alice" {
+		t.Fatalf("a read: %+v %v", people, err)
+	}
+	if rc, found, err := again.Receipt(ctx, "test", "a1"); !found || err != nil || rc.Status != StatusDone {
+		t.Fatalf("the receipt kept: %+v %v %v", rc, found, err)
+	}
+	rc, err = again.AddPerson(ctx, testOp("b1"), "Bob")
+	want(t, rc, err, StatusFailed, RefusalReadOnly)
+	if err := again.Checkpoint(ctx); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a checkpoint: %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file made writable again, the WAL and its index beside it are
+	// not: SQLite made them with the file's mode, and a connection that
+	// may not write the WAL does not write. The store says so, as it does
+	// for the file.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	half := openStore(t, dir)
+	if ro, why := half.ReadOnly(); !ro || !strings.Contains(why, "readonly database") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if err := half.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// All three writable, the store takes writes, and nothing of the
+	// opens' tries is in the file.
+	for _, p := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := openStore(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	rc, err = owner.AddPerson(ctx, testOp("b1"), "Bob")
+	want(t, rc, err, StatusDone, "")
+	if people, err := owner.People(ctx); err != nil || len(people) != 2 {
+		t.Fatalf("a read: %+v %v", people, err)
+	}
+}
+
 func TestAWriterLettingGoWhileOpenWaitsLeavesItWritable(t *testing.T) {
 	// The write lock is held on a fresh file in an empty directory, so the
 	// opener that waits on it is the one that makes the schema.
