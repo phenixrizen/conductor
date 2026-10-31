@@ -164,6 +164,84 @@ test("the board: a column per status with each ticket in its own, a drag to In r
   await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('ready')
 })
 
+test('the board left while a move is on its way and its answer carries the receipt alone: the move queued behind is not sent, and says so', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Moved and left' })
+  await page.goto(`/dispatch/${key}?view=board`)
+  const board = page.locator('[data-board]')
+  const card = board.locator(`[data-card="${key}-1"]`)
+  const inColumn = (column: string) => board.locator(`[data-column="${column}"] [data-card="${key}-1"]`)
+  await expect(inColumn('backlog')).toBeVisible()
+  const edits: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const edit = (url: URL) => url.pathname === `/api/dispatch/tickets/${key}-1/edit`
+  await page.route(edit, async (route) => {
+    edits.push((route.request().postDataJSON() as { set?: { status?: string } }).set?.status ?? '')
+    await held
+    // The server's read after the commit failed: the answer carries the receipt alone.
+    const res = await route.fetch()
+    const body = (await res.json()) as Record<string, unknown>
+    await route.fulfill({ response: res, json: { ...body, ticket: null } })
+  })
+  try {
+    await card.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(inColumn('ready')).toBeVisible()
+    await expect.poll(() => edits.length).toBe(1)
+    // Moved back while Ready is on its way, then the projects page, in the app.
+    await page.keyboard.press('ArrowLeft')
+    await expect(inColumn('backlog')).toBeVisible()
+    await page.locator('[data-project-header] a[href="/dispatch"]:visible').first().click()
+    await expect(page).toHaveURL(/\/dispatch$/)
+    release()
+    await expect(page.getByText('Not sent: the page was left').first()).toBeVisible({ timeout: 15_000 })
+    expect(edits).toEqual(['ready'])
+    expect((await storedTicket(api, `${key}-1`)).status).toBe('ready')
+  } finally {
+    release()
+    await page.unroute(edit)
+  }
+})
+
+test('a move whose two replies are both lost after the store committed it: the ticket is read before the move queued behind, which is sent', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Moved, replies lost' })
+  await page.goto(`/dispatch/${key}?view=board`)
+  const board = page.locator('[data-board]')
+  const card = board.locator(`[data-card="${key}-1"]`)
+  const inColumn = (column: string) => board.locator(`[data-column="${column}"] [data-card="${key}-1"]`)
+  await expect(inColumn('backlog')).toBeVisible()
+  const edits: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const edit = (url: URL) => url.pathname === `/api/dispatch/tickets/${key}-1/edit`
+  await page.route(edit, async (route) => {
+    edits.push((route.request().postDataJSON() as { set?: { status?: string } }).set?.status ?? '')
+    if (edits.length > 2) return route.continue()
+    // Ready, and its resend with the same op id: each committed (the resend answered from the receipt), each reply lost.
+    if (edits.length === 1) await held
+    await route.fetch()
+    await route.abort('failed')
+  })
+  try {
+    await card.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(inColumn('ready')).toBeVisible()
+    await expect.poll(() => edits.length).toBe(1)
+    await page.keyboard.press('ArrowLeft')
+    release()
+    await expect.poll(() => edits).toEqual(['ready', 'ready', 'backlog'])
+    await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('backlog')
+    await expect(inColumn('backlog')).toBeVisible()
+  } finally {
+    release()
+    await page.unroute(edit)
+  }
+})
+
 test('the roadmap: Now, Next, Later and a folded Not planned; Next and Now by → and ← on a focused card; the milestones beside with done/total', async ({ page, api }) => {
   const key = await freeProjectKey(api, 'EV')
   // No close policy: a ticket can be made done for the milestone's count.

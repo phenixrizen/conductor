@@ -66,7 +66,8 @@ const rows = usePaletteRows({
 
 // Dispatch from the palette (docs/plans/dispatch.md, "web/app"): a ticket row's Set status… and Set priority… open a picker here, once
 // the palette has closed, one operation on the ticket; New ticket in <project> (a `>` row, a Dispatch page's) opens the dialog here.
-// Through the app's Tickets gate (usePalette), which a snapshot resets with the cache's, so the next edit expects the store's revision.
+// Through the app's Tickets gate (usePalette), which a snapshot resets with the cache's, so the next edit expects the store's revision;
+// one after another with the palette's other edits, each made on the ticket as the ones before left it (usePalette's editTicket).
 const ticketGate = palette.ticketsGate
 const ticketOps = useDispatchOps(ticketGate)
 const ticketPick = ref<{ field: PickField; tickets: TicketSummary[] }>({ field: 'status', tickets: [] })
@@ -79,10 +80,14 @@ async function openTicketPick(field: PickField, t: TicketSummary) {
 }
 function ticketPicked(value: string | number, adds: boolean) {
   const { field, tickets } = ticketPick.value
-  void ticketOps.editTickets(tickets, (t) => pickEdit(field, t, value, adds), {
-    apply: (t) => palette.patchTicket(ticketSummaryOf(t)),
-    done: (keys) => `${PICK_WORDS[field].title} of ${keys.join(', ')} set`,
-  })
+  const t = tickets[0]
+  if (!t) return
+  void palette.editTicket(t, (x) =>
+    ticketOps.editTickets([x], (y) => pickEdit(field, y, value, adds), {
+      apply: (y) => palette.patchTicket(ticketSummaryOf(y)),
+      done: (keys) => `${PICK_WORDS[field].title} of ${keys.join(', ')} set`,
+    }),
+  )
 }
 const newTicketOpen = ref(false)
 const newTicketProject = ref('')

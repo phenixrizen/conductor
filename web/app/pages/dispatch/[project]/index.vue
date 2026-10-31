@@ -35,7 +35,7 @@ const tickets = ref<TicketSummary[]>([])
 const total = ref(0)
 /** The cursor of the page after those shown, '' when they are all. */
 const next = ref('')
-/** How many pages of the list are shown: a re-read reads them all again. */
+/** How many pages of the list are shown: a re-read reads them all again. Back from a ticket by Escape, as many as were (backPages). */
 const pages = ref(1)
 /** The list (a thing of the gate: its project and its filter) whose tickets are shown. */
 const shownThing = ref('')
@@ -95,6 +95,21 @@ const query = computed(() => apiQuery(project.value, filter.value, names.value))
 const listThing = computed(() => `list:${project.value}?${query.value ?? 'nothing'}`)
 /** The tickets shown are the filter's. */
 const listed = computed(() => shownThing.value === listThing.value)
+
+// Back from a ticket by Escape (its page sets backFocus): the list is read as deep as it was shown when the ticket was opened, so a ticket
+// opened after More is listed again and its row focused (the watch of backFocus below). Kept as the page goes, for the project and the
+// filter of the link; taken only by a way back to that list, and forgotten once its focus is given.
+const backFocus = useState<string>('dispatchBackFocus', () => '')
+const backPages = useState<{ project: string; filter: string; pages: number } | null>('dispatchBackPages', () => null)
+const filterWords = computed(() => JSON.stringify(filterToURL(filter.value)))
+/** How many pages a list read afresh starts with: those shown before the ticket, on the way back to the same list; else one. */
+function startPages(): number {
+  const b = backPages.value
+  const back = backFocus.value.startsWith(`${project.value}-`) && b?.project === project.value && b.filter === filterWords.value
+  return back ? b.pages : 1
+}
+pages.value = startPages()
+onBeforeUnmount(() => (backPages.value = { project: project.value, filter: filterWords.value, pages: pages.value }))
 
 /** A page's size: the most the store lists at once. */
 const PAGE = 200
@@ -223,7 +238,7 @@ const live = useDispatchLive(
 // store (DispatchLive.ask), so that a read that fails is asked again after the window, doubled, as a re-read is, with no further event.
 watch(listThing, (_, before) => {
   gate.drop(before)
-  pages.value = 1
+  pages.value = startPages()
   live.ask(async () => {
     try {
       await readList()
@@ -290,16 +305,24 @@ function current(key: string): TicketSummary | undefined {
 /** The page is gone: a ticket's read after an edit that fails is not asked again for it. */
 let gone = false
 onBeforeUnmount(() => (gone = true))
+/**
+ * The page was left before it showed what one of its edits did (editTickets' `stranded`): the edits queued behind are not made on what
+ * it shows, which may not be the store's, and each says it was not sent, rather than being taken for no change and said done.
+ */
+let stranded = false
 
 /**
  * The page's edits, one after another (serially): each is made when it is sent, against the tickets as the edits before it left them, so a
  * card moved twice in a row, or moved back, ends where it was put last; editTickets reads a ticket again after an answer that showed
- * nothing of it, and after a refusal, before the next edit is made. Refused, the page is read again once for the batch, through the live
- * store, so that a read that fails is asked again.
+ * nothing of it, and after a failure, before the next edit is made. Refused, the page is read again once for the batch, through the live
+ * store, so that a read that fails is asked again. The page left, the edits queued are made while it shows what the ones before did; once
+ * it was left before it showed that, none is sent.
  */
 const editQueue = serially(async (keys: readonly string[], make: (t: TicketSummary) => TicketEdit | null, done?: (keys: string[]) => string) => {
   const targets = keys.map(current).filter((t): t is TicketSummary => !!t)
-  return ops.editTickets(targets, make, { apply: showTicket, refused: () => live.ask(reload), left: () => gone, done })
+  const out = await ops.editTickets(targets, make, { apply: showTicket, refused: () => live.ask(reload), left: () => gone, stranded: () => stranded, done })
+  if (out.stranded) stranded = true
+  return out
 })
 
 // The board's and the roadmap's moves: a card is shown in the column it was moved to until the store answers; refused (a move to Done
@@ -413,8 +436,8 @@ defineShortcuts({
 })
 
 // Back from a ticket by Escape (its page sets this): the focus returns to its row or card once the view shows the list read for the
-// filter, a card's folded column (the roadmap's Not planned) unfolded first; a ticket the filter leaves out is not waited for.
-const backFocus = useState<string>('dispatchBackFocus', () => '')
+// filter, as many pages as were shown (startPages), a card's folded column (the roadmap's Not planned) unfolded first; a ticket the
+// filter leaves out is not waited for.
 const cards = useTemplateRef<{ focusCard: (key: string) => Promise<boolean> }>('cards')
 watch(
   [shown, view, listed],
@@ -422,6 +445,7 @@ watch(
     const key = backFocus.value
     if (!key || !key.startsWith(`${project.value}-`) || !listed.value) return
     backFocus.value = ''
+    backPages.value = null
     if (!shown.value.some((t) => t.key === key)) return
     if (view.value === 'list') list.value?.focusKey(key)
     else void cards.value?.focusCard(key)

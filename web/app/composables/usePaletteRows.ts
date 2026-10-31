@@ -429,7 +429,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   function assignToMe(t: TicketSummary) {
     const name = identity.name.value.trim()
     if (!name) return
-    void ticketOps.editTickets([t], (x) => pickEdit('assignees', x, `person:${name}`, true), { apply: (x) => palette.patchTicket(ticketSummaryOf(x)), done: () => `${t.key} assigned to ${name}` })
+    // Queued behind the palette's other edits, and made on the ticket as they left it (usePalette's editTicket).
+    void palette.editTicket(t, (x) => ticketOps.editTickets([x], (y) => pickEdit('assignees', y, `person:${name}`, true), { apply: (y) => palette.patchTicket(ticketSummaryOf(y)), done: () => `${t.key} assigned to ${name}` }))
   }
 
   function ticketItem(t: TicketSummary): PaletteItem {

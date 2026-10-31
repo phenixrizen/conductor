@@ -403,3 +403,49 @@ test("Dispatch's tickets (#409): a read of them that fails after an event is ask
     await page.unroute(tickets)
   }
 })
+
+test("Dispatch's tickets (#409): a status picked back while the first pick is on its way is sent after it, made on what the first left", async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EP')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Picked and picked back' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  const palette = page.locator('[data-palette]')
+  const picker = page.locator('[data-picker]')
+  /** Set status… from the ticket's row, and a choice picked. */
+  const setStatus = async (to: string) => {
+    await page.keyboard.press('Control+k')
+    await expect(palette).toBeVisible()
+    await palette.locator('input[data-palette-input]').fill(`${key}-1`)
+    const row = palette.locator(`[data-palette-row="ticket:${key}-1"]`)
+    await expect(row).toBeVisible()
+    await row.focus()
+    await page.keyboard.press('ArrowRight')
+    await row.locator('[data-palette-action="set-status"]').click()
+    await expect(picker).toHaveAttribute('data-picker-field', 'status')
+    await picker.locator(`[data-pick-value="${to}"]`).click()
+    await expect(picker).toBeHidden()
+  }
+  // The first edit is held until the second is picked.
+  const edits: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const edit = (url: URL) => url.pathname === `/api/dispatch/tickets/${key}-1/edit`
+  await page.route(edit, async (route) => {
+    edits.push((route.request().postDataJSON() as { set?: { status?: string } }).set?.status ?? '')
+    if (edits.length === 1) await held
+    await route.continue()
+  })
+  try {
+    await setStatus('ready')
+    await expect.poll(() => edits.length).toBe(1)
+    // The cache still shows Backlog: picked back, it is queued behind Ready and made on what Ready left, not taken for no change.
+    await setStatus('backlog')
+    release()
+    await expect.poll(() => edits).toEqual(['ready', 'backlog'])
+    await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('backlog')
+  } finally {
+    release()
+    await page.unroute(edit)
+  }
+})

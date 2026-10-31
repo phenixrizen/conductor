@@ -30,6 +30,8 @@ export interface DispatchOpOptions<R> {
 export interface EditsOutcome {
   done: string[]
   failed: Array<{ key: string; words: string }>
+  /** The page was left before it showed what an edit did: the edits after it were not sent, nor are those queued behind (editEach). */
+  stranded: boolean
 }
 
 /** How `editTickets` shows what it did. */
@@ -42,6 +44,8 @@ export interface EditsOptions {
   refused?: () => void
   /** Whether the page that made the edits is gone: a ticket's read that fails is not asked again for it. */
   left?: () => boolean
+  /** Whether an earlier call's edits were stranded (its outcome's `stranded`): none of these is sent, each failing as not sent. */
+  stranded?: () => boolean
 }
 
 /** A failed operation in words: a refusal's (the close policy's in its own words), else the error's. */
@@ -97,8 +101,9 @@ export function useDispatchOps(gate: DispatchOrder) {
    * that is later (a list read before that answer may still show the older row), so a second pick made on the same ticket is not refused
    * stale_revision by the first. `make` gives each ticket its edit, null when it holds the value already, which is no operation (the store
    * refuses an edit that changes nothing). Each answer goes through the page's gate as the ticket's (`ticket:<key>`), where `apply` shows
-   * it; an answer that carried no ticket, or that the gate dropped, and a refusal, are followed by a read of the ticket through the same
-   * gate, asked again while it fails, before the next edit is made, so the edits queued behind are made on what the store holds. A
+   * it; an answer that carried no ticket, or that the gate dropped, and a failure (a refusal, or both replies lost to the network, which
+   * may follow a commit), are followed by a read of the ticket through the same gate, asked again while it fails, before the next edit is
+   * made, so the edits queued behind are made on what the store holds; a page left before it shows that makes none of them. A
    * refusal's read of the page (`refused`) is asked once for the batch. One toast says what was not changed and why, in the refusal's
    * words (the close policy's own), and `done`'s title says what was, when given.
    */
@@ -129,20 +134,20 @@ export function useDispatchOps(gate: DispatchOrder) {
         return reply!
       },
       committed: (r) => r.ticket?.rev ?? r.receipt.rev,
-      caughtUp: async (t, rev) => {
-        await catchUp({
+      caughtUp: (t, rev) =>
+        catchUp({
           shown: () => rev !== undefined && gate.rev(`ticket:${t.key}`) >= rev,
           read: () => readTicket(t.key),
           left: o.left ?? (() => false),
           wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
           firstMs: RUN_EVENT_WINDOW_MS,
           maxMs: DISPATCH_RETRY_MAX_MS,
-        })
-      },
+        }),
       refusal: (e) => e instanceof CommandRefused,
       refused: o.refused,
+      stranded: o.stranded,
     })
-    const out: EditsOutcome = { done: each.done.map((t) => t.key), failed: each.failed.map((f) => ({ key: f.t.key, words: dispatchFailureWords(f.error) })) }
+    const out: EditsOutcome = { done: each.done.map((t) => t.key), failed: each.failed.map((f) => ({ key: f.t.key, words: dispatchFailureWords(f.error) })), stranded: each.stranded }
     if (out.failed.length === 1 && targets.length === 1) {
       toast.add({ title: `${out.failed[0]!.key}: not changed`, description: out.failed[0]!.words, icon: 'i-lucide-triangle-alert', color: 'warning' })
     } else if (out.failed.length) {

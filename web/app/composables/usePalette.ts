@@ -1,7 +1,7 @@
 import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessions'
 import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import type { Action } from '~/utils/actions'
-import { DispatchOrder, through } from '~/utils/dispatchOrder'
+import { DispatchOrder, serially, through } from '~/utils/dispatchOrder'
 import { allPages, paletteListed, withPatched } from '~/utils/dispatch'
 import { MODE_PREFIX, type PaletteMode, type PaletteRow } from '~/utils/palette'
 import type { RowPrompt } from '~/utils/sidebarActions'
@@ -80,6 +80,13 @@ const ticketsGate = new DispatchOrder()
 let ticketsPatched = new Map<string, TicketSummary>()
 /** Bumped as the cache is marked behind the store (an event, a snapshot): a read asked before it answers what it read, but not fresh. */
 let ticketsStale = 0
+/**
+ * The palette's edits of tickets (CommandPalette.vue's pickers, usePaletteRows' Assign to me), one after another (serially), as a project
+ * page's are: each is made once the one before has answered and the cache shows what it left (editTickets' catch-up), on the ticket as
+ * the cache knows it then (editTicket), so a pick made while the one before is on its way (Backlog picked back while Ready is sent) is
+ * made on what that one left and sent, not taken for no change on the older row the picker was opened on.
+ */
+const ticketEdits = serially((edit: () => Promise<unknown>) => edit())
 
 /** The open tickets the palette reads, of every project, the latest updated first: at most this many (five pages of 200). */
 export const PALETTE_TICKETS_MAX = 1000
@@ -266,6 +273,17 @@ export function usePalette() {
     if (!known || t.rev >= known.rev) ticketsPatched.set(t.key, t)
     tickets.value = tickets.value.flatMap((x) => (x.key !== t.key || t.rev < x.rev ? [x] : paletteListed(t) ? [t] : []))
   }
+  /** A ticket as the cache knows it now: its row, or the newer answer of an edit; `t` itself when it knows neither (no longer open). */
+  function knownTicket(t: TicketSummary): TicketSummary {
+    const row = tickets.value.find((x) => x.key === t.key)
+    const patched = ticketsPatched.get(t.key)
+    if (row && patched) return patched.rev > row.rev ? patched : row
+    return patched ?? row ?? t
+  }
+  /** An edit of a ticket from the palette: queued behind the palette's others (ticketEdits), and made on the ticket as the cache knows it when it starts. */
+  function editTicket<R>(t: TicketSummary, edit: (t: TicketSummary) => Promise<R>): Promise<R> {
+    return ticketEdits(() => edit(knownTicket(t))) as Promise<R>
+  }
   /** The cache goes with the token, as Touched's does: another token must not see the last one's tickets, nor a reply on its way. */
   function forgetTickets() {
     ticketsGen++
@@ -297,5 +315,5 @@ export function usePalette() {
     open.value = true
   }
 
-  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, forgetTickets, newTicketFor, askNewTicket, ticketsGate }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, editTicket, forgetTickets, newTicketFor, askNewTicket, ticketsGate }
 }

@@ -7,7 +7,7 @@ import { DispatchOrder, through } from '~/utils/dispatchOrder'
 /**
  * A picker of one of a ticket's fields (docs/plans/dispatch.md, Owner decisions, 10): what the list's letters open (S status, P priority,
  * A assignees, L labels, M milestone, O owner) for the focused ticket or the tickets selected with X, and what the palette's rows open.
- * A search narrows the choices as it is typed; ↑ ↓ move, Enter picks, a click picks, Escape closes. The choices every ticket holds are
+ * A search narrows the choices as it is typed; ↑ ↓ move, Enter picks, a click picks, Escape closes; a choice Tab focuses is the one Enter picks. The choices every ticket holds are
  * ticked; picking an assignee or a label every one holds takes it away, else adds it. A name typed that the directory lacks is a choice
  * of its own for the owner and the assignees (people are names until identity exists: the store adds it). The picker only says what
  * was picked (`pick`); its host makes the edits, one operation per ticket.
@@ -162,6 +162,7 @@ function onKey(e: KeyboardEvent) {
             :data-pick-held="c.held ? '' : undefined"
             :data-pick-cursor="i === cursor ? '' : undefined"
             @click="choose(c)"
+            @focus="cursor = i"
             @mousemove="cursor = i"
           >
             <span v-if="c.dot" class="mx-0.5 size-2.5 flex-none rounded-full" :class="c.dot" />
