@@ -60,6 +60,23 @@ describe('the comments shown', () => {
     expect(shownComments('t1', [comment(1)], [], new Map([[other.id, other]])).map((c) => c.n)).toEqual([1])
   })
 
+  it("keep the comment being edited in its place when the read's window moves past it, any other source's copy shown over it", () => {
+    // #1 edited; the read moved on to #2–#51 and no earlier page holds #1 yet: it stays, before #2, with nothing said missing.
+    const read = Array.from({ length: 50 }, (_, i) => comment(i + 2))
+    const held = comment(1, { body: 'as opened', rev: 2 })
+    const shown = shownComments('t1', read, [], new Map(), { held })
+    expect(shown.map((c) => c.n).slice(0, 2)).toEqual([1, 2])
+    expect(shown[0]).toBe(held)
+    expect(commentGaps(shown, 2)).toEqual([])
+    expect(earlierComments(shown[0]!.n)).toBeNull()
+    // It is read again from #1, with the earlier pages, and their copy is shown, whatever its revision (a store restored).
+    expect(commentsRereadFrom(shown, 2)).toBe(1)
+    const reread = comment(1, { body: 'theirs', rev: 1 })
+    expect(shownComments('t1', read, [reread], new Map(), { held })[0]!.body).toBe('theirs')
+    // One of another ticket is never held here.
+    expect(shownComments('t1', read, [], new Map(), { held: comment(1, { ticketId: 't2' }) })[0]!.n).toBe(2)
+  })
+
   it('count the same comment once when an earlier page and the read both hold it', () => {
     expect(shownComments('t1', [comment(50), comment(51)], [comment(49), comment(50)]).map((c) => c.n)).toEqual([49, 50, 51])
   })

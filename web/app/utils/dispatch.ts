@@ -775,14 +775,16 @@ export const COMMENT_PAGE = 50
  * older body once the edit's answer is in, nor leaves out a comment just made. Those of another ticket are left out. A comment the read
  * lacks (one of an earlier page) keeps the number it was read with. `earlierOutdated` says the earlier pages were read before the stream
  * started again (a store restored from a backup, whose `rev`s may be below those read): the read's comment is shown over theirs then,
- * whatever its `rev`, until they are read again.
+ * whatever its `rev`, until they are read again. `held` is the comment being edited as it was last shown: kept in its place when no
+ * other source holds it (the read's window moved past it and no earlier page has it yet), so its editor and its draft stay; any other
+ * source's copy is shown over it.
  */
 export function shownComments(
   ticketId: string,
   read: readonly TicketComment[],
   earlier: readonly TicketComment[],
   known: ReadonlyMap<string, TicketComment> = new Map(),
-  o: { earlierOutdated?: boolean } = {},
+  o: { earlierOutdated?: boolean; held?: TicketComment } = {},
 ): TicketComment[] {
   const byId = new Map<string, TicketComment>()
   const keep = (c: TicketComment, over = false) => {
@@ -792,6 +794,7 @@ export function shownComments(
   for (const c of earlier) keep(c)
   for (const c of read) keep(c, o.earlierOutdated)
   for (const c of known.values()) if (c.ticketId === ticketId) keep(c)
+  if (o.held && o.held.ticketId === ticketId && !byId.has(o.held.id)) byId.set(o.held.id, o.held)
   return [...byId.values()].sort((a, b) => a.n - b.n || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
 }
 

@@ -13,6 +13,8 @@ import { LABEL_COLOR_CHOICES, labelDot } from '~/utils/dispatch'
  * another person's edit of a field left alone is kept; one of a field edited here is said, the draft kept, and a second Save replaces it.
  * Their editors stay open while a save goes: its answer closes the editor it was made from only when nothing more was typed there, and
  * otherwise leaves the newer text, made against what was saved at the revision its receipt names (an editor opened since is left be).
+ * One save goes at a time from an editor: its Save is off, and Enter sends nothing, until the one on its way is answered, so a second
+ * never judges what is typed against what the first has not yet committed.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ project: string; read: ProjectRead; gate: DispatchOrder; archived: boolean }>()
@@ -56,6 +58,8 @@ const renameOpened = ref(0)
 const renameBase = ref({ name: '', rev: 0 })
 /** Another person's name for the label, given while this one was typed: said until the rename closes. */
 const renameTheirs = ref('')
+/** The rename opening whose save is on its way (0: none): it sends nothing more until that one is answered. */
+const renameSaving = ref(0)
 function startRename(l: DispatchLabel) {
   renaming.value = l.id
   renameOpened.value = ++renameOpenings
@@ -64,6 +68,7 @@ function startRename(l: DispatchLabel) {
   renameTheirs.value = ''
 }
 async function rename(l: DispatchLabel) {
+  if (renameSaving.value && renameSaving.value === renameOpened.value) return
   const name = renameDraft.value.trim()
   const base = renameBase.value
   if (l.rev !== base.rev) {
@@ -80,7 +85,13 @@ async function rename(l: DispatchLabel) {
   }
   const opened = renameOpened.value
   const typed = renameDraft.value
-  const reply = await done(ops.run<LabelReply>((op) => api.editLabel(props.project, l.id, { ...op, name }), { thing: `label:${l.id}`, what: `The label ${l.name}`, expectedRev: l.rev }))
+  renameSaving.value = opened
+  let reply: LabelReply | null
+  try {
+    reply = await done(ops.run<LabelReply>((op) => api.editLabel(props.project, l.id, { ...op, name }), { thing: `label:${l.id}`, what: `The label ${l.name}`, expectedRev: l.rev }))
+  } finally {
+    if (renameSaving.value === opened) renameSaving.value = 0
+  }
   if (!reply || renaming.value !== l.id || renameOpened.value !== opened) return
   if (renameDraft.value === typed) {
     renaming.value = ''
@@ -131,6 +142,8 @@ const milestoneDescription = ref('')
 const milestoneBase = ref({ name: '', description: '', rev: 0 })
 /** Another person's edit of a field edited here, made meanwhile: said until the editor closes. */
 const milestoneTheirs = ref<{ name?: string; description?: string } | null>(null)
+/** The milestone editor's opening whose save is on its way (0: none): it sends nothing more until that one is answered. */
+const milestoneSaving = ref(0)
 function startMilestone(m: DispatchMilestone) {
   editingMilestone.value = m.id
   milestoneOpened.value = ++milestoneOpenings
@@ -145,6 +158,7 @@ function startMilestone(m: DispatchMilestone) {
  * it, knowingly.
  */
 async function saveMilestone(m: DispatchMilestone) {
+  if (milestoneSaving.value && milestoneSaving.value === milestoneOpened.value) return
   const base = milestoneBase.value
   const name = milestoneName.value.trim()
   const nameEdited = !!name && name !== base.name
@@ -175,7 +189,13 @@ async function saveMilestone(m: DispatchMilestone) {
   const opened = milestoneOpened.value
   const typed = { name: milestoneName.value, description: milestoneDescription.value }
   const saved = { name: change.name ?? milestoneBase.value.name, description: change.description ?? milestoneBase.value.description }
-  const reply = await editMilestone(m, change)
+  milestoneSaving.value = opened
+  let reply: MilestoneReply | null
+  try {
+    reply = await editMilestone(m, change)
+  } finally {
+    if (milestoneSaving.value === opened) milestoneSaving.value = 0
+  }
   if (!reply || editingMilestone.value !== m.id || milestoneOpened.value !== opened) return
   if (milestoneName.value === typed.name && milestoneDescription.value === typed.description) {
     editingMilestone.value = ''
@@ -215,7 +235,7 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
                 </USelect>
                 <form v-if="renaming === l.id" class="flex min-w-0 flex-1 items-center gap-1.5" @submit.prevent="rename(l)">
                   <UInput v-model="renameDraft" size="xs" maxlength="40" autofocus class="min-w-0 flex-1" aria-label="The label's name" data-label-rename-input @keydown.escape.stop="renaming = ''" />
-                  <UButton type="submit" label="Save" size="xs" data-label-rename-save />
+                  <UButton type="submit" label="Save" size="xs" :loading="renameSaving === renameOpened" :disabled="renameSaving === renameOpened" data-label-rename-save />
                 </form>
                 <span v-else class="min-w-0 flex-1 truncate text-sm" data-label-name>{{ l.name }}</span>
                 <template v-if="!archived && renaming !== l.id">
@@ -265,7 +285,7 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
                   <span v-if="milestoneOver" class="text-xs text-error">More than the 4 KiB a milestone's description may hold</span>
                   <div class="flex-1" />
                   <UButton label="Cancel" color="neutral" variant="ghost" size="xs" @click="editingMilestone = ''" />
-                  <UButton type="submit" label="Save" size="xs" :disabled="milestoneOver || !milestoneName.trim()" data-milestone-save />
+                  <UButton type="submit" label="Save" size="xs" :loading="milestoneSaving === milestoneOpened" :disabled="milestoneOver || !milestoneName.trim() || milestoneSaving === milestoneOpened" data-milestone-save />
                 </div>
               </form>
               <div v-else-if="!archived" class="flex flex-wrap items-center gap-1">
