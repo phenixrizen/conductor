@@ -338,12 +338,16 @@ func TestStatusesLeaveAQuestionHeldOnTheScreen(t *testing.T) {
 	att := waitAttention(t, s, screenAsks)
 	out(p, codexStatus(StatusBlocked, "permission"), codexStatus(StatusWorking, ""), codexStatus(StatusBlocked, "permission"), codexStatus(StatusWorking, ""))
 	stays(t, s, settle+100*time.Millisecond, "the approval under statuses", func(a Attention) bool { return screenAsks(a) && a.ID == att.ID })
+	lastEntryIs(t, s, att.Message)
 	before := len(entries(s))
 	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl this time\r\n› ")))
 	if a := waitAttention(t, s, statusWorks); a.Since == nil {
 		t.Fatalf("working after the dialog, without its time: %+v", a)
 	}
 	stays(t, s, 200*time.Millisecond, "working after the dialog with the status working", statusWorks)
+	// The reconciled status's entry is recorded after the lock is let go
+	// (recordStatusReconciled); the window above is not what orders it.
+	lastEntryIs(t, s, string(AttentionWorking))
 	if got := entries(s); len(got) != before+1 || got[len(got)-1] != string(AttentionWorking) {
 		t.Fatalf("entries after the dialog: %v (had %d)", got, before)
 	}
