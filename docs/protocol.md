@@ -2397,13 +2397,19 @@ changed tracked files: …"), counted and decided as a failing check is: the
 next attempt starts at the result with the step's words in its task file,
 and the steps after it do not run. Its events are the steps'
 (`step.started`, `step.running` and `step.finished`, phase `verify`, tree
-`checkout`), not the checks'.
+`checkout`), not the checks'. A check or a verify step whose running
+receipt the ledger refuses is ended with its group and fails the attempt
+at its stage with the ledger's words ("the ledger could not record the
+step e2e: …"); one the attempt's close interrupts, under it or while it
+waits for its turn, is recorded `interrupted` with what its process left
+(its pid, its output and the output's hash and tail).
 
 A tree ends once its attempt's close is committed, however the attempt
 closed (a result taken or refused, a failed check, a cancel, a withdrawal,
 a stop, a failure that stops the session): its services are stopped first,
 then its `cleanup` steps run, in order, in its working directory with its
-names, each a receipt of phase `cleanup`, every one whatever the one before
+names (a close that comes while the tree is being made, before its state
+directory and task files are there, ends it once they are), each a receipt of phase `cleanup`, every one whatever the one before
 it did. One that fails is its receipt and a line in the run log ("task
 build: attempt 2: cleanup db exited 1: …", "… the checkout's cleanup …" for
 a checkout's), never a change to the attempt's state, and `tree.ended`

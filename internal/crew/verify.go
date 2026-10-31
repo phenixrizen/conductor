@@ -114,15 +114,17 @@ func (e *Engine) verify(r *run, a *attempt) {
 	}
 	var tr *tree
 	if r.hasManifest() {
+		// Held from its resolution (resolveTree) through the checks: a
+		// close that comes meanwhile ends it once they have returned.
 		tr, err = e.resolveTree(ctx, r, a, ledger.TreeCheckout, dir, cwd, a.result)
+		if err != nil && tr != nil {
+			tr.busy.Done()
+		}
 		if errors.Is(err, errAttemptClosed) || (err != nil && ctx.Err() != nil) {
 			return // closed meanwhile: cancelled or stopped
 		}
 		if err != nil {
 			e.accept(r, a, false, "manifest", session.CleanMessage(err.Error()))
-			return
-		}
-		if !e.hold(tr) {
 			return
 		}
 	}
@@ -176,9 +178,12 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 // task's check's events are check.started, check.running and
 // check.finished, as they always were; a verify step's are the steps'
 // (step.started, step.running, step.finished) with its phase and the
-// manifest that ran it. ok is true when it passed; else the stage ("check
-// <id>", "verify <id>") and words of its failure, decided false when the
-// attempt closed under it.
+// manifest that ran it. A running row the ledger refuses ends its process
+// and fails it with the ledger's words, as runStep does; one the attempt's
+// close interrupts, under it or while it waits for its slot, is concluded
+// interrupted with what its process left (its identity, its output). ok is
+// true when it passed; else the stage ("check <id>", "verify <id>") and
+// words of its failure, decided false when the attempt closed under it.
 func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir, cwd, phase string, ch Check) (stage, words string, decided, ok bool) {
 	t := a.t
 	stage = phase + " " + ch.ID
@@ -221,28 +226,51 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 	}, giveUp); err != nil {
 		return stage, unrecorded + ": " + session.CleanMessage(err.Error()), true, false
 	}
+	// The check's own context: a running row the ledger refuses ends the
+	// process under it, as a manifest step's does (runStep), so nothing
+	// runs that the ledger does not record (Codex's review of #498).
+	runCtx, endRun := context.WithCancel(ctx)
+	defer endRun()
+	var refused error
+	var log bytes.Buffer
+	var res proc.Result
 	sem := e.checkSlots()
 	select {
 	case sem <- struct{}{}:
+		res = e.runCommand(runCtx, cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
+			running := row
+			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
+			if err := e.transact(context.Background(), r, func() tx {
+				out := event("running", map[string]any{"pid": p.PID, "group": p.Group})
+				out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
+				return out
+			}, nil); err != nil {
+				refused = err
+				endRun()
+			}
+		})
+		<-sem
 	case <-ctx.Done():
-		return "", "", false, false
+		// Closed while it waited for its slot: never started, its
+		// receipt concluded below as interrupted all the same.
+		res = proc.Result{Exit: -1, Canceled: true}
 	}
-	var log bytes.Buffer
-	res := e.runCommand(ctx, cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
-		running := row
-		running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
-		_ = e.transact(context.Background(), r, func() tx {
-			out := event("running", map[string]any{"pid": p.PID, "group": p.Group})
-			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
-			return out
-		}, nil)
-	})
-	<-sem
+	// What the process left, whichever way it ended: its identity, its
+	// output and its exit, so a receipt interrupted or refused keeps them.
+	fin := row
+	fin.FinishedAt = time.Now().UTC()
+	fin.PID, fin.Group, fin.ProcessStartedAt = res.Process.PID, res.Process.Group, res.Process.StartedAt
+	fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = res.Exit, res.Signal, res.TimedOut, res.Killed
+	fin.Truncated, fin.Total = res.Truncated, res.Total
+	fin.Log = bytes.Clone(log.Bytes())
+	sum := sha256.Sum256(fin.Log)
+	fin.LogSHA256 = hex.EncodeToString(sum[:])
+	fin.Tail = string(lastOutput(res, checkTail))
 	if ctx.Err() != nil {
-		// Cancelled or stopped under the check: the attempt is closed
-		// by what cancelled it, with the check's end recorded.
-		fin := row
-		fin.State, fin.FinishedAt, fin.Killed, fin.Exit, fin.Signal = ledger.CheckInterrupted, time.Now().UTC(), res.Killed, res.Exit, res.Signal
+		// Cancelled or stopped under the check, or before it had its
+		// slot: the attempt is closed by what cancelled it, with the
+		// check's end recorded.
+		fin.State = ledger.CheckInterrupted
 		fin.Error = "the attempt closed under the check"
 		if step {
 			fin.Error = e.interruptedWhy(r, a, ch)
@@ -258,16 +286,22 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		}, nil)
 		return "", "", false, false
 	}
+	if refused != nil {
+		// Its running row refused: its process ended under it, and the
+		// check fails with the ledger's words, its receipt finished
+		// with them.
+		fin.State = ledger.CheckFinished
+		words = unrecorded + ": " + session.CleanMessage(refused.Error())
+		fin.Error = words
+		_ = e.transact(context.Background(), r, func() tx {
+			out := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": false, "duration": res.Duration.String(), "error": words})
+			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+			return out
+		}, nil)
+		return stage, words, true, false
+	}
 	moved, changed, untracked, cerr := checkoutIntact(ctx, dir, a.result)
-	fin := row
-	fin.State, fin.FinishedAt = ledger.CheckFinished, time.Now().UTC()
-	fin.PID, fin.Group, fin.ProcessStartedAt = res.Process.PID, res.Process.Group, res.Process.StartedAt
-	fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = res.Exit, res.Signal, res.TimedOut, res.Killed
-	fin.Stable, fin.Truncated, fin.Total = cerr == nil && !moved && len(changed) == 0, res.Truncated, res.Total
-	fin.Log = bytes.Clone(log.Bytes())
-	sum := sha256.Sum256(fin.Log)
-	fin.LogSHA256 = hex.EncodeToString(sum[:])
-	fin.Tail = string(lastOutput(res, checkTail))
+	fin.State, fin.FinishedAt, fin.Stable = ledger.CheckFinished, time.Now().UTC(), cerr == nil && !moved && len(changed) == 0
 	words = checkWords(ch, res, moved, changed, cerr)
 	if ids := e.serviceIDs(tr); len(ids) > 0 && words != "" && words == intactWords(moved, changed, cerr) {
 		// The tree's services ran beside the check: the comparison

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,9 +419,10 @@ func TestAStopMidServiceRunsTheCleanup(t *testing.T) {
 			t.Fatalf("the worktree ended under its cleanup step: %+v", tr)
 		}
 		open(t, gate)
-		drain, done := context.WithTimeout(context.Background(), 20*time.Second)
-		defer done()
-		e.Drain(drain)
+		// Drain under no deadline of the test's own: it returns once the
+		// tree has ended, a hang left to the test's timeout (the
+		// independent review of #498).
+		e.Drain(context.Background())
 		if r, _ := e.Get(run.ID); r.Cleaning != 0 {
 			t.Fatalf("cleaning %d after Drain", r.Cleaning)
 		}
@@ -669,4 +672,253 @@ func TestACleanupRunsAfterAFailedSetupStep(t *testing.T) {
 		t.Fatalf("the run after its tree's cleanup: paused %v, %q", r.Paused, r.PausedWhy)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// A close that comes after a worktree is the attempt's and before it is
+// ready to work in (its state directory, its task files) ends it only once
+// that is done: the tree is held from its resolution on, so its cleanup
+// finds what the dispatch made, and nothing is made after the cleanup ran
+// (Codex's review of #498). The dispatch is held at a seam between the
+// tree's commit and its state directory while the cancel is committed.
+func TestACancelBeforeATreeIsReadyEndsItOnceItIsMade(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var resumed atomic.Bool
+	early := make(chan string, 2)
+	e.afterTreeResolved = func(kind string) {
+		if kind != ledger.TreeWorktree {
+			return
+		}
+		once.Do(func() {
+			close(reached)
+			<-resume
+			resumed.Store(true)
+		})
+	}
+	e.beforeTreeEnd = func(kind string) {
+		if !resumed.Load() {
+			early <- kind
+		}
+	}
+	m := Manifest{Cleanup: []Check{shStep("look", `test -d "$CONDUCTOR_STATE_DIR" && test -f .conductor/task.md && echo made`)}}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worktree was not resolved after 10 s")
+	}
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		close(resume)
+		t.Fatal(err)
+	}
+	l.attemptWhen(t, run.ID, "build", 1, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptCancelled })
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State == ledger.TreeEnded {
+		close(resume)
+		t.Fatalf("the worktree ended before it was made: %+v", tr)
+	}
+	close(resume)
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+	select {
+	case kind := <-early:
+		t.Fatalf("the %s's end began before the dispatch had made it", kind)
+	default:
+	}
+	look, ok := rowOf(l.stepRows(run.ID, "build", 1), "look", 1)
+	if !ok || look.Phase != ledger.PhaseCleanup || look.Exit != 0 || string(look.Log) != "made\n" {
+		t.Fatalf("the cleanup found the tree unmade: %+v", look)
+	}
+	for _, p := range l.payloads(run.ID, "tree.ended") {
+		if p["cleanupFailed"] != nil || p["interrupted"] != nil {
+			t.Fatalf("tree.ended: %v", p)
+		}
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("the task: %+v", ts)
+	}
+	waitTreesEnded(t, e, run.ID)
+	stopRun(t, e, run.ID)
+}
+
+// checkKinds are the two kinds of check runCheck runs in a result's
+// checkout: a task's check and the manifest's verify step, each with the
+// crew it is in (a manifest, so the checkout is a tree), the event of its running row and the words of a refused
+// one and of an interrupted one.
+var checkKinds = []struct {
+	name, running, stage, refused, interrupted string
+	crew                                       func(dir string, ch Check) Crew
+}{
+	{
+		name: "a task's check", running: "check.running", stage: "check e2e",
+		refused: "the ledger could not record the check: ledger: disk full (injected)", interrupted: "the attempt closed under the check",
+		crew: func(dir string, ch Check) Crew {
+			build := work("build", "lead")
+			build.Checks = []Check{ch}
+			return repoManifestCrew(dir, Manifest{Cleanup: []Check{shStep("tidy", "true")}}, build)
+		},
+	},
+	{
+		name: "a verify step", running: "step.running[phase=verify]", stage: "verify e2e",
+		refused: "the ledger could not record the step e2e: ledger: disk full (injected)", interrupted: "e2e was interrupted: the attempt was cancelled",
+		crew: func(dir string, ch Check) Crew {
+			return repoManifestCrew(dir, Manifest{Verify: []Check{ch}}, work("build", "lead"))
+		},
+	},
+}
+
+// A check's running row the ledger refuses ends its process with its group
+// and fails the check with the ledger's words, as a manifest step's does
+// (runStep): nothing runs that the ledger does not record, and the result
+// is not taken on a check whose process the ledger never had (Codex's
+// review of #498).
+func TestARefusedRunningRowEndsAndFailsTheCheck(t *testing.T) {
+	for _, kind := range checkKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			gate := filepath.Join(t.TempDir(), "gate")
+			t.Cleanup(func() { open(t, gate) })
+			l.mu.Lock()
+			l.failOn, l.failOnce = kind.running, true
+			l.mu.Unlock()
+			run := launchManaged(t, e, kind.crew(dir, shStep("e2e", gated(gate))))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+			if row.Stage != kind.stage || row.Error != kind.refused {
+				t.Fatalf("attempt 1: stage %q, %q", row.Stage, row.Error)
+			}
+			e2e, _ := rowOf(l.stepRows(run.ID, "build", 1), "e2e", 1)
+			if e2e.State != ledger.CheckFinished || e2e.Error != kind.refused || e2e.PID == 0 || e2e.Stable {
+				t.Fatalf("the check's row: %+v", e2e)
+			}
+			if alive(e2e.PID) {
+				t.Fatalf("the check's process %d outlived its refused row", e2e.PID)
+			}
+			if ts := taskOf(t, e, run.ID, "build"); ts.State == ledger.TaskSucceeded {
+				t.Fatalf("the result was taken on a check the ledger never had running: %+v", ts)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A check whose attempt is cancelled while it waits for the server's check
+// slot is concluded interrupted, not left started: its receipt reads as a
+// check that never ran (no process), and the result's checkout ends after
+// it (Codex's review of #498). The test holds the only slot itself.
+func TestACheckCancelledWhileItWaitsForItsSlotIsConcluded(t *testing.T) {
+	for _, kind := range checkKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			sem := e.checkSlots()
+			sem <- struct{}{}
+			held := true
+			t.Cleanup(func() {
+				if held {
+					<-sem
+				}
+			})
+			run := launchManaged(t, e, kind.crew(dir, shStep("e2e", "true")))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			l.rowWhen(t, run.ID, "build", 1, "e2e", 1, func(c ledger.CheckRow) bool { return c.State == ledger.CheckStarted })
+			if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+				t.Fatal(err)
+			}
+			e2e := l.rowWhen(t, run.ID, "build", 1, "e2e", 1, func(c ledger.CheckRow) bool { return c.State != ledger.CheckStarted })
+			if e2e.State != ledger.CheckInterrupted || e2e.Error != kind.interrupted || e2e.PID != 0 || len(e2e.Log) != 0 {
+				t.Fatalf("the check cancelled in its slot's queue: %+v", e2e)
+			}
+			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
+			<-sem
+			held = false
+			if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled {
+				t.Fatalf("the task: %+v", ts)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A check its attempt's cancel interrupts keeps what its process left: its
+// pid, its group, its output, the output's hash and tail, so the receipt's
+// log is there to read (Codex's review of #498).
+func TestAnInterruptedCheckKeepsItsOutputAndProcess(t *testing.T) {
+	for _, kind := range checkKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			gate, said := filepath.Join(t.TempDir(), "gate"), filepath.Join(t.TempDir(), "said")
+			t.Cleanup(func() { open(t, gate) })
+			run := launchManaged(t, e, kind.crew(dir, shStep("e2e", `echo "diagnostics before the cancel"; touch "`+said+`"; `+gated(gate))))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			running := l.rowWhen(t, run.ID, "build", 1, "e2e", 1, func(c ledger.CheckRow) bool { return c.State == ledger.CheckRunning })
+			waitFake(t, "the check's output written", func() bool { _, err := os.Stat(said); return err == nil })
+			if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+				t.Fatal(err)
+			}
+			e2e := l.rowWhen(t, run.ID, "build", 1, "e2e", 1, func(c ledger.CheckRow) bool { return c.State == ledger.CheckInterrupted })
+			if e2e.Error != kind.interrupted || e2e.PID == 0 || e2e.PID != running.PID || e2e.Group != running.Group || e2e.ProcessStartedAt.IsZero() ||
+				string(e2e.Log) != "diagnostics before the cancel\n" || e2e.LogSHA256 != sha(e2e.Log) || e2e.Tail != "diagnostics before the cancel\n" {
+				t.Fatalf("the interrupted check's row: %+v", e2e)
+			}
+			if alive(e2e.PID) {
+				t.Fatalf("the check's process %d outlived the cancel", e2e.PID)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A cleanup step that fails on its own is a failure even when the
+// shutdown's cut-off lands right after its receipt is committed: the
+// tree's end takes the cut from the step's own receipt, never from the
+// teardown read again after it (the independent review of #498). The
+// step's finished commit is held while the cut-off is armed and lands.
+func TestACleanupStepThatFailsJustBeforeTheCutOffIsAFailure(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "step.finished[phase=cleanup]", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(l.release)
+		}
+	})
+	m := Manifest{Cleanup: []Check{shStep("db", `echo "the database would not drop"; exit 1`)}}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cleanup step's receipt was not committed after 10 s")
+	}
+	// A deadline the reserve takes all of: the cut-off is now.
+	ctx, cancel := context.WithTimeout(context.Background(), teardownReserve)
+	defer cancel()
+	e.Draining(ctx)
+	r := runOf(t, e, run.ID)
+	waitFake(t, "the cut-off", func() bool { return r.teardown.Err() != nil })
+	released = true
+	close(l.release)
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+	if db, _ := rowOf(l.stepRows(run.ID, "build", 1), "db", 1); db.State != ledger.CheckFinished || db.Exit != 1 {
+		t.Fatalf("the cleanup step: %+v", db)
+	}
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.Interrupted {
+		t.Fatalf("the worktree's row says interrupted with nothing cut: %+v", tr)
+	}
+	if p := l.payloads(run.ID, "tree.ended"); len(p) != 1 || p[0]["cleanupFailed"] != "db" || p[0]["interrupted"] != nil {
+		t.Fatalf("tree.ended: %v", p)
+	}
+	waitTreesEnded(t, e, run.ID)
 }

@@ -158,8 +158,10 @@ func (rm resolvedManifest) row() string {
 // its working directory; its preview is the manifest's, expanded, "" for
 // none; allow is the manifest's env names the server approved
 // (allowedEnv). All of that is set before the tree is the attempt's and
-// never changed. busy is held while one of its phases or checks runs,
-// and in a worktree through its session's launch (hold). Under e.mu:
+// never changed. busy is held from the change that makes it the
+// attempt's until its caller has made it ready to work in (resolveTree),
+// while one of its phases or checks runs, and in a worktree through its
+// session's launch. Under e.mu:
 // handed is set once it is handed to endTree, ending once its end begins
 // or the run's stop ends its services (nothing holds it after, and no
 // service starts on it: startService), ended once its end is recorded,
@@ -499,12 +501,17 @@ func (e *Engine) resolveAt(ctx context.Context, r *run, commit string) (resolved
 // maxPortDraws times a port) instead, and from the commit on the tree is
 // the attempt's (a.trees), its ports leased until its tree.ended is
 // committed. The transaction is ordered with the attempt's close: an
-// attempt closed before it gets no tree (errAttemptClosed). Last, its
-// state directory is made (makeStateDir). Any other error is the
-// manifest's, its stage "manifest", the failure attributed by the tree's
-// rule: nothing is written or run in the tree before the transaction, and
-// a tree whose state directory could not be made is returned with the
-// error, the attempt's to end with it.
+// attempt closed before it gets no tree (errAttemptClosed). The tree comes
+// back held (busy) from that change on, so a close that comes before the
+// caller has made it ready to work in (its state directory here, the task
+// files and the phases after) ends it, and runs its cleanup, only once the
+// caller lets go of it (t.busy.Done), which it does on every way out
+// (Codex's review of #498). Last, its state directory is made
+// (makeStateDir). Any other error is the manifest's, its stage "manifest",
+// the failure attributed by the tree's rule: nothing is written or run in
+// the tree before the transaction, and a tree whose state directory could
+// not be made is returned with the error, held, the attempt's to end with
+// it.
 func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir, cwd, commit string) (*tree, error) {
 	man, err := e.resolveAt(ctx, r, commit)
 	if err != nil {
@@ -539,7 +546,7 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 		}
 		t := &tree{kind: kind, dir: dir, cwd: cwd, commit: commit, man: resolvedManifest{m: expanded, source: man.source, revision: man.revision, digest: man.digest},
 			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, a: a, died: make(chan struct{})}
-		closed := false
+		closed, held := false, false
 		draw = nil
 		err = e.transact(ctx, r, func() tx {
 			if !a.closedAt.IsZero() {
@@ -550,6 +557,10 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 				return tx{}
 			}
 			e.lease(t)
+			// Held before it is the attempt's: no close finds it quiet
+			// until the caller has made it ready to work in.
+			t.busy.Add(1)
+			held = true
 			a.trees = append(a.trees, t)
 			payload := map[string]any{"tree": kind, "task": a.t.def.ID, "attempt": a.n, "source": man.source, "env": slices.Clone(man.m.Env)}
 			if man.source == sourceFile {
@@ -567,6 +578,10 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 		}, func() {
 			a.trees = slices.DeleteFunc(a.trees, func(x *tree) bool { return x == t })
 			e.release(t)
+			if held {
+				held = false
+				t.busy.Done()
+			}
 		})
 		switch {
 		case closed:
@@ -575,6 +590,9 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 			return nil, fmt.Errorf("the ledger could not record the manifest: %w", err)
 		case len(draw) > 0:
 			continue // another tree's number: drawn again
+		}
+		if e.afterTreeResolved != nil {
+			e.afterTreeResolved(kind)
 		}
 		if err := makeStateDir(cwd, kind == ledger.TreeCheckout); err != nil {
 			return t, fmt.Errorf("the state directory %s/%s could not be made: %w", taskDir, stateDirName, err)
@@ -683,17 +701,13 @@ func mkdirIn(root *os.Root, name string) error {
 	return err
 }
 
-// hold marks t busy for a phase, a check or a launch about to run in it,
-// unless its end has begun (false: the attempt closed). The caller ends it
-// with t.busy.Done.
-func (e *Engine) hold(t *tree) bool {
+// ending reports whether t's end has begun: its attempt closed, or the
+// run's stop ended its services. A caller holding t (busy, from
+// resolveTree) lets go of it and runs nothing more in it then.
+func (e *Engine) ending(t *tree) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if t.ending {
-		return false
-	}
-	t.busy.Add(1)
-	return true
+	return t.ending
 }
 
 // prepareTree makes t usable, in order, stopping at the first failure:
@@ -708,7 +722,7 @@ func (e *Engine) hold(t *tree) bool {
 // rests on the tree. A service that exits before then fails the tree at it
 // ("service <id>"). It returns the stage of a failure ("setup <id>",
 // "service <id>", "ready <id>", "ready") with its words, "" and nil once
-// the tree is ready. The caller holds t (hold).
+// the tree is ready. The caller holds t (busy, from resolveTree).
 func (e *Engine) prepareTree(ctx context.Context, r *run, a *attempt, t *tree) (string, error) {
 	for _, ch := range t.man.m.Setup {
 		if _, err := e.runStep(ctx, r, a, t, ledger.PhaseSetup, ch, 0); err != nil {
@@ -1510,12 +1524,34 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		return out
 	}, nil)
 	switch {
+	case interrupted:
+		return res, stepInterrupted(fin.Error)
 	case words != "":
 		return res, errors.New(fin.Error)
 	case err != nil:
 		return res, fmt.Errorf("the ledger could not record the step %s: %w", ch.ID, err)
 	}
 	return res, nil
+}
+
+// errInterrupted is what errors.Is finds in runStep's error for a step its
+// context ended under, the receipt it recorded saying interrupted
+// (stepInterrupted), and in one its context had ended before it ran (not
+// run, the context's error wrapped): a caller reads the step's own outcome
+// from it, never its context again after the fact.
+var errInterrupted = errors.New("interrupted")
+
+// stepInterrupted is runStep's error for a step its context ended under:
+// the receipt's words, errors.Is errInterrupted.
+type stepInterrupted string
+
+func (s stepInterrupted) Error() string        { return string(s) }
+func (s stepInterrupted) Is(target error) bool { return target == errInterrupted }
+
+// cutStep reports whether err, runStep's, says its step was cut by its
+// context: interrupted under it, or not run because it had ended.
+func cutStep(err error) bool {
+	return errors.Is(err, errInterrupted) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // nextK is the next k of id on a: every row of the attempt takes the next
@@ -1996,7 +2032,10 @@ func (e *Engine) cleanTree(r *run, t *tree) (failed string, cut bool) {
 		e.mu.Lock()
 		r.note(session.ActivityError, "task %s: attempt %d: %scleanup %s", a.t.def.ID, a.n, whose, words)
 		e.mu.Unlock()
-		if r.teardown.Err() != nil {
+		// Cut or failed by what its receipt says, never by the teardown
+		// read again now: a step that failed on its own just before the
+		// cut-off is a failure (the independent review of #498).
+		if cutStep(err) {
 			cut = true
 			continue // the next turn names what was not run
 		}

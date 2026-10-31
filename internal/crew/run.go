@@ -361,6 +361,10 @@ type Engine struct {
 	// is marked and before its ledger rows are read: a test lands a
 	// change there.
 	beforeContinue func(runID string)
+	// afterTreeResolved, when set, runs in resolveTree once the tree is the
+	// attempt's and before its state directory is made: a test closes the
+	// attempt there.
+	afterTreeResolved func(kind string)
 	// beforeTreeEnd, when set, runs in endTree once the tree is quiet and
 	// before its end is recorded: a test ends the engine there.
 	beforeTreeEnd func(kind string)
