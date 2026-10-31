@@ -1736,6 +1736,13 @@ routes, 128 KiB when adding a member to a run, 192 KiB on a Dispatch
 ticket's create and edit, where a body past its bound is `413 bound`) and
 unknown fields are rejected; a Dispatch attachment's upload is
 `multipart/form-data` of at most 16 MiB of file and 64 KiB beside it.
+A query string's parameters are separated by `&` alone, as a browser reads
+a form's, so a `;` is part of a value (a folder's path may hold one), sent
+as it is or as `%3B`. A query string holding a `%`-escape that is not one,
+or more than 10,000 parameters, is `400 invalid_request` where a route
+reads its parameters, and presents no token where a route takes one from
+the query; on `GET /ws/host`, where no token is an open host's
+registration, it is `400 invalid_request`.
 Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
