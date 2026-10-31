@@ -20,7 +20,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyD', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -33,6 +33,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'Y'], label: 'Go to the Yard', terminal: ['alt', 'Y'] },
     { keys: ['G', 'R'], label: 'Go to the Roundhouse', terminal: ['alt', 'R'] },
     { keys: ['G', 'C'], label: 'Go to Crews', terminal: ['alt', 'C'] },
+    { keys: ['G', 'D'], label: 'Go to Dispatch', terminal: ['alt', 'D'] },
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
     { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
@@ -73,6 +74,21 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
     { keys: ['R'], label: 'Open the run of the focused member' },
     { keys: ['S'], label: 'Share the focused session or run' },
     { keys: ['X'], label: 'Stop it: the row asks; Enter stops, Escape cancels' },
+    { keys: ['escape'], label: 'Leave the list' },
+  ],
+}
+
+/**
+ * Dispatch's keys (Owner decisions, 10: Linear's letters, plain keys that pause in text fields and terminals as every page key does),
+ * registered by the Dispatch page that takes them: a project's list moves a roving focus over its tickets. The letters that act on a
+ * ticket (c, x, s, p, a, l, m, o) come with the board and the list's selection.
+ */
+export const DISPATCH_SHORTCUTS: ShortcutGroup = {
+  title: 'Dispatch',
+  rows: [
+    { keys: ['J'], label: 'Next ticket in the list (or ↓); from the last, the first' },
+    { keys: ['K'], label: 'Previous ticket (or ↑); from the first, the last' },
+    { keys: ['enter'], label: 'Open the focused ticket' },
     { keys: ['escape'], label: 'Leave the list' },
   ],
 }

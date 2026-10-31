@@ -881,15 +881,20 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 // written in a moment.
 const recordsGrace = 5 * time.Second
 
-// Shutdown stops the webhooks, then the runs, so that no crew member starts
-// any more, then every session, and closes every viewer. The webhooks go
-// first: the entries the sessions record as they stop are not sent. The
-// runs are stopped together, so that one slow to stop costs the others
-// none of the budget. The goroutines the server started on its own (track)
-// are waited for last, once every viewer is closed, until they end or ctx
-// does; the records of the runs stopped are then waited for within
-// recordsGrace, whatever ctx says, and closed.
+// Shutdown arms the managed runs' teardown cut-off (crew's Draining: ctx's
+// deadline less the reserve their rows need), stops the webhooks, then the
+// runs, so that no crew member starts any more and the services of their
+// trees end, then waits for the trees being ended (crew's Drain), then
+// every session, and closes every viewer. The webhooks go first: the
+// entries the sessions record as they stop are not sent. The runs are
+// stopped together, so that one slow to stop costs the others none of the
+// budget; a finished run is stopped too (its stop waits for its trees).
+// The goroutines the server started on its own (track) are waited for
+// last, once every viewer is closed, until they end or ctx does; the
+// records of the runs stopped are then waited for within recordsGrace,
+// whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
 	var stops sync.WaitGroup
 	for _, run := range s.runs.List() {
@@ -898,6 +903,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 	stops.Wait()
+	// The trees still being ended, a run's stopped before the shutdown
+	// among them, end in the ledger they end in.
+	s.runs.Drain(ctx)
 	// The sessions close together, their editors by one deadline: a
 	// hung editor per session, one after another, would outlast the
 	// desktop's grace for the server (Codex's review of #281).

@@ -298,6 +298,9 @@ export interface E2ECrew {
   members: Array<{ name: string; start?: { when: string; member?: string } }>
   tasks?: Array<{ id: string; member: string; kind: string; instructions: string; needs?: string[]; checks?: Array<{ id: string; argv: string[]; timeoutSeconds?: number }> }>
   setup?: Array<{ id: string; argv: string[]; timeoutSeconds?: number }>
+  /** The crew's project manifest (EN1), as the server keeps it; its count of changes beside it. */
+  manifest?: Record<string, unknown>
+  manifestRevision?: number
 }
 
 export const test = base.extend<{ api: Api }, { state: E2EState }>({

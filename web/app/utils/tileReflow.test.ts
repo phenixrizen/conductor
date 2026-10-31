@@ -74,7 +74,9 @@ describe("a tile's terminal narrowed with its cursor above the last row (#221)",
     }
   })
 
-  it(`CI's ${BREAKING.length} breaking histories: broken with no scrollback, the cursor drawn on its row with TILE_SCROLLBACK`, async () => {
+  // 300 terminals driven one after another: CPU work with no wait of the product's in it, about 3.5 s alone and past vitest's
+  // default 5 s when the suite's workers share a loaded machine. Its own bound only catches a hang (#428's checks).
+  it(`CI's ${BREAKING.length} breaking histories: broken with no scrollback, the cursor drawn on its row with TILE_SCROLLBACK`, { timeout: 120_000 }, async () => {
     expect(TILE_SCROLLBACK).toBeGreaterThan(0)
     const without: string[] = []
     const withScrollback: string[] = []
@@ -90,7 +92,5 @@ describe("a tile's terminal narrowed with its cursor above the last row (#221)",
     // The bug this works around: should an xterm.js upgrade fix it, this half fails, and the tiles' scrollback is a choice again.
     expect(without, 'with no scrollback every history breaks (xterm.js 6.0)').toHaveLength(BREAKING.length)
     expect(withScrollback, 'with TILE_SCROLLBACK none does').toEqual([])
-    // Its own bound: three hundred terminals driven through their histories are CPU work, which took 4.5 s and more on a loaded
-    // machine, past vitest's 5 s default, a bound no code applies. This one only stops a hang.
-  }, 120_000)
+  })
 })

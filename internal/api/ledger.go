@@ -56,7 +56,19 @@ func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records
 	}
 	for _, r := range recovered {
 		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks,
-			"prerequisites", r.Prerequisites, "trees", r.Trees, "commands", r.Commands)
+			"prerequisites", r.Prerequisites, "trees", r.Trees, "commands", r.Commands, "services", len(r.Services))
+		// A service the last server started may have outlived it: it is
+		// named here, with what tells it from a later process of the same
+		// pid, and never signalled (a pid after a restart is nobody's).
+		for _, sv := range r.Services {
+			if sv.Confirmed {
+				log.Warn("a service the last server started may still be running: it is reported, never signalled", "run", r.RunID, "task", sv.Task, "attempt", sv.N,
+					"tree", sv.Tree, "service", sv.ID, "pid", sv.Pid, "group", sv.Group, "startedAt", sv.StartedAt)
+				continue
+			}
+			log.Warn("a service the last server was starting may be running: its process was never recorded, so it cannot be named", "run", r.RunID, "task", sv.Task,
+				"attempt", sv.N, "tree", sv.Tree, "service", sv.ID)
+		}
 	}
 	syncRecords(rctx, ld, records, log)
 }
