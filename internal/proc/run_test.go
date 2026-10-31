@@ -486,10 +486,10 @@ func TestASignalAfterTheReapIsNotSent(t *testing.T) {
 	if err := g.reap(cmd); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.signal(cmd); !errors.Is(err, os.ErrProcessDone) {
+	if err := g.signal(cmd, sigKill); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("a signal after the reap: %v", err)
 	}
-	if err := (&lifecycle{}).signal(exec.Command("true")); !errors.Is(err, os.ErrProcessDone) {
+	if err := (&lifecycle{}).signal(exec.Command("true"), sigTerm); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("a signal before the start: %v", err)
 	}
 }

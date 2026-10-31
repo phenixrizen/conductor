@@ -263,8 +263,10 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 			l.why += "; " + err.Error()
 			return nil
 		}
-		// The owner, but the database will not open (a damaged header):
-		// kept as it is, read when it can be, never written.
+		// The owner, but the database will not open for writing (a
+		// damaged header, or a file in a rollback journal's mode that the
+		// server may not write): kept as it is, read when it can be, never
+		// written.
 		l.readOnly, l.why = true, err.Error()
 		if db, err = l.open(ctx, path, true); err != nil {
 			l.why += "; nor read: " + err.Error()
@@ -301,7 +303,12 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 // after Open and, once it is taken, opens the database as the owner's in
 // place of the read-only one, under mu, so a reader sees one or the other;
 // then OnOwned's function runs. Past LockWait the ledger stays read-only
-// and says who holds the lock. Close ends the wait.
+// and says who holds the lock. Close ends the wait: each try is made under
+// mu and only while the ledger is open, so a Close waits for a try under
+// way and none is made after it. A try opens the lock file, making it when
+// it is missing, and a lock taken opens the database: once Close has
+// returned, the wait makes nothing in the directory, which may be going by
+// then (a test's cleanup removing it, #281).
 func (l *Ledger) awaitLock(lockPath, path string) {
 	deadline := time.Now().Add(LockWait)
 	tick := time.NewTicker(250 * time.Millisecond)
@@ -312,15 +319,13 @@ func (l *Ledger) awaitLock(lockPath, path string) {
 			return
 		case <-tick.C:
 		}
-		lock, why, held, err := takeLock(lockPath)
 		l.mu.Lock()
 		if l.closed {
+			// Closed between the tick and the try: no try.
 			l.mu.Unlock()
-			if lock != nil {
-				lock.release()
-			}
 			return
 		}
+		lock, why, held, err := takeLock(lockPath)
 		switch {
 		case err != nil:
 			l.why = err.Error()
@@ -409,11 +414,19 @@ func (l *Ledger) conn() (*sql.DB, error) {
 // dsn is the connection string: the file as a URI (its path escaped, so a
 // directory with '#', '?' or '%' in its name is the directory it is), the
 // pragmas every connection needs (a busy timeout, foreign keys on, a full
-// sync, WAL; on darwin a full fsync, since a plain fsync there does not
-// reach the disk), and read-only mode when the ledger is.
+// sync; on darwin a full fsync, since a plain fsync there does not reach
+// the disk), WAL for a writable one, and read-only mode when the ledger
+// is. A read-only connection sets no journal mode: it reads the file in
+// the mode the file is in (a WAL file's header says WAL), since a switch
+// from a rollback journal's mode writes the header, which read-only mode
+// refuses, and a refused open would leave the ledger nothing to read
+// (#417).
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
-	pragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)", "journal_mode(WAL)"}
+	pragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)"}
+	if !readOnly {
+		pragmas = append(pragmas, "journal_mode(WAL)")
+	}
 	if runtime.GOOS == "darwin" {
 		pragmas = append(pragmas, "fullfsync(1)", "checkpoint_fullfsync(1)")
 	}
@@ -505,8 +518,9 @@ func isNoTable(err error) bool {
 
 // ReadOnly reports whether the ledger takes no writes, and why: another
 // server holds the owner lock (waited for, for a while after Open), locks
-// are not supported where the data directory is, the database failed its
-// check, or a newer Conductor wrote it.
+// are not supported where the data directory is, the database file is in
+// a rollback journal's mode and the server may not write it, the database
+// failed its check, or a newer Conductor wrote it.
 func (l *Ledger) ReadOnly() (bool, string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -519,6 +533,9 @@ func (l *Ledger) Dir() string { return l.dir }
 // Close checkpoints the write-ahead log into the database, closes it and
 // releases the owner lock. A read or a write after it begins gets
 // ErrClosed; one in flight gets the database's own error, never a panic.
+// It ends the wait for the owner lock too (awaitLock): a try under way
+// ends first, and none follows, so once Close has returned the ledger
+// makes nothing in its directory.
 func (l *Ledger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

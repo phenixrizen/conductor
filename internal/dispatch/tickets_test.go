@@ -919,14 +919,12 @@ func TestTheTicketReadIsWhole(t *testing.T) {
 	mustDone(t, "delete CND-60", rc, err)
 	rc, err = s.AddLink(ctx, testOp("k1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"})
 	mustDone(t, "link", rc, err)
-	// Attachments come with their own change; a live row and a tombstone,
-	// written as it will write them.
-	tid := ticketOf(t, s, key).ID
-	now := stamp(time.Now())
-	for i, deleted := range []string{"", now} {
-		if _, err := s.db.Exec("INSERT INTO attachments (id, ticket_id, name, size, sha256, content_type, created_at, created_by, deleted_at) VALUES (?, ?, ?, 5, ?, 'text/plain', ?, 'Tester', ?)",
-			newID(), tid, fmt.Sprintf("file%d.txt", i), strings.Repeat("ab", 32), now, deleted); err != nil {
-			t.Fatal(err)
+	// Two attachments, the second removed: the read carries the live one.
+	for i := range 2 {
+		rc, _, err := put(s, opID("f", i), key, fmt.Sprintf("file%d.txt", i), []byte(fmt.Sprintf("file %d", i)))
+		if id := mustDone(t, "attachment", rc, err).ID; i == 1 {
+			rc, err := s.RemoveAttachment(ctx, testOp("rf"), key, id)
+			mustDone(t, "remove an attachment", rc, err)
 		}
 	}
 	// 60 comments, the 59th deleted: the last 50 read, numbered 11 to 60,
