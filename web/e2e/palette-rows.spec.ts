@@ -10,7 +10,10 @@ import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatc
 // started this); a row that cannot act is disabled with its words. What the
 // other palette specs cover already (digits, verbs that ask, the editor's
 // rows, Touched, the pill) is not repeated here.
-test.describe.configure({ mode: 'serial' })
+// Each test walks one page or several through twenty to forty palette rows, every step under its own expect bound (15 s, 30 s for
+// a page to draw): the test's timeout only bounds a hang. At a load average of 110 the walk of the other pages took the config's
+// whole 120 s with every step passing (#281), so these take three times that.
+test.describe.configure({ mode: 'serial', timeout: 360_000 })
 
 const sessions: string[] = []
 const runs: string[] = []
