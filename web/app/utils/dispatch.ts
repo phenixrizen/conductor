@@ -830,6 +830,18 @@ export function commentGaps(shown: readonly TicketComment[], readFirst: number |
   return out
 }
 
+/**
+ * Where a re-read of a ticket's earlier comments starts (DispatchComments), the read's first comment being `readFirst` and the earlier
+ * pages' `earlierFirst`: the first comment shown below the read's window, an earlier page's or one an operation of this page answered
+ * with that the window has moved past since (a comment posted here, then 50 more), so an edit or a delete of it made elsewhere is read
+ * and shown; else the earlier pages' first; 0 when nothing is shown below the read, and nothing is read again.
+ */
+export function commentsRereadFrom(shown: readonly TicketComment[], readFirst: number | undefined, earlierFirst?: number): number {
+  const first = shown[0]?.n
+  if (first && readFirst && first < readFirst) return Math.min(first, earlierFirst ?? first)
+  return earlierFirst ?? 0
+}
+
 /** Who wrote a comment, in words: the display name it recorded, else its actor (an agent's by its member's name). */
 export function commentAuthor(c: Pick<TicketComment, 'author' | 'by'>): string {
   if (c.by) return c.by
@@ -959,6 +971,50 @@ export function rankTickets<T extends PickTicket>(typed: string, tickets: readon
     .filter((x) => x.r >= 0)
     .sort((a, b) => a.r - b.r || a.t.number - b.t.number)
     .map((x) => x.t)
+}
+
+/** A page of a picker's search: the list route's (GET /api/dispatch/tickets), 50 tickets at a time. */
+export const PICKER_PAGE = 50
+/** The most pages a picker's search reads for what is typed: 500 tickets of the project searched, past which the key typed whole still is. */
+export const PICKER_PAGES = 10
+
+/**
+ * The ticket of `project` whose key is typed whole (CND-12, cnd-12, or its number alone, 12): its key as the store writes it, for the
+ * picker to read it by itself; null for anything else, another project's key among it.
+ */
+export function typedTicketKey(project: string, typed: string): string | null {
+  const m = /^(?:([A-Za-z][A-Za-z0-9]{1,5})-)?([1-9][0-9]{0,17})$/.exec(typed.trim())
+  if (!m || (m[1] !== undefined && m[1].toUpperCase() !== project.toUpperCase())) return null
+  return `${project}-${m[2]}`
+}
+
+/** How pickerSearch reads: a page of the list for its query, and a ticket by its key (null, or a rejection, when there is none). */
+export interface PickerReads<T extends PickTicket> {
+  list: (query: string) => Promise<{ tickets?: T[] | null; next?: string }>
+  ticket: (key: string) => Promise<T | null>
+}
+
+/**
+ * The tickets a picker offers from for what is typed, before rankTickets ranks them: the project's tickets the list's search finds, its
+ * pages read on until a page's worth of them rank (or PICKER_PAGES are read, or none is left), since the search matches descriptions
+ * and comments too, which can fill a page with tickets the ranking leaves out; and the ticket whose key is typed whole, read by itself,
+ * so it is offered whatever the search's pages hold. With nothing typed, the first page of the project's tickets.
+ */
+export async function pickerSearch<T extends PickTicket>(project: string, typed: string, reads: PickerReads<T>, exclude: ReadonlySet<string> = new Set()): Promise<T[]> {
+  const q = typed.trim()
+  const key = typedTicketKey(project, q)
+  const exact = key ? reads.ticket(key).catch(() => null) : Promise.resolve(null)
+  const found: T[] = []
+  let cursor = ''
+  for (let i = 0; i < PICKER_PAGES; i++) {
+    const query = new URLSearchParams({ project, limit: String(PICKER_PAGE), ...(q ? { q } : { sort: 'updated' }), ...(cursor ? { cursor } : {}) }).toString()
+    const page = await reads.list(query)
+    found.push(...(page.tickets ?? []))
+    cursor = page.next ?? ''
+    if (!q || !cursor || rankTickets(q, found, exclude).length >= PICKER_PAGE) break
+  }
+  const t = await exact
+  return t ? [t, ...found] : found
 }
 
 // ---------------------------------------------------------------------------

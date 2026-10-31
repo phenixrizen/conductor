@@ -2,7 +2,7 @@
 import type { CommentReply, DispatchTicket, TicketComment } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { retried, through } from '~/utils/dispatchOrder'
-import { COMMENT_PAGE, commentAuthor, commentGaps, earlierComments, shownComments, type CommentGap } from '~/utils/dispatch'
+import { COMMENT_PAGE, commentAuthor, commentGaps, commentsRereadFrom, earlierComments, shownComments, type CommentGap } from '~/utils/dispatch'
 import { DISPATCH_RETRY_MAX_MS } from '~/composables/useDispatchLive'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { avatarTone } from '~/utils/avatar'
@@ -14,10 +14,13 @@ import { initials, relativeTime } from '~/utils/sessions'
  * images; edit and delete (a tombstone) on a live ticket; the last 50 as the ticket's read carries them and the earlier ones a page at a
  * time; a new comment at the foot. Each is one operation (useDispatchOps); its answer is shown at once, the ticket's re-read on its
  * event (another browser's comment among them) bringing the rest. The earlier pages shown are read again whenever the page reads the
- * ticket again (`reads` moving), so an old comment edited elsewhere is shown as it is now; a read of them that fails is asked again as a
- * re-read is. Comments missing among those shown (one this page made, kept below the read's window; earlier pages the window moved
+ * ticket again (`reads` moving), from the first comment shown below the read's window (an earlier page's, or one an answer kept that
+ * the window moved past), so an old comment edited or deleted elsewhere is shown as it is now; a read of them that fails is asked
+ * again as a re-read is. Comments missing among those shown (one this page made, kept below the read's window; earlier pages the window moved
  * past) are said where they are missing, and read from there. An edit is saved against the comment as its editor opened on it: when
  * another person's edit came meanwhile, Save sends nothing, keeps the draft and shows theirs, and a second Save replaces it, knowingly.
+ * Once saved with the editor kept open (more written meanwhile), it is made against what it sent at the revision its receipt names,
+ * never the comment the answer carries, which is read after the commit and can hold another person's later edit: that one is theirs.
  * A stream started again (`resets` moving: a store restored from a backup, whose `rev`s may be below those shown) forgets the answers
  * kept and those still on their way.
  */
@@ -58,7 +61,7 @@ interface Editing {
   rev: number
   body: string
   theirs: string | null
-  /** The text this editor saved last, when its answer carried no comment to read the revision from: no other person's, once read. */
+  /** The text this editor saved last, when its receipt named no revision: no other person's, once read. */
   saved?: string
   opened: number
 }
@@ -152,6 +155,11 @@ function fill(g: CommentGap) {
   void readFrom(g.after + 1)
 }
 
+/** Where a re-read of the earlier pages starts: the first comment shown below the read's window; 0 when none is. */
+function rereadFrom(): number {
+  return commentsRereadFrom(comments.value, props.ticket.comments?.[0]?.n, earlier.value[0]?.n)
+}
+
 /** Counts the re-reads of the earlier pages: a later one takes the place of one still being asked again. */
 let rereads = 0
 
@@ -162,8 +170,8 @@ watch(
     const mine = ++rereads
     const id = props.ticket.id
     void retried({
-      read: () => readEarlier(earlier.value[0]?.n ?? 0),
-      stop: () => gone || mine !== rereads || props.ticket.id !== id || !earlier.value.length,
+      read: () => readEarlier(rereadFrom()),
+      stop: () => gone || mine !== rereads || props.ticket.id !== id || !rereadFrom(),
       wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       firstMs: RUN_EVENT_WINDOW_MS,
       maxMs: DISPATCH_RETRY_MAX_MS,
@@ -221,10 +229,12 @@ async function save(c: TicketComment, body: string): Promise<boolean> {
   keep(reply?.comment, asked)
   const now = editing.value
   if (reply && now?.opened === opened) {
+    // What it sent, at the revision that commit made: a later revision shown since is another person's, said at the next Save.
     now.theirs = null
-    if (reply.comment) {
-      now.rev = reply.comment.rev
-      now.body = reply.comment.body
+    if (reply.receipt.rev !== undefined) {
+      now.rev = reply.receipt.rev
+      now.body = body
+      now.saved = undefined
     } else now.saved = body
   }
   return !!reply
