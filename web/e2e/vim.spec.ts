@@ -343,7 +343,8 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
       }
     } as typeof WebSocket
   })
-  const cwd = join(state.root, 'files-vim-reconnect')
+  // A directory per repeat: this test leaves swap files on purpose (other.txt's, the ended Neovim's), which a later repeat's open finds.
+  const cwd = join(state.root, `files-vim-reconnect-${test.info().repeatEachIndex}`)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
   writeFileSync(join(cwd, 'other.txt'), 'beta\n')
@@ -427,12 +428,13 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
 })
 
 // The page's terminal connections, watched (the lost-Neovim tests below): the keys it sends Neovim (their editor and number), the
-// editors it is told ended, and the answers to the pings sent here.
+// editors it is told ended, the answers to the pings sent here, and the frames handed to it here (deliver).
 interface SocketSeam {
   sockets?: WebSocket[]
   nvimSent?: Array<{ id: string; keys: string; seq?: number }>
   nvimClosed?: string[]
   pongs?: number[]
+  delivered?: number
 }
 async function watchSockets(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -453,6 +455,8 @@ async function watchSockets(page: Page): Promise<void> {
         ;(w.sockets ??= []).push(this)
         // Before the page's own handler (set later), in the same dispatch: what is noted here the page has had.
         this.addEventListener('message', (e) => {
+          // A frame handed to the page here, not one its server sent.
+          if (!e.isTrusted) w.delivered = (w.delivered ?? 0) + 1
           const msg = control(e.data)
           if (msg?.t === 'nvim_event' && msg.kind === 'closed' && typeof msg.id === 'string') (w.nvimClosed ??= []).push(msg.id)
           else if (msg?.t === 'pong' && typeof msg.ts === 'number') (w.pongs ??= []).push(msg.ts)
@@ -494,14 +498,20 @@ async function serverCaughtUp(page: Page, id: string): Promise<void> {
   // Behind keys Neovim never took and the open of another tab's Neovim (15 s at most, the server's bound).
   await page.waitForFunction((ts) => !!(window as unknown as SocketSeam).pongs?.includes(ts), ts, { timeout: 30_000 })
 }
-/** Hands the page a frame on session id's connection as its server would send it. */
+/**
+ * Hands the page a frame on session id's connection as its server would send it: dispatched on the socket, so every listener of the
+ * page's has it, and refused when the page has no handler there or the frame did not go through the socket's listeners.
+ */
 async function deliver(page: Page, id: string, msg: Record<string, unknown>): Promise<void> {
   await page.evaluate(
     ({ id, frame }) => {
       const w = window as unknown as SocketSeam
       const ws = w.sockets?.filter((s) => s.url.includes(`/ws/sessions/${id}?`) && s.readyState === WebSocket.OPEN).pop()
       if (!ws) throw new Error(`no open connection to session ${id}`)
-      ws.onmessage?.(new MessageEvent('message', { data: new Uint8Array(frame).buffer }))
+      if (typeof ws.onmessage !== 'function') throw new Error(`the page reads session ${id}'s connection without onmessage: deliver needs another way in`)
+      const before = w.delivered ?? 0
+      ws.dispatchEvent(new MessageEvent('message', { data: new Uint8Array(frame).buffer }))
+      if ((w.delivered ?? 0) !== before + 1) throw new Error(`the frame handed to session ${id}'s connection did not reach its listeners`)
     },
     { id, frame: [...controlFrame(msg)] },
   )
@@ -850,7 +860,8 @@ test("Don't save holds for its own close only: a later close keeps a change stil
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
   writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\n")
-  const cwd = join(state.root, 'files-vim-consent')
+  // A directory per repeat: the swap file this test leaves on purpose (clean.txt's) would greet a later repeat's first open.
+  const cwd = join(state.root, `files-vim-consent-${test.info().repeatEachIndex}`)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'dirty.txt'), 'dirty\n')
   writeFileSync(join(cwd, 'clean.txt'), 'clean\n')
