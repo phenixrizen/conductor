@@ -1736,6 +1736,13 @@ routes, 128 KiB when adding a member to a run, 192 KiB on a Dispatch
 ticket's create and edit, where a body past its bound is `413 bound`) and
 unknown fields are rejected; a Dispatch attachment's upload is
 `multipart/form-data` of at most 16 MiB of file and 64 KiB beside it.
+A query string's parameters are separated by `&` alone, as a browser reads
+a form's, so a `;` is part of a value (a folder's path may hold one), sent
+as it is or as `%3B`. A query string holding a `%`-escape that is not one,
+or more than 10,000 parameters, is `400 invalid_request` where a route
+reads its parameters, and presents no token where a route takes one from
+the query; on `GET /ws/host`, where no token is an open host's
+registration, it is `400 invalid_request`.
 Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
@@ -2661,8 +2668,9 @@ is the admin's, a share link's viewers seeing no ticket, and a switchyard's
 `403 switchyard`. Without a data directory every route answers `503
 store_unavailable`; with a store that could not be opened, `503
 dispatch_unavailable`. A store opened read-only (a newer Conductor wrote
-it, it fails its check, or another writer held it past the busy timeout as
-the server started; the server's log says which) answers its reads as it
+it, it fails its check, another writer held it past the busy timeout as
+the server started, or the server may not write its file; the server's
+log says which) answers its reads as it
 can and every write `503 dispatch_unavailable` with why. A failure of the
 database is `500 store_failed`, logged. A read takes the query
 parameters its row names and no other: any other is `400

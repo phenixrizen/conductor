@@ -573,14 +573,25 @@ func readQuery(r *http.Request, names ...string) (dispatchQuery, error) {
 	return dispatchQuery(v), nil
 }
 
+// maxQueryParams bounds the parameters of one query string, as
+// url.ParseQuery bounds them by default: a query of more is refused whole,
+// before any is read.
+const maxQueryParams = 10000
+
 // parseQuery parses a query string as a form's is read
 // (application/x-www-form-urlencoded, as a browser's URLSearchParams
 // reads one): its parameters are separated by '&' alone, so a ';' is
 // part of a value, as a search or a name may hold one. url.ParseQuery
 // refuses a query that holds a ';' unescaped, which a client's encoder
 // leaves so (ufo's, the web app's, among them). A '+' is a space; a
-// %-escape that is not one is an error.
+// %-escape that is not one is an error, and so are more than
+// maxQueryParams parameters. Every route reads its query through it:
+// Dispatch's reads through readQuery, the others through queryValues, and
+// a token in the query through presentedToken.
 func parseQuery(raw string) (url.Values, error) {
+	if strings.Count(raw, "&") >= maxQueryParams {
+		return nil, fmt.Errorf("the query string holds more than %d parameters", maxQueryParams)
+	}
 	v := url.Values{}
 	for raw != "" {
 		var pair string
@@ -599,6 +610,18 @@ func parseQuery(raw string) (url.Values, error) {
 		v[key] = append(v[key], value)
 	}
 	return v, nil
+}
+
+// queryValues is the query string of a route that reads its parameters by
+// name, read by parseQuery: a query it cannot read is 400 invalid_request,
+// never read as no parameters. When it reports false it has answered.
+func queryValues(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+	v, err := parseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	return v, true
 }
 
 // noQuery refuses any parameter on a read that takes none, as readQuery

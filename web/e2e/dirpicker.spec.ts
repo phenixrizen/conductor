@@ -32,6 +32,19 @@ test('a big folder says how many more it holds, and typing narrows it to the who
   await expect(picker.locator('[data-dir-more]')).toHaveText('30 more folders here: type the start of a name to narrow the list.', { timeout: 15_000 })
 })
 
+// A folder whose name holds a ';' is listed as itself: the app's encoder sends the ';' as it is, and the server reads it as part of
+// the prefix, where it once dropped the prefix and listed the default folder instead (#428).
+test('a folder whose name holds a semicolon is listed as itself', async ({ page, state }) => {
+  const semi = join(state.root, 'semi;colon')
+  mkdirSync(join(semi, 'inside-the-semicolon'), { recursive: true })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Launch agent' }).first().click()
+  const field = page.getByRole('dialog').getByRole('combobox').first()
+  await field.click()
+  await field.fill(semi + '/')
+  await expect(page.getByRole('option', { name: 'inside-the-semicolon' })).toBeVisible({ timeout: 15_000 })
+})
+
 // A folder chosen in the launch dialog's working-directory field, from its list (a click, or Enter on the highlighted entry) or
 // through the folder picker's "Use this folder", leaves the field focused with the caret at the end of the path and the field
 // scrolled to its end, so that the folder just chosen, at the end of a long path, shows and typing goes on from there (#167).
