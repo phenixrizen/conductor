@@ -101,17 +101,16 @@ func (s *Service) Result() Result {
 // Run returns at an exit, so nothing of the group is running when it
 // returns but what left the group. A service that has ended already
 // returns at once; Stop may be called more than once, and from more than
-// one goroutine.
+// one goroutine, and the group is asked to end once, by the first: a
+// second SIGTERM, come after a process's handler has put the default back
+// while it cleans up, would end it before its grace.
 func (s *Service) Stop(ctx context.Context) error {
 	select {
 	case <-s.done:
 		return nil
 	default:
 	}
-	// Asked before the signal, so the end of a process that SIGTERM ended
-	// is read as the stop's.
-	s.l.stop.ask()
-	s.l.g.signal(s.l.cmd, sigTerm)
+	s.l.stop.ask(func() { s.l.g.signal(s.l.cmd, sigTerm) })
 	grace := time.NewTimer(serveGrace)
 	defer grace.Stop()
 	select {
@@ -135,7 +134,17 @@ type stopping struct {
 	askOnce, cutOnce sync.Once
 }
 
-func (s *stopping) ask()    { s.askOnce.Do(func() { close(s.asked) }) }
+// ask closes asked and then asks the group to end (term, the stop's
+// SIGTERM), the first time alone: a later Stop, or one beside it, sends
+// no SIGTERM of its own. asked is closed before the signal, so the end of
+// a process that SIGTERM ended is read as the stop's.
+func (s *stopping) ask(term func()) {
+	s.askOnce.Do(func() {
+		close(s.asked)
+		term()
+	})
+}
+
 func (s *stopping) cutNow() { s.cutOnce.Do(func() { close(s.cut) }) }
 
 // settleStopped gives a stopped service's group the stop's grace once its

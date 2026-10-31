@@ -20,23 +20,48 @@ type lifecycle struct {
 	reaped bool
 }
 
+// signalled, when set, is told each signal signal sends, once it is sent:
+// to the group, or to the process alone (alone). It is the tests' way to
+// see what is sent, and to let a process handle the group's SIGTERM before
+// anything more is sent. Set it before the process starts.
+var signalled func(s sig, alone bool)
+
 // signal sends s to the process's group, and to the process itself should
 // it have joined another group (Setpgid makes a group; it does not keep the
 // process in it): sigKill kills them, sigTerm asks them to end (a service's
-// stop). It is the one place proc signals a process. os.ErrProcessDone once
-// the process is reaped, or before it exists.
+// stop). A SIGTERM reaches the process once: it is sent one of its own only
+// when it is no longer in the group, since a second, come after its handler
+// has put the default back while it cleans up, would end it before its
+// grace. One whose group cannot be read is sent none: unreaped, its pid
+// is still its own, so it has exited and needs none. A SIGKILL, which no
+// handler sees, goes to it either way. It is the one place proc signals a
+// process. os.ErrProcessDone once the process is reaped, or before it
+// exists.
 func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.reaped || cmd.Process == nil {
 		return os.ErrProcessDone
 	}
+	pid := cmd.Process.Pid
 	n := syscall.SIGKILL
 	if s == sigTerm {
 		n = syscall.SIGTERM
 	}
-	syscall.Kill(-cmd.Process.Pid, n)
-	if err := cmd.Process.Signal(n); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	syscall.Kill(-pid, n)
+	if signalled != nil {
+		signalled(s, false)
+	}
+	if s == sigTerm {
+		if pgid, err := syscall.Getpgid(pid); err != nil || pgid == pid {
+			return nil
+		}
+	}
+	err := cmd.Process.Signal(n)
+	if signalled != nil {
+		signalled(s, true)
+	}
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	return nil

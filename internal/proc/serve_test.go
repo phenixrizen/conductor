@@ -6,9 +6,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -58,6 +60,166 @@ func shortGrace(t *testing.T, d time.Duration) {
 	old := serveGrace
 	serveGrace = d
 	t.Cleanup(func() { serveGrace = old })
+}
+
+// sent is a signal lifecycle.signal sent (signalled): which, and whether
+// to the process alone.
+type sent struct {
+	s     sig
+	alone bool
+}
+
+// watchSignals records every signal sent from now on, each told to each
+// when given as it is sent, until the test ends: called before the
+// service starts, so every goroutine that sends starts after the seam is
+// set, and before serve, so the seam is cleared after the service's last
+// stop. It returns what was sent so far.
+func watchSignals(t *testing.T, each func(sent)) func() []sent {
+	var mu sync.Mutex
+	var all []sent
+	signalled = func(s sig, alone bool) {
+		mu.Lock()
+		all = append(all, sent{s, alone})
+		mu.Unlock()
+		if each != nil {
+			each(sent{s, alone})
+		}
+	}
+	t.Cleanup(func() { signalled = nil })
+	return func() []sent {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(all)
+	}
+}
+
+// count is how many of sends were x.
+func count(sends []sent, x sent) int {
+	n := 0
+	for _, y := range sends {
+		if y == x {
+			n++
+		}
+	}
+	return n
+}
+
+// appears waits up to within for a file at path, and says whether it came.
+func appears(path string, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// A stop's SIGTERM reaches the service's first process once (Codex's
+// review of #441): in its group, it has the group's and is sent no
+// second, which, come after its handler had put the default back while it
+// cleans up, would end it before its grace. Its handler here puts the
+// default back first, then cleans up until a gate opens, and exits 0. The
+// group's SIGTERM is held at the seam until the handler has run, the gate
+// opened then, so a second SIGTERM would come while it cleans up, as one
+// can when the process runs between two sends. A second Stop beside the
+// first sends none either. A first process that left its group (it joined
+// its parent's) is sent its own, and ends at it before the grace.
+func TestAStopsSIGTERMReachesTheServiceOnce(t *testing.T) {
+	const cleans = `trap 'trap - TERM; echo $$ > trapped; while [ ! -e gate ]; do sleep 0.05; done; echo done > done; exit 0' TERM; echo $$ > pid; while :; do sleep 0.05; done`
+	t.Run("its first process, in its group", func(t *testing.T) {
+		shortGrace(t, time.Hour)
+		dir := t.TempDir()
+		var held atomic.Bool
+		sends := watchSignals(t, func(x sent) {
+			if x != (sent{sigTerm, false}) || held.Swap(true) {
+				return
+			}
+			// The handler has run, the default back, before anything more
+			// is sent; then its cleanup may finish.
+			if !appears(filepath.Join(dir, "trapped"), 10*time.Second) {
+				t.Errorf("the service's handler did not run within 10 s of the group's SIGTERM")
+			}
+			if err := os.WriteFile(filepath.Join(dir, "gate"), nil, 0o600); err != nil {
+				t.Error(err)
+			}
+		})
+		svc := serve(t, dir, cleans)
+		pidFile(t, filepath.Join(dir, "pid"))
+		if err := svc.Stop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		res := svc.Result()
+		if b, err := os.ReadFile(filepath.Join(dir, "done")); err != nil || string(b) != "done\n" || res.Exit != 0 || res.Signal != "" || res.Killed {
+			t.Fatalf("the service was ended before its cleanup finished (%q %v): %+v; sent %v", b, err, res, sends())
+		}
+		if got := sends(); count(got, sent{sigTerm, false}) != 1 || count(got, sent{sigTerm, true}) != 0 {
+			t.Fatalf("sent %v: the stop's one SIGTERM is the group's", got)
+		}
+	})
+	t.Run("a second Stop beside the first", func(t *testing.T) {
+		shortGrace(t, time.Hour)
+		dir := t.TempDir()
+		sends := watchSignals(t, nil)
+		svc := serve(t, dir, cleans)
+		pidFile(t, filepath.Join(dir, "pid"))
+		first := make(chan error, 1)
+		go func() { first <- svc.Stop(context.Background()) }()
+		// The first's SIGTERM handled, the default back: the second, its
+		// context ended, kills the service, and asks nothing more of it.
+		pidFile(t, filepath.Join(dir, "trapped"))
+		ended, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := svc.Stop(ended); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-first; err != nil {
+			t.Fatal(err)
+		}
+		if got := sends(); count(got, sent{sigTerm, false}) != 1 || count(got, sent{sigTerm, true}) != 0 {
+			t.Fatalf("sent %v: two Stops sent more than the group's one SIGTERM", got)
+		}
+		if res := svc.Result(); res.Signal != "killed" {
+			t.Fatalf("%+v", res)
+		}
+	})
+	t.Run("its first process, out of its group", func(t *testing.T) {
+		shortGrace(t, time.Hour)
+		dir := t.TempDir()
+		sends := watchSignals(t, nil)
+		svc, err := Serve(context.Background(), Spec{Argv: []string{os.Args[0], "-test.run=^TestHelperChangesGroup$"}, Dir: dir, Env: map[string]string{"PROC_HELPER": "setpgid"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			svc.Stop(ctx)
+		})
+		pid := svc.Result().Process.PID
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if pgid, err := syscall.Getpgid(pid); err == nil && pgid != pid {
+				break // it has joined another group
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the helper did not leave its group within 10 s")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := svc.Stop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		// Its own SIGTERM ended it: neither the grace's SIGKILL, an hour
+		// away, nor its own exit 0 after 30 s.
+		if res := svc.Result(); res.Signal != "terminated" {
+			t.Fatalf("%+v; sent %v", res, sends())
+		}
+		if got := sends(); count(got, sent{sigTerm, false}) != 1 || count(got, sent{sigTerm, true}) != 1 {
+			t.Fatalf("sent %v: the process out of its group is sent one SIGTERM of its own", got)
+		}
+	})
 }
 
 // A service runs until it exits: Serve returns once the process exists,
