@@ -88,6 +88,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const identity = useIdentity()
   // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
   const ticketOps = useDispatchOps(palette.ticketsGate)
+  const renameModal = useRenameModal()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 
@@ -292,12 +293,13 @@ export function usePaletteRows(ctx: PaletteContext) {
     const row = sessionRow(s)
     const live = sessionLive(s.status)
     const own = rowActions(
-      { kind: 'session', name: s.name, live, inRun: !!s.crew, id: s.id },
+      { kind: 'session', name: s.name, live, inRun: !!s.crew, renamable: s.kind === 'server', id: s.id },
       {
         open: () => go(`/sessions/${s.id}`),
         openRun: () => s.crew && go(`/runs/${encodeURIComponent(s.crew.runId)}`),
         share: () => ctx.share({ sessionId: s.id, sessionName: s.name }),
         yard: () => go(`/yard?focus=${encodeURIComponent(s.id)}`),
+        rename: () => renameModal.show(s),
         stop: () => void stopSession(s),
       },
     ).flat()

@@ -3,8 +3,9 @@ import { expect, test } from './fixtures'
 // A crew with tasks (#334, row 4): the editor's Coordination select turns the
 // crew managed; the tasks table takes a task per thing a member delivers; a
 // cycle in the needs blocks Save with its words; a check's quoted argument
-// is one array element; the crew is saved and launches as a managed run
-// (row 6).
+// is one array element; a setup step goes in the project manifest under the
+// tasks, where the Setup box moved from the table's foot (EN1, #398); the
+// crew is saved and launches as a managed run (row 6).
 let crewId = ''
 let runId = ''
 test.afterEach(async ({ api }) => {
@@ -84,9 +85,21 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   await page.keyboard.press('Escape')
   await expect(tasks.nth(0).locator('[data-task-error]')).toHaveCount(0)
 
+  // The setup of every attempt's worktree is the project manifest's, under the tasks: the table's foot has no Setup box.
+  await expect(page.locator('[data-show-setup], [data-crew-setup]')).toHaveCount(0)
+  const manifest = page.locator('[data-crew-manifest]')
+  await expect(manifest).toBeVisible()
+  await manifest.locator('[data-manifest-phase="setup"]').getByRole('button', { name: 'Add setup step' }).click()
+  await page.getByLabel('Id of setup step 1', { exact: true }).fill('deps')
+  const setupArgv = page.getByLabel('Command of setup step 1').locator('input')
+  await setupArgv.fill('true')
+  await setupArgv.press('Enter')
+  await expect(manifest.locator('[data-check-id="deps"]').getByText('true', { exact: true })).toBeVisible()
+
   // A check whose argument holds a space: one chip, one array element.
   await tasks.nth(0).locator('[data-task-checks]').click()
-  await page.locator('[data-add-check]').click()
+  // The checks' own list: the project manifest's lists have an Add button each too.
+  await page.locator('[data-crew-checks="check"] [data-add-check]').click()
   await page.getByLabel('Id of check 1').fill('unit')
   // The chip input: the quoted argument becomes one chip on Enter.
   const argv = page.getByLabel('Command of check 1').locator('input')
@@ -105,6 +118,8 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   ])
   expect(crew.tasks?.[0]?.checks).toEqual([{ id: 'unit', argv: ['sh', '-c', 'echo hi there'] }])
   expect(crew.members.map((m) => m.start?.when)).toEqual(['task', 'task'])
+  expect(crew.setup).toBeUndefined()
+  expect(crew.manifest).toEqual({ setup: [{ id: 'deps', argv: ['true'] }] })
 
   // Launched as a managed run: the page offers it, and the server makes one with the tasks.
   await expect(page.locator('[data-launch]')).toBeEnabled()

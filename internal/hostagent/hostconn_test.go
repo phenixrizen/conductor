@@ -417,35 +417,97 @@ func pausingSwitchyard(t *testing.T) *httptest.Server {
 // pings), a link's line waits and is refused rather than entered, the
 // server's writes notwithstanding. Once the server reads again and answers,
 // the link's line is typed and entered.
+//
+// The pause is held while the test needs it, never timed: the host keeps
+// pausingSwitchyard's bucket owing pauseAhead, whatever its own writes
+// take (on a loaded machine the burst alone took longer than the pause it
+// was to leave), and the line goes in only once a ping sent behind that
+// debt has gone unanswered (#428's checks: a ping answered late before the
+// pause, and the line entered as it was).
 func TestLinkLineWithheldWhileTheServerPausesReading(t *testing.T) {
 	yard := pausingSwitchyard(t)
 	a, viewer := liveHostAt(t, yard.URL, 20*time.Millisecond, 0)
 	guest := viewer("0123456789abcdef", "l1")
 	untilVouches(t, a, true)
-	// 4 MiB and 64 KiB to a viewer the switchyard does not know: past the
-	// burst, the switchyard reads the rest at 16 KiB a second, about 4 s.
-	spent := make(chan error, 1)
+	// The switchyard's bucket holds at most its burst as the host starts,
+	// and fills at its rate from then on; the host relays to a viewer the
+	// switchyard does not know until the switchyard has read the burst and
+	// what it filled with, and pauseAhead more, and keeps that much ahead
+	// until stop. A ping behind that debt is read pauseAhead/rate (4 s)
+	// later, past its bound.
+	const rate, burst, pauseAhead = 16 << 10, 4 << 20, 64 << 10
+	frame := proto.Encode(proto.TypeOutput, bytes.Repeat([]byte("o"), proto.MaxOutput))
+	start := time.Now()
+	ahead, stop, spent := make(chan time.Duration, 1), make(chan struct{}), make(chan error, 1)
 	go func() {
-		frame := proto.Encode(proto.TypeOutput, bytes.Repeat([]byte("o"), proto.MaxOutput))
-		for range (4<<20 + 64<<10) / proto.MaxOutput {
-			if err := a.sendRelayWithin("fedcba9876543210", frame, nil, time.Minute); err != nil {
-				spent <- err
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		written := 0
+		for {
+			if written < burst+int(rate*time.Since(start).Seconds())+pauseAhead {
+				if err := a.sendRelayWithin("fedcba9876543210", frame, nil, time.Minute); err != nil {
+					spent <- err
+					return
+				}
+				written += len(frame)
+				continue
+			}
+			select {
+			case ahead <- sinceEpoch():
+			default:
+			}
+			select {
+			case <-stop:
+				spent <- nil
 				return
+			case <-tick.C:
 			}
 		}
-		spent <- nil
 	}()
-	untilVouches(t, a, false)
+	var since time.Duration
+	select {
+	case since = <-ahead:
+	case err := <-spent:
+		t.Fatal(err)
+	}
+	untilPingMissedSince(t, a, since)
 	guest.send(proto.Submit{T: proto.CtlSubmit, Text: "while paused"})
 	guest.until(func(m map[string]any) bool { return m["t"] == proto.CtlError && m["code"] == "input_failed" })
 	guest.quiet(300 * time.Millisecond)
+	close(stop)
 	if err := <-spent; err != nil {
 		t.Fatal(err)
 	}
-	untilVouches(t, a, true)
+	// What the bucket still owes, at most pauseAhead, a frame and a tick's
+	// filling, is read at its rate before the next ping is.
+	untilVouchesWithin(t, a, true, time.Duration(pauseAhead+2*len(frame))*time.Second/rate+10*time.Second)
 	guest.send(proto.Submit{T: proto.CtlSubmit, Text: "read again"})
 	if typed := guest.typed(guest.release(), 2); strings.Join(typed, "|") != "read again|\r" {
 		t.Fatalf("typed %q", typed)
+	}
+}
+
+// untilPingMissedSince waits until a ping the host sent at since or later
+// (as time since liveEpoch) has gone unanswered and the host vouches no
+// more: one answered late that was sent before since can no longer make it
+// vouch, for its bound ran out as the later ping's did.
+func untilPingMissedSince(t *testing.T, a *agent, since time.Duration) {
+	t.Helper()
+	within := a.heardWithin()
+	deadline := time.Now().Add(10*time.Second + within)
+	for {
+		if l := a.live.Load(); l != nil {
+			l.mu.Lock()
+			held := l.hasMissed && l.missed >= since && !l.vouchesWithin(within)
+			l.mu.Unlock()
+			if held {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no ping sent since %v went unanswered; vouches %v", since, a.vouches() == nil)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

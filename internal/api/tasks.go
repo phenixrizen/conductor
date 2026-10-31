@@ -59,8 +59,12 @@ func (s *Server) handleSessionTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	q, ok := queryValues(w, r)
+	if !ok {
+		return
+	}
 	page := 1
-	if v := r.URL.Query().Get("page"); v != "" {
+	if v := q.Get("page"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
 			writeError(w, http.StatusBadRequest, "invalid_request", "page is a number from 1")
@@ -380,8 +384,12 @@ func (s *Server) handleSessionInbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	q, ok := queryValues(w, r)
+	if !ok {
+		return
+	}
 	var after int64
-	if v := r.URL.Query().Get("after"); v != "" {
+	if v := q.Get("after"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 0 {
 			writeError(w, http.StatusBadRequest, "invalid_request", "after is a sequence number from 0")

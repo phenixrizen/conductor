@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -328,9 +329,9 @@ func gitMark(ctx context.Context, dir string) (mark pathGit, cut bool, err error
 	return pathGit{Repo: st.InRepo, Commits: st.HasCommit}, false, nil
 }
 
-// pathQuery reads a bounded path from the query, or answers the request.
-func pathQuery(w http.ResponseWriter, r *http.Request, key string) (string, bool) {
-	v := r.URL.Query().Get(key)
+// pathQuery reads a bounded path from the query q, or answers the request.
+func pathQuery(w http.ResponseWriter, q url.Values, key string) (string, bool) {
+	v := q.Get(key)
 	if len(v) > maxPathQuery || strings.ContainsRune(v, 0) {
 		writeError(w, http.StatusBadRequest, "invalid_request", key+" must be at most 4096 bytes without NUL")
 		return "", false
@@ -341,12 +342,16 @@ func pathQuery(w http.ResponseWriter, r *http.Request, key string) (string, bool
 // handleListPaths answers GET /api/paths?prefix=<path>&limit=<n>. What a
 // client asks about is logged at debug only.
 func (s *Server) handleListPaths(w http.ResponseWriter, r *http.Request) {
-	prefix, ok := pathQuery(w, r, "prefix")
+	q, ok := queryValues(w, r)
+	if !ok {
+		return
+	}
+	prefix, ok := pathQuery(w, q, "prefix")
 	if !ok {
 		return
 	}
 	limit := maxPathEntries
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
 			writeError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive integer")
@@ -355,7 +360,7 @@ func (s *Server) handleListPaths(w http.ResponseWriter, r *http.Request) {
 		limit = min(n, maxPathEntries)
 	}
 	scope := scopeRoots
-	switch r.URL.Query().Get("scope") {
+	switch q.Get("scope") {
 	case "", config.BrowseRoots:
 	case config.BrowseAny:
 		if s.cfg.Paths.Browse != config.BrowseAny {
@@ -389,7 +394,11 @@ func (s *Server) handleListPaths(w http.ResponseWriter, r *http.Request) {
 // roots: git names it as the repository says (core.worktree can name any
 // directory), and a root may lie inside a repository.
 func (s *Server) handleGitCheck(w http.ResponseWriter, r *http.Request) {
-	cwdInput, ok := pathQuery(w, r, "cwd")
+	q, ok := queryValues(w, r)
+	if !ok {
+		return
+	}
+	cwdInput, ok := pathQuery(w, q, "cwd")
 	if !ok {
 		return
 	}
