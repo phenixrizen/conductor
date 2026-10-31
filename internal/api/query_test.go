@@ -195,3 +195,20 @@ func TestAQueryTokenMayHoldASemicolon(t *testing.T) {
 		t.Errorf("a query that cannot be read: %d", resp.StatusCode)
 	}
 }
+
+// On /ws/host no token is an open host's registration, so a query that
+// cannot be read, which presents no token, is refused on a switchyard that
+// admits open hosts, never registered as one: its token may be a wrong
+// one, which must show. A wrong token in a query that can be read is
+// still 401.
+func TestHostQueryThatCannotBeReadIsRefused(t *testing.T) {
+	e := openSwitchyardEnv(t, nil)
+	if status, body := e.getNoHeader("/ws/host?token=wrong"); status != http.StatusUnauthorized {
+		t.Errorf("a wrong token: %d %s", status, body)
+	}
+	for _, q := range []string{"token=wrong&x=%zz", "x=%zz", "token=%zz"} {
+		if status, body := e.getNoHeader("/ws/host?" + q); status != http.StatusBadRequest || !strings.Contains(body, "invalid_request") {
+			t.Errorf("%s: %d %s", q, status, body)
+		}
+	}
+}
