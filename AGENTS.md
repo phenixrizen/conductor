@@ -202,6 +202,26 @@ add its rule here.
   edge on arrival failed only when the page's 5 s tick came first. Switch
   a mode or toggle a setting, then check again, so a bug that only a
   redraw shows fails every run.
+- Judge by the state at the moment of judging, not by what a wait last
+  saw. A wait that ended on its timer, or a slow step after it, leaves a
+  variable saying "still open" after the thing closed: a stopped service's
+  `/proc` listing outlasted its member's shutdown on a loaded machine, and
+  the output, closed during the listing, was reported held (`Killed`,
+  #281). Read the channel or the file again where the answer is made, and
+  let the test hold the event back past the judgement through a seam
+  (`outputRead`, `settled` in `internal/proc`), so the old code fails
+  every run. An answer drawn from more than one fact (a kill sent, the
+  group found empty, the output open) reads them all at once, under the
+  lock the events that change them take, and an event beside the wait is
+  noted, under that lock, with what it did when it happened (the kill with
+  whether it took a holder, `lifecycle.judge`). Read one by one, an event
+  between two reads gives a picture neither order would. A goroutine's
+  view of a thing is not the thing: a copier not yet at its end of file
+  says nothing of who writes the pipe, so ask the kernel (the pipe's
+  hang-up, `writersGone`). A fact read before a slow step (a `/proc`
+  listing) is read again after it. A flake a whole
+  loaded box will not show comes back when the test and a few busy loops
+  share a few cores (`taskset -c 0-3`).
 - Mark what you read with what you saw before reading it. A poll that
   records a file's time (a version, a cursor) after its read can record a
   change the read never saw, and no later poll sees a change: the
