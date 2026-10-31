@@ -119,7 +119,19 @@ class Steps(unittest.TestCase):
     def test_the_go_race_tests_run_on_the_whole_module_here_and_on_the_mac(self):
         for steps in (p.LINUX_STEPS, p.MAC_STEPS):
             race = [s for s in steps if s["name"] == "go-test-race"]
-            self.assertEqual(race[0]["argv"], ["go", "test", "-race", "-count=1", "./..."])
+            self.assertEqual(race[0]["argv"], ["go", "test", "-race", "-count=1", "-timeout", "30m", "./..."])
+
+    def test_every_entry_point_runs_the_race_tests_with_the_same_bound(self):
+        # CI, make test and the documented command pass the bound preflight
+        # passes: go test's default is less than internal/api takes on a
+        # loaded machine (docs/checks.md), so one left at it fails there.
+        root = Path(__file__).resolve().parent.parent
+        want = " ".join(p.GO_TEST_RACE)
+        for path in (".github/workflows/ci.yml", "Makefile", "docs/checks.md"):
+            lines = [line for line in (root / path).read_text().splitlines() if "go test -race" in line and "./..." in line]
+            self.assertTrue(lines, f"{path} runs no race tests of the whole module")
+            for line in lines:
+                self.assertIn(want, line, f"{path}: {line.strip()}")
 
     def test_the_desktop_tests_run_on_every_machine(self):
         for steps in (p.LINUX_STEPS, p.MAC_STEPS, p.WINDOWS_STEPS):

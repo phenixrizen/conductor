@@ -3,6 +3,7 @@ package ledger
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -631,6 +632,86 @@ func TestADamagedHeaderDoesNotFailOpen(t *testing.T) {
 	}
 	if _, err := again.Transition(context.Background(), "team-00000001", func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("a write: %v", err)
+	}
+}
+
+// A database in a rollback journal's mode, as another tool or a restore
+// can leave it, that the server cannot write opens read-only and is read
+// (#417): the read-only connection sets no journal mode, since a switch to
+// WAL writes the file's header, which read-only mode refuses, and a
+// refused open would leave the ledger nothing to read. The file stays in
+// the mode it was found in; written again by its owner, it is back in WAL.
+func TestARollbackJournalDatabaseItCannotWriteIsRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a file whatever its mode")
+	}
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	newRun(t, l, "team-00000001")
+	newRun(t, l, "team-00000002")
+	if rev, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("launched", nil) }); err != nil || rev != 2 {
+		t.Fatalf("a transition: rev %d err %v", rev, err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, File)
+	// Another tool's connection, which sets no journal mode, leaves the
+	// file in a rollback journal's mode.
+	other, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	err = other.QueryRowContext(ctx, "PRAGMA journal_mode = DELETE").Scan(&mode)
+	if cerr := other.Close(); err != nil || cerr != nil || mode != "delete" {
+		t.Fatalf("the rollback journal's mode: %q %v %v", mode, err, cerr)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+	again := openLedger(t, dir)
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	// It reads what the file holds, the writable open still failing.
+	if runs, err := again.Runs(ctx); err != nil || len(runs) != 2 || runs[0].ID != "team-00000001" || runs[1].ID != "team-00000002" {
+		t.Fatalf("the runs: %+v %v", runs, err)
+	}
+	if r, ok, err := again.Run(ctx, "team-00000001"); err != nil || !ok || r.Revision != 2 || r.State != RunRunning || r.Base != "abc123" {
+		t.Fatalf("a run: %+v %v %v", r, ok, err)
+	}
+	events, err := again.Events(ctx, "team-00000001", 0, 0)
+	if err != nil || len(events) != 2 || events[0].Seq != 1 || events[0].Kind != "run.created" || events[1].Seq != 2 || events[1].Kind != "launched" {
+		t.Fatalf("the events: %+v %v", events, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write: %v", err)
+	}
+	if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "delete" {
+		t.Fatalf("the journal mode the read-only ledger left: %q %v", mode, err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Writable again, the file is the owner's, whose connection sets WAL.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner := openLedger(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	if err := owner.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("the owner's journal mode: %q %v", mode, err)
+	}
+	if runs, err := owner.Runs(ctx); err != nil || len(runs) != 2 {
+		t.Fatalf("the runs: %+v %v", runs, err)
 	}
 }
 

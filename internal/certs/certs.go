@@ -307,12 +307,30 @@ func (m *Manager) step(ctx context.Context) time.Duration {
 	return time.Second
 }
 
-// issue orders a certificate for ids and adopts it.
+// issue orders a certificate for ids and adopts it. When the identifiers
+// changed while the order ran, what it brings is for identifiers no longer
+// wanted: a certificate is kept for them, to be served at once if they come
+// back, but never served for the new ones, and a failure is not counted
+// against the new ones. SetIdentifiers has woken Run, so the next step
+// orders for the identifiers wanted now.
 func (m *Manager) issue(ctx context.Context, ids []string) {
 	m.log.Info("tls: ordering a certificate", "identifiers", ids, "challenge", m.o.Challenge, "profile", m.o.Profile)
 	issued, err := m.issuer.Issue(ctx, ids, m.o.Profile)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !slices.Equal(ids, m.wanted) {
+		if err == nil {
+			if _, _, err = parseIssued(issued, m.now()); err == nil {
+				err = m.store.save(ids, issued)
+			}
+		}
+		if err != nil {
+			m.log.Info("tls: an order for identifiers no longer wanted came to nothing", "identifiers", ids, "wanted", m.wanted, "err", err.Error())
+			return
+		}
+		m.log.Info("tls: a certificate for identifiers no longer wanted is kept, not served", "identifiers", ids, "wanted", m.wanted)
+		return
+	}
 	if err == nil {
 		err = m.adoptLocked(ids, issued)
 		if err == nil {
@@ -333,27 +351,34 @@ func (m *Manager) issue(ctx context.Context, ids []string) {
 		return
 	}
 	m.failures, m.nextTry, m.lastErr = 0, time.Time{}, ""
-	if !slices.Equal(ids, m.wanted) {
-		return // the identifiers changed under the order; the next step orders again
-	}
 	m.log.Info("tls: certificate issued", "identifiers", ids, "notAfter", m.leaf.NotAfter.Format(time.RFC3339), "renewAt", m.renewAt.Format(time.RFC3339))
+}
+
+// parseIssued reads issued as a certificate that can be served at now: a
+// key pair that matches and a leaf that has not expired.
+func parseIssued(issued *Issued, now time.Time) (tls.Certificate, *x509.Certificate, error) {
+	cert, err := tls.X509KeyPair(issued.CertPEM, issued.KeyPEM)
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	if !now.Before(leaf.NotAfter) {
+		return tls.Certificate{}, nil, errors.New("the certificate has expired")
+	}
+	cert.Leaf = leaf
+	return cert, leaf, nil
 }
 
 // adoptLocked makes issued the certificate served for ids (m.mu held).
 func (m *Manager) adoptLocked(ids []string, issued *Issued) error {
-	cert, err := tls.X509KeyPair(issued.CertPEM, issued.KeyPEM)
-	if err != nil {
-		return err
-	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return err
-	}
 	now := m.now()
-	if !now.Before(leaf.NotAfter) {
-		return errors.New("the certificate has expired")
+	cert, leaf, err := parseIssued(issued, now)
+	if err != nil {
+		return err
 	}
-	cert.Leaf = leaf
 	m.cur, m.leaf, m.curFor = &cert, leaf, append([]string(nil), ids...)
 	m.renewAt = renewAt(leaf, now)
 	if m.issuer != nil {
