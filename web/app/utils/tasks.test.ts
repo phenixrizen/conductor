@@ -8,6 +8,7 @@ import {
   sendCommand,
   stepCommand,
   stepDuration,
+  stepHasLog,
   stepManifest,
   stepPorts,
   stepWhere,
@@ -152,6 +153,8 @@ describe('stepWords and the receipt helpers (EN1)', () => {
     [step({ phase: 'ready', id: 'up', exit: 0, tries: 3, duration: 4000 }), 'ready after 3 tries', 'success'],
     [step({ phase: 'ready', id: 'up', exit: 0, tries: 1, duration: 10 }), 'ready after 1 try', 'success'],
     [step({ phase: 'ready', id: 'up', exit: 7, tries: 30, timedOut: true, duration: 60_000 }), 'not ready after 30 tries', 'error'],
+    // A command probe that exited 0 and failed (Codex round 2 on #502): a child it left holding its output.
+    [step({ phase: 'ready', id: 'up', exit: 0, tries: 1, duration: 10, error: 'try 1: the command left a process holding its output' }), 'not ready after 1 try', 'error'],
     [step({ phase: 'ready', id: 'up', exit: -1, tries: 0 }), 'never tried', 'error'],
     [step({ phase: 'service', id: 'web', exit: -1, duration: 12_000 }), 'ended after 12 s', 'muted'],
     [step({ phase: 'service', id: 'web', exit: 0, duration: 2000, error: 'exited 0 before the tree was ready: a service must stay in the foreground' }), 'exited 0 after 2.0 s', 'error'],
@@ -176,6 +179,16 @@ describe('stepWords and the receipt helpers (EN1)', () => {
     expect(prerequisitesRefused({ paused: true, pausedWhy: 'attempt 1 could not be made usable at setup deps: exited 1' })).toBe('')
     expect(prerequisitesRefused({ paused: false, pausedWhy: env })).toBe('')
     expect(prerequisitesRefused({ paused: true })).toBe('')
+  })
+  it('offers Log for a log kept, an empty one among them, and for one dropped; none for a receipt without one (Codex round 2 on #502)', () => {
+    const empty = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    expect(stepHasLog(step({ exit: 0, logBytes: 0, logSha256: empty })), 'a quiet command: its empty log kept').toBe(true)
+    expect(stepHasLog(step({ exit: 0, logBytes: 12, logSha256: 'ab'.repeat(32) }))).toBe(true)
+    expect(stepHasLog(step({ exit: 0, logBytes: 2_000_000, logDropped: true, logSha256: 'cd'.repeat(32) })), 'dropped: Log says so').toBe(true)
+    expect(stepHasLog(step({ phase: 'cleanup', id: 'db', state: 'interrupted', logBytes: 4, logSha256: 'ef'.repeat(32) }))).toBe(true)
+    expect(stepHasLog(step({ phase: 'check', id: 'unit', state: 'interrupted', exit: -1, logBytes: 0, logSha256: undefined })), 'no log: the route answers 404').toBe(false)
+    expect(stepHasLog(step({ state: 'running', logBytes: 0, logSha256: undefined }))).toBe(false)
+    expect(stepHasLog(step({ state: 'started', logBytes: 0, logSha256: undefined }))).toBe(false)
   })
   it('says a duration in seconds, then minutes', () => {
     expect([stepDuration(0), stepDuration(9_949), stepDuration(10_000), stepDuration(119_400), stepDuration(120_000), stepDuration(3_605_000)]).toEqual(['0.0 s', '9.9 s', '10 s', '119 s', '2 min', '60 min 5 s'])

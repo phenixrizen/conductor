@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RunAttempt, RunStep, StepLog } from '~/composables/useSessions'
-import { stepCommand, stepManifest, stepPorts, stepWhere, stepWords } from '~/utils/tasks'
+import { stepCommand, stepHasLog, stepManifest, stepPorts, stepWhere, stepWords } from '~/utils/tasks'
 
 /**
  * An attempt's receipts (EN1, project manifests), or a run's prerequisites':
@@ -31,8 +31,6 @@ const props = defineProps<{
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 const phaseColor = (p: RunStep['phase']): 'neutral' | 'info' | 'primary' | 'warning' => (p === 'check' || p === 'verify' ? 'primary' : p === 'service' || p === 'ready' ? 'info' : p === 'cleanup' ? 'warning' : 'neutral')
 const key = (s: RunStep) => `${s.phase}:${s.id}:${s.k}`
-/** A log can be asked for once the step ended; one dropped past the run's bound says so instead. */
-const hasLog = (s: RunStep) => (s.state === 'finished' || s.state === 'interrupted') && (s.logBytes > 0 || !!s.logDropped)
 
 const shown = ref<{ step: RunStep; text: string; bytes?: Uint8Array; sha256: string; error: string; loading: boolean } | null>(null)
 const open = computed({
@@ -79,7 +77,7 @@ function save() {
           <span v-if="s.k > 1" class="text-muted" :title="`The ${s.k}th run of ${s.id}`">#{{ s.k }}</span>
           <span :class="tone[stepWords(s, now).tone]" data-step-words>{{ stepWords(s, now).text }}</span>
           <UButton
-            v-if="hasLog(s)"
+            v-if="stepHasLog(s)"
             label="Log"
             icon="i-lucide-file-text"
             size="xs"

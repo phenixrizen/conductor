@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import { relativeTime } from '~/utils/sessions'
-import { latestReads } from '~/utils/latestReads'
+import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
 import { prerequisitesRefused, stepManifest, taskActions, taskDot, taskWords } from '~/utils/tasks'
 
 /**
@@ -70,50 +70,60 @@ function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
 
 // The selected task's attempts, read when the selection or the run's revision changes (a run event brings the revision). Reads at
 // two revisions can overlap and reply in any order: only the last one started is shown (latestReads), so an older reply that
-// arrives last never puts back a receipt's earlier state on a run that has nothing more to say.
-const attempts = ref<RunAttempt[]>([])
-const loadError = ref('')
+// arrives last never puts back a receipt's earlier state on a run that has nothing more to say. What a read brings is held with
+// the run and task it is of and shown only while they are the ones selected (ownedBy): another task selected before its own read
+// replied, or whose read failed, shows none of the last task's attempts, so no receipt's Log asks one task's route for another's.
+const taskOwner = (run: string, task: string) => JSON.stringify([run, task])
+const attemptsHeld = ref<Owned<RunAttempt[]> | null>(null)
+const attemptsError = ref<Owned<string> | null>(null)
+const attempts = computed(() => ownedBy(attemptsHeld.value, taskOwner(props.run.id, props.selected), []))
+const loadError = computed(() => ownedBy(attemptsError.value, taskOwner(props.run.id, props.selected), ''))
 const attemptReads = latestReads()
 watch(
   () => [props.run.id, props.selected, props.run.managed?.revision] as const,
   ([run, id]) => {
     if (!id) {
       attemptReads.drop()
-      attempts.value = []
+      attemptsHeld.value = null
+      attemptsError.value = null
       return
     }
+    const owner = taskOwner(run, id)
     void attemptReads.read(
       () => api.runTask(run, id),
       (r) => {
-        attempts.value = r.attempts
-        loadError.value = ''
+        attemptsHeld.value = { owner, value: r.attempts }
+        attemptsError.value = null
       },
-      (e) => (loadError.value = (e as Error).message),
+      (e) => (attemptsError.value = { owner, value: (e as Error).message }),
     )
   },
   { immediate: true },
 )
 
 // The run's prerequisites' receipts (EN1), read while the run has a project manifest, again when its revision moves; the last
-// read started is the one shown, as for the attempts.
-const prerequisites = ref<RunStep[]>([])
-const prereqError = ref('')
+// read started is the one shown, and only under the run it is of, as for the attempts.
+const prereqHeld = ref<Owned<RunStep[]> | null>(null)
+const prereqHeldError = ref<Owned<string> | null>(null)
+const prerequisites = computed(() => ownedBy(prereqHeld.value, props.run.id, []))
+const prereqError = computed(() => ownedBy(prereqHeldError.value, props.run.id, ''))
 const prereqReads = latestReads()
 watch(
   () => [props.run.id, !!props.run.manifest, props.run.managed?.revision] as const,
   ([id, has]) => {
     if (!has) {
       prereqReads.drop()
-      prerequisites.value = []
+      prereqHeld.value = null
+      prereqHeldError.value = null
       return
     }
     void prereqReads.read(
       () => api.runPrerequisites(id),
       (steps) => {
-        prerequisites.value = steps
-        prereqError.value = ''
+        prereqHeld.value = { owner: id, value: steps }
+        prereqHeldError.value = null
       },
-      (e) => (prereqError.value = (e as Error).message),
+      (e) => (prereqHeldError.value = { owner: id, value: (e as Error).message }),
     )
   },
   { immediate: true },

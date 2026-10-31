@@ -230,7 +230,8 @@ export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: T
   }
   const d = stepDuration(s.duration ?? 0)
   if (s.phase === 'ready') {
-    if (s.exit === 0 && !s.timedOut) return { text: `ready after ${tries(s.tries)}`, tone: 'success' }
+    // A probe passed only with exit 0 and no error: a command probe whose child kept its output open exits 0 and fails.
+    if (s.exit === 0 && !s.timedOut && !s.error) return { text: `ready after ${tries(s.tries)}`, tone: 'success' }
     if (!s.tries) return { text: 'never tried', tone: 'error' }
     return { text: `not ready after ${tries(s.tries)}`, tone: 'error' }
   }
@@ -255,6 +256,15 @@ export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: T
 export function prerequisitesRefused(run: Pick<RunInfo, 'paused' | 'pausedWhy'>): string {
   const why = run.pausedWhy ?? ''
   return run.paused && why.startsWith('the prerequisites failed: ') ? why : ''
+}
+
+/**
+ * Whether a receipt's Log can be asked for: once the step ended, with a log the server kept (its SHA-256 is on the receipt, an empty
+ * log's among them: a quiet command's log is kept empty and answers 200) or one it dropped past the run's bound (Log then says so).
+ * A receipt with neither has no log (its route answers 404): a check the attempt closed under, a step the recovery concluded.
+ */
+export function stepHasLog(s: Pick<RunStep, 'state' | 'logSha256' | 'logDropped'>): boolean {
+  return (s.state === 'finished' || s.state === 'interrupted') && (!!s.logSha256 || !!s.logDropped)
 }
 
 /** A receipt's command as shown: a probe over HTTP is `GET <url>`; an argv is its words, one in quotes when it holds a space or a quote. */

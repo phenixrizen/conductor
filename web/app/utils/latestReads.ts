@@ -23,3 +23,17 @@ export function latestReads() {
     },
   }
 }
+
+/** A value read for one owner (a run's task, a run): what it is, and whose. */
+export interface Owned<T> {
+  owner: string
+  value: T
+}
+
+/**
+ * The value held while the owner asked for is the one it was read for, else `none`: a list read for one task never shows, nor
+ * builds its log requests, under another task selected before that task's own read replied, or after it failed.
+ */
+export function ownedBy<T>(held: Owned<T> | null, owner: string, none: T): T {
+  return held && held.owner === owner ? held.value : none
+}
