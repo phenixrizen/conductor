@@ -401,9 +401,10 @@ func TestTheExpandedManifestIsHeldToItsBounds(t *testing.T) {
 
 // The launch of a manifest that names a phase this build does not run yet
 // is refused before anything is made; a manifest with its prerequisites
-// and setup phase, its env names, its ports and its placeholders, the file
-// form (held to the same once it is read, at the launch's base), and a
-// legacy setup whatever its argv holds, launch.
+// and setup phase, its env names, its ports and its placeholders, its
+// services, ready probes and preview, the file form (held to the same once
+// it is read, at the launch's base), and a legacy setup whatever its argv
+// holds, launch.
 func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	setup := []Check{{ID: "deps", Argv: []string{"npm", "ci"}}}
 	cases := []struct {
@@ -411,9 +412,6 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 		rec   Manifest
 		words string
 	}{
-		{"services", Manifest{Services: []Check{{ID: "web", Argv: []string{"npm", "start"}}}}, "this build does not run a project manifest's services yet"},
-		{"ready", Manifest{Ready: []Probe{{ID: "up", Argv: []string{"true"}}}}, "this build does not run a project manifest's ready probes yet"},
-		{"preview", Manifest{Preview: "http://127.0.0.1:8080/"}, "this build does not offer a project manifest's preview yet"},
 		{"verify", Manifest{Verify: []Check{{ID: "e2e", Argv: []string{"npm", "test"}}}}, "this build does not run a project manifest's verify steps yet"},
 		{"cleanup", Manifest{Cleanup: []Check{{ID: "rm", Argv: []string{"rm", "-rf", "tmp"}}}}, "this build does not run a project manifest's cleanup steps yet"},
 	}
@@ -452,6 +450,14 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	}
 	if err := c.runnableManifest(); err != nil {
 		t.Fatalf("a manifest with env names, ports and placeholders: %v", err)
+	}
+	c.Manifest = &Manifest{Ports: []string{"web"}, Services: []Check{{ID: "web", Argv: []string{"npm", "start"}}}, Ready: []Probe{{ID: "up", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}},
+		Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+	if err := c.ValidateSave(); err != nil {
+		t.Fatalf("a manifest with services, a probe and a preview is not valid: %v", err)
+	}
+	if err := c.runnableManifest(); err != nil {
+		t.Fatalf("a manifest with services, a probe and a preview (EN1 PR-4): %v", err)
 	}
 	c.Manifest = &Manifest{File: true}
 	if err := c.runnableManifest(); err != nil {

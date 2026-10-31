@@ -131,15 +131,19 @@ type TaskUnusable struct {
 
 // TaskManifest is the project manifest that made a tree usable: the crew's
 // at its revision, or conductor.manifest.json at the tree's commit, its
-// blob; and the tree's ports by name, each CONDUCTOR_PORT_<NAME> in the
-// environment. The tree's state directory is not in it: it is
-// .conductor/state under the working directory the file names, and
-// CONDUCTOR_STATE_DIR in the environment.
+// blob; the tree's ports by name, each CONDUCTOR_PORT_<NAME> in the
+// environment; its preview, the URL a person opens (at most maxPreview
+// bytes, CONDUCTOR_PREVIEW_URL in the environment); and its services'
+// ids, which run beside the session. The tree's state directory is not in
+// it: it is .conductor/state under the working directory the file names,
+// and CONDUCTOR_STATE_DIR in the environment.
 type TaskManifest struct {
 	Source   string         `json:"source"`
 	Revision int64          `json:"revision,omitempty"`
 	Digest   string         `json:"digest,omitempty"`
 	Ports    map[string]int `json:"ports,omitempty"`
+	Preview  string         `json:"preview,omitempty"`
+	Services []string       `json:"services,omitempty"`
 }
 
 // taskFile renders a's task files: task.md for the agent, task.json for
@@ -395,6 +399,16 @@ func taskMarkdown(f TaskFile) string {
 				ports = append(ports, fmt.Sprintf("%s %d (`%s`)", name, m.Ports[name], portVar(name)))
 			}
 			fmt.Fprintf(&b, " Its ports are this tree's alone while the attempt runs: %s; `CONDUCTOR_PORT_<NAME>` names each in the environment.", strings.Join(ports, ", "))
+		}
+		switch len(m.Services) {
+		case 0:
+		case 1:
+			fmt.Fprintf(&b, " Its service %s runs beside your session, started and answering before it began, for as long as the attempt runs.", m.Services[0])
+		default:
+			fmt.Fprintf(&b, " Its services %s run beside your session, started and answering before it began, for as long as the attempt runs.", strings.Join(m.Services, ", "))
+		}
+		if m.Preview != "" {
+			fmt.Fprintf(&b, " The preview, what a person opens to look at the work, is %s (`CONDUCTOR_PREVIEW_URL`).", m.Preview)
 		}
 		fmt.Fprintf(&b, " The tree's state directory is `%s/%s` in your working directory (`CONDUCTOR_STATE_DIR`): what the project's tools keep goes there, this tree's alone and out of your result as the rest of `%s/` is.", taskDir, stateDirName, taskDir)
 	}

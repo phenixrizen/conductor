@@ -2,11 +2,13 @@ package ledger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // version5Added is what version 5 added, dropped: a version 5 database
@@ -125,6 +127,7 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 		for _, r := range []CheckRow{
 			{ID: "deps", K: 1, Phase: PhaseSetup, Manifest: "crew:3", Ports: map[string]int{"web": 41234}, Error: "deps exited 1: no registry", Argv: []string{"npm", "ci"}, State: CheckFinished, Exit: 1, Log: []byte("npm ERR!")},
 			{ID: "web", K: 2, Phase: PhaseReady, Manifest: "file:abc", Tries: 3, URL: "http://127.0.0.1:41234/", State: CheckFinished, Exit: 0},
+			{ID: "never", K: 4, Phase: PhaseReady, Manifest: "file:abc", Argv: []string{"test", "-e", "never"}, State: CheckFinished, Exit: -1, Error: "web exited 1 before the tree was ready"},
 			{ID: "unit", K: 3, Argv: []string{"go", "test"}, State: CheckFinished},
 		} {
 			r.RunID, r.TaskID, r.N, r.StartedAt = "team-00000001", "build", 1, tx.Now()
@@ -137,7 +140,7 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks, err := l.Checks(ctx, "team-00000001", "build", 1, false)
-	if err != nil || len(checks) != 3 {
+	if err != nil || len(checks) != 4 {
 		t.Fatalf("%+v %v", checks, err)
 	}
 	by := map[string]CheckRow{}
@@ -149,6 +152,11 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 	}
 	if c := by["web"]; c.Phase != PhaseReady || c.Tries != 3 || c.URL != "http://127.0.0.1:41234/" || c.Argv != nil {
 		t.Fatalf("the probe: %+v", c)
+	}
+	// A probe that ran no try (a service of its tree had exited) keeps its
+	// count, none, where every other row reads one.
+	if c := by["never"]; c.Phase != PhaseReady || c.Tries != 0 || c.Exit != -1 {
+		t.Fatalf("the probe that ran no try: %+v", c)
 	}
 	if c := by["unit"]; c.Phase != PhaseCheck || c.Manifest != "" || c.Tries != 1 {
 		t.Fatalf("the check: %+v", c)
@@ -471,6 +479,160 @@ func TestTheRecoveryOfManyTreesFitsItsPayloads(t *testing.T) {
 	for _, ev := range evs {
 		if len(ev.Payload) > 512 {
 			t.Fatalf("a %s payload of %d bytes", ev.Kind, len(ev.Payload))
+		}
+	}
+}
+
+// A service a tree was running when the owner stopped (its row running,
+// its pid, group and start time recorded) is concluded interrupted as a
+// check is, and described: its task, attempt and tree (the tree whose
+// directory holds the row's), its pid, group and start, confirmed. One
+// whose start was not confirmed (its row still started) is reported as
+// such, with no process. Each has a service.ended event of its own,
+// recovered; the recovered event counts them. Nothing is signalled: the
+// recovery has no process to signal, and a pid after a restart is nobody's.
+func TestAServiceLeftOpenIsReportedByTheRecovery(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	newRun(t, l, "team-00000001")
+	attemptOf(t, l, "team-00000001", "build", 1, AttemptVerifying)
+	started := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		for _, r := range []TreeRow{
+			{Kind: TreeWorktree, Dir: "/w/build.1", Commit: "abc", Manifest: "crew:1", State: TreeReady},
+			{Kind: TreeCheckout, Dir: "/w/build.1.check", Commit: "def", Manifest: "crew:1", State: TreeResolved},
+		} {
+			r.RunID, r.TaskID, r.N = "team-00000001", "build", 1
+			if err := tx.PutTree(r); err != nil {
+				return err
+			}
+		}
+		for _, r := range []CheckRow{
+			{ID: "web", K: 1, Phase: PhaseService, Dir: "/w/build.1/app", Argv: []string{"npm", "start"}, State: CheckRunning, PID: 4242, Group: 4242, ProcessStartedAt: started},
+			{ID: "db", K: 2, Phase: PhaseService, Dir: "/w/build.1.check/app", Argv: []string{"pg_ctl", "start"}, State: CheckStarted},
+			{ID: "unit", K: 1, Dir: "/w/build.1.check/app", Argv: []string{"go", "test"}, State: CheckRunning, PID: 4343, Group: 4343},
+			{ID: "old", K: 1, Phase: PhaseService, Dir: "/w/build.1/app", Argv: []string{"true"}, State: CheckFinished, PID: 4141},
+		} {
+			r.RunID, r.TaskID, r.N, r.Manifest, r.StartedAt = "team-00000001", "build", 1, "crew:1", tx.Now()
+			if err := tx.PutCheck(r); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := l.Recover(ctx)
+	if err != nil || len(rec) != 1 || rec[0].Checks != 3 || len(rec[0].Services) != 2 {
+		t.Fatalf("recovered %+v %v", rec, err)
+	}
+	want := []RecoveredService{
+		{Task: "build", N: 1, Tree: TreeCheckout, ID: "db"},
+		{Task: "build", N: 1, Tree: TreeWorktree, ID: "web", Pid: 4242, Group: 4242, StartedAt: started, Confirmed: true},
+	}
+	for i, sv := range rec[0].Services {
+		if sv != want[i] {
+			t.Fatalf("service %d: %+v, want %+v", i, sv, want[i])
+		}
+	}
+	rows, _ := l.Checks(ctx, "team-00000001", "build", 1, false)
+	for _, r := range rows {
+		if r.ID != "old" && r.State != CheckInterrupted {
+			t.Fatalf("%s after the recovery: %s", r.ID, r.State)
+		}
+	}
+	evs, _ := l.Events(ctx, "team-00000001", 0, 100)
+	var ended []map[string]any
+	var recovered map[string]any
+	for _, ev := range evs {
+		var p map[string]any
+		if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
+			t.Fatal(err)
+		}
+		switch ev.Kind {
+		case "service.ended":
+			ended = append(ended, p)
+		case "recovered":
+			recovered = p
+		}
+	}
+	if len(ended) != 2 || ended[1]["id"] != "web" || ended[1]["pid"] != 4242.0 || ended[1]["group"] != 4242.0 || ended[1]["tree"] != TreeWorktree || ended[1]["confirmed"] != true ||
+		ended[1]["startedAt"] != "2026-10-30T12:00:00Z" || ended[1]["recovered"] != true || ended[1]["interrupted"] != true ||
+		ended[0]["id"] != "db" || ended[0]["confirmed"] != false || ended[0]["pid"] != 0.0 || ended[0]["startedAt"] != "" || ended[0]["tree"] != TreeCheckout {
+		t.Fatalf("service.ended events: %v", ended)
+	}
+	if recovered["Services"] != 2.0 || recovered["Unconfirmed"] != 1.0 || recovered["Checks"] != 3.0 {
+		t.Fatalf("the recovered event: %v", recovered)
+	}
+	if rec, err := l.Recover(ctx); err != nil || len(rec) != 0 {
+		t.Fatalf("a second recovery: %+v %v", rec, err)
+	}
+}
+
+// The most one recovery can meet, 32 open service rows (4 attempts in
+// flight, 2 trees each, 4 services a tree), each with an argv of 8 KiB, is
+// concluded in one transaction: every payload bounded by its shape, the
+// recovered event with its counts far under MaxPayload, one service.ended
+// a row.
+func TestTheRecoveryOfThirtyTwoServicesFitsOneTransaction(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	newRun(t, l, "team-00000001")
+	argv := []string{strings.Repeat("a", 4096), strings.Repeat("b", 4096)}
+	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		for i := range 4 {
+			task := fmt.Sprintf("t%d-%s", i, strings.Repeat("x", 36))
+			if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: task, Member: "lead", Kind: "work", State: TaskVerifying}); err != nil {
+				return err
+			}
+			if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: task, N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
+				return err
+			}
+			for _, kind := range []string{TreeWorktree, TreeCheckout} {
+				dir := "/w/" + task + ".1"
+				if kind == TreeCheckout {
+					dir += ".check"
+				}
+				if err := tx.PutTree(TreeRow{RunID: "team-00000001", TaskID: task, N: 1, Kind: kind, Dir: dir, State: TreeReady}); err != nil {
+					return err
+				}
+				for j := range 4 {
+					id := fmt.Sprintf("%s-%d-%s", kind[:1], j, strings.Repeat("s", 30))
+					if err := tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: task, N: 1, ID: id, K: 1, Phase: PhaseService, Manifest: "crew:1", Dir: dir, Argv: argv,
+						State: CheckRunning, PID: 100000 + i*100 + j, Group: 100000 + i*100 + j, ProcessStartedAt: tx.Now(), StartedAt: tx.Now()}); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := l.Run(ctx, "team-00000001")
+	rec, err := l.Recover(ctx)
+	if err != nil || len(rec) != 1 || len(rec[0].Services) != 32 || rec[0].Checks != 32 {
+		t.Fatalf("recovered %d runs, %v", len(rec), err)
+	}
+	after, _, _ := l.Run(ctx, "team-00000001")
+	if after.Revision != before.Revision+1 {
+		t.Fatalf("the recovery took %d transactions", after.Revision-before.Revision)
+	}
+	for _, sv := range rec[0].Services {
+		if !sv.Confirmed || sv.Tree == "" || sv.Pid == 0 {
+			t.Fatalf("a service described as %+v", sv)
+		}
+	}
+	evs, _ := l.Events(ctx, "team-00000001", 0, 1000)
+	if n := countKind(evs, "service.ended"); n != 32 {
+		t.Fatalf("%d service.ended events", n)
+	}
+	for _, ev := range evs {
+		switch {
+		case ev.Kind == "service.ended" && len(ev.Payload) > 512:
+			t.Fatalf("a service.ended payload of %d bytes", len(ev.Payload))
+		case ev.Kind == "recovered" && (len(ev.Payload) > 1024 || !strings.Contains(ev.Payload, `"Services":32`) || !strings.Contains(ev.Payload, `"Unconfirmed":0`)):
+			t.Fatalf("the recovered event: %s", ev.Payload)
 		}
 	}
 }
