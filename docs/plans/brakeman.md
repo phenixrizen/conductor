@@ -1886,6 +1886,11 @@ stub that reads them. After them the owner configures Brakeman with the
 owner's own agent and uses it. PR-9 to PR-18 wait, each on the
 prerequisite named in its row.
 
+PR numbers are names, not an order: PR-17 and PR-18 were added in
+review after PR-16 was named. The table lists the PRs in an order in
+which every dependency comes first (PR-17 before PR-12, which waits for
+it), and the dependency graph has no cycle.
+
 | PR | Title | Touches | Depends on | Parallel with | Size | When |
 |---|---|---|---|---|---|---|
 | PR-1 | brakeman, store: the configuration, requests, briefs (schema 1) and evidence references, their records, and the owner lock shared with the ledger | `internal/brakeman`, `internal/store`, `internal/crew/ledger` | none | PR-2, PR-3a | ~1,500 | before Monday |
@@ -1901,12 +1906,12 @@ prerequisite named in its row.
 | PR-9 | api, cli: the guide's providers and host capabilities from C9 | `internal/api`, `internal/cli`, `docs/protocol.md` | PR-2; waits for C9 (`GET /api/capabilities`, #488) | PR-11 | ~400 | waits: C9 |
 | PR-10 | brakeman, api: plan revisions, launches and candidates as evidence, and a plan revision drafted for the operator | `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-4; waits for DS2's PR-6 to PR-8 (#463 to #465) | none | ~1,100 | waits: DS2 |
 | PR-11 | web: DS2's records in briefs, "Propose as plan revision", Approve on a card, the ticket page's entries | `web/app`, `web/e2e` | PR-7, PR-10; waits for DS2's PR-10 and PR-11 (#467, #468) | PR-9 | ~900 | waits: DS2 |
+| PR-17 | ext, api: `ext.Host` launches a turn and declares the approved revision's launch (PR-12 wires it), and the desk launches through it | `ext`, `internal/api`, `docs/plans/ext.md` | PR-3c; waits for ext's PR-4 (`ext.Host`, #476) | none | ~500 | waits: C1 |
 | PR-12 | brakeman, api: authorized actions: the grants, each operation's own route taking Brakeman's principal, four operations with scope, state checks and receipts (BK2) | `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-8, PR-11, PR-17; waits for DS2's PR-7 (#464), DR1 and RV1 and BK1 Done | none | ~1,400 | waits: DS2, DR1, RV1 |
 | PR-13 | cli, agents, web: the act tool and command, grants in Settings, actions and their receipts in a brief | `internal/cli`, `internal/agents`, `web/app`, `web/e2e` | PR-12 | none | ~1,100 | waits: DR1, RV1 |
 | PR-14 | crew, brakeman, api: the background role in Yardmaster: wake sources, batching, cooldowns, budgets, records (BK3) | `internal/crew`, `internal/brakeman`, `internal/api`, `docs/protocol.md` | PR-13; waits for BK2 Done | none | ~1,500 | waits: BK2 |
 | PR-15 | web, cli: the role's controls, its wake log and its unavailable state | `web/app`, `web/e2e`, `internal/cli` | PR-14 | none | ~1,000 | waits: BK2 |
 | PR-16 | docs: the features entries of BK0 to BK3 and the by-hand records of their acceptance | `docs`, `README.md` | PR-9, PR-15, PR-17 | none | ~250 | last |
-| PR-17 | ext, api: `ext.Host` launches a turn and declares the approved revision's launch (PR-12 wires it), and the desk launches through it | `ext`, `internal/api`, `docs/plans/ext.md` | PR-3c; waits for ext's PR-4 (`ext.Host`, #476) | none | ~500 | waits: C1 |
 | PR-18 | api, web: `route_decision` to a human member's label | `internal/api`, `web/app`, `web/e2e` | PR-13; waits for HM1 | none | ~400 | waits: HM1 |
 
 **PR-1** (`internal/brakeman`, `internal/store`, `internal/crew/ledger`):
@@ -1931,7 +1936,8 @@ ref kind against its store, `Scope.Admits` and the visibility, with `seen`
 read from a request's read log (empty until PR-4) and `now`; no route
 yet. Go only.
 
-**PR-3c** (`internal/api`, `internal/crew`, `docs/protocol.md`):
+**PR-3c** (`internal/api`, `internal/crew`, `internal/session`,
+`docs/protocol.md`):
 `brakeman.go` (the desk, the owner lock's read-only mode, the admin
 routes, the turn as a read-only run through `launchTurn`, the watchdog and
 the slot, the restart, the refusals that keep a turn Brakeman's),
