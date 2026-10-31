@@ -16,7 +16,9 @@ import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
 // the run with the step named and Resume runs it again; a manifest env name
 // the server does not pass pauses it before any command, the manifest's
 // section saying why; a task cancelled mid-step gets its tree's cleanup
-// receipt. Each wait is on the state the
+// receipt; one task's receipts never show, nor ask for their logs, under
+// another selected while its read is held or after it failed, and a quiet
+// step's empty log is kept with its hash. Each wait is on the state the
 // server reports (a receipt's state, the attempt's preview, the run's
 // cleaning count), never on the clock; a check that holds the attempt open
 // waits for a file the spec writes. Rows are found by their ids.
@@ -388,5 +390,95 @@ test('a task cancelled mid-step gets its tree cleaned up: the step interrupted, 
   await expect(receipts.locator('[data-step-row="cleanup:tidy:1"] [data-step-words]')).toContainText('exited 0 in')
   await receipts.locator('[data-step-log="cleanup:tidy:1"]').click()
   await expect(page.locator('[data-step-log-modal] [data-step-log-text]')).toHaveText('tidied\n')
+  await page.keyboard.press('Escape')
+})
+
+test("a task's receipts never show under another selected before its read replied or after it failed, and a quiet step's empty log is kept with its hash", async ({ page, api }) => {
+  // Two tasks with the same manifest, so their receipts share step ids: a log asked on the wrong task's route would answer.
+  const body = {
+    name: 'e2e manifest two tasks',
+    goal: 'prove the project manifest',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    yolo: null,
+    members: [
+      { name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } },
+      { name: 'second', agentId: 'worker', prompt: '', start: { when: 'task' } },
+    ],
+    tasks: [
+      { id: 'a', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'unit', argv: ['true'] }] },
+      { id: 'b', member: 'second', kind: 'work', instructions: 'Build it too.', needs: ['a'], checks: [{ id: 'unit', argv: ['true'] }] },
+    ],
+    // A setup step that prints nothing: its log is kept empty, with the SHA-256 of no bytes.
+    manifest: { setup: [{ id: 'quiet', argv: ['true'] }] },
+  }
+  const crewId = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', body)).crew.id
+  crewIds.push(crewId)
+  const runId = await launch(api, crewId)
+  await expect.poll(async () => (await api.run(runId)).outcome ?? '', { timeout: 120_000, intervals: [250] }).toBe('succeeded')
+  const runPath = `/api/runs/${encodeURIComponent(runId)}`
+  const emptySha = createHash('sha256').update(Buffer.alloc(0)).digest('hex')
+
+  // a's quiet receipt offers its log: empty, with its hash, and Save writes no bytes.
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks&task=a`)
+  const aReceipts = page.locator('[data-task-detail-id="a"] [data-task-attempt-row="1"] [data-steps]')
+  await expect(aReceipts.locator('[data-step-row="setup:quiet:1"] [data-step-words]')).toContainText('exited 0 in')
+  const res = await fetch(`${api.server.baseURL}${runPath}/tasks/a/attempts/1/steps/quiet/1/log`, { headers: { Authorization: `Bearer ${api.server.token}` } })
+  expect(res.status).toBe(200)
+  expect((await res.arrayBuffer()).byteLength).toBe(0)
+  expect(res.headers.get('X-Conductor-Log-SHA256')).toBe(emptySha)
+  await aReceipts.locator('[data-step-log="setup:quiet:1"]').click()
+  const modal = page.locator('[data-step-log-modal]')
+  await expect(modal.locator('[data-step-log-sha]')).toHaveText(emptySha)
+  await expect(modal.locator('[data-step-log-text]')).toHaveText('')
+  const [download] = await Promise.all([page.waitForEvent('download'), page.locator('[data-step-log-save]').click()])
+  expect(download.suggestedFilename()).toBe(`${runId}-a-1-setup-quiet-1.log`)
+  expect(readFileSync(await download.path()).length).toBe(0)
+  await page.keyboard.press('Escape')
+  await expect(modal).toHaveCount(0)
+
+  // b's read held until the spec lets it go, then refused. Every log request the page makes on b's route is counted.
+  const bRead = (url: URL) => url.pathname === `${runPath}/tasks/b`
+  let asked!: () => void
+  const bAsked = new Promise<void>((resolve) => (asked = resolve))
+  let letGo!: () => void
+  const released = new Promise<void>((resolve) => (letGo = resolve))
+  await page.route(bRead, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    asked()
+    await released
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'the ledger is unavailable' } }) })
+  })
+  const bLogs: string[] = []
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname.startsWith(`${runPath}/tasks/b/attempts/`)) bLogs.push(r.url())
+  })
+  await page.locator('[data-task-row="b"] [role="button"]').click()
+  await bAsked
+  const bDetail = page.locator('[data-task-detail-id="b"]')
+  await expect(bDetail).toBeVisible()
+  // While b's read is under way, none of a's attempts shows under b.
+  await expect(bDetail.locator('[data-task-attempt-row]')).toHaveCount(0)
+  await expect(bDetail.locator('[data-step-log]')).toHaveCount(0)
+  letGo()
+  // b's read failed: its words show, and still none of a's attempts.
+  await expect(bDetail).toContainText('the ledger is unavailable')
+  await expect(bDetail.locator('[data-task-attempt-row]')).toHaveCount(0)
+  await expect(bDetail.locator('[data-step-log]')).toHaveCount(0)
+  expect(bLogs).toEqual([])
+
+  // Read as the server answers, b shows its own receipt, and its Log asks b's route.
+  await page.unroute(bRead)
+  await page.locator('[data-task-row="a"] [role="button"]').click()
+  await expect(aReceipts.locator('[data-step-row="setup:quiet:1"]')).toBeVisible()
+  await page.locator('[data-task-row="b"] [role="button"]').click()
+  const bReceipts = page.locator('[data-task-detail-id="b"] [data-task-attempt-row="1"] [data-steps]')
+  await expect(bReceipts.locator('[data-step-row="setup:quiet:1"] [data-step-words]')).toContainText('exited 0 in')
+  await expect(bDetail).not.toContainText('the ledger is unavailable')
+  await bReceipts.locator('[data-step-log="setup:quiet:1"]').click()
+  await expect(modal.locator('[data-step-log-sha]')).toHaveText(emptySha)
+  expect(bLogs.map((u) => new URL(u).pathname)).toEqual([`${runPath}/tasks/b/attempts/1/steps/quiet/1/log`])
   await page.keyboard.press('Escape')
 })
