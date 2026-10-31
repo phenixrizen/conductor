@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -263,6 +264,125 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 	l = openLedger(t, dir)
 	if ro, why := l.ReadOnly(); ro {
 		t.Fatalf("still read-only: %s", why)
+	}
+}
+
+// A Close that comes while the ledger waits for the owner lock leaves no
+// try for it under way (#281): each try is made under the ledger's lock
+// and only while the ledger is open, so Close waits for one in flight and
+// none follows it. A try opens the lock file, making it when it is
+// missing, and a lock taken opens the database: once Close has returned,
+// none of that may happen in the directory, which a test's cleanup may be
+// removing by then (a second server's ledger, still waiting, made its
+// files again under a temporary directory being removed). The wait's first
+// try is held at a gate (takeLock) while Close is called.
+func TestACloseLeavesNoTryForTheOwnerLockUnderWay(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	openLedger(t, dir) // the owner: the next ledger waits for its lock
+	var (
+		w       atomic.Pointer[Ledger]
+		tries   atomic.Int32
+		ready   = make(chan struct{}) // w is set
+		trying  = make(chan struct{}) // the wait's first try is under way
+		gate    = make(chan struct{}) // lets it go on
+		closed  = make(chan struct{}) // Close has returned
+		outside atomic.Bool           // a try made without the ledger's lock
+		late    atomic.Bool           // a try made once Close had begun, or under way when it returned
+		letGo   sync.Once
+	)
+	old := takeLock
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		n := tries.Add(1)
+		if n == 1 {
+			return old(path) // Open's own: held by the owner
+		}
+		<-ready
+		l := w.Load()
+		if l.mu.TryLock() {
+			l.mu.Unlock()
+			outside.Store(true)
+		}
+		select {
+		case <-l.done:
+			late.Store(true)
+		default:
+		}
+		if n == 2 {
+			close(trying)
+			<-gate
+			select {
+			case <-closed:
+				late.Store(true)
+			default:
+			}
+		}
+		return old(path)
+	}
+	t.Cleanup(func() { takeLock = old })
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		letGo.Do(func() { close(gate) })
+		l.Close()
+	})
+	w.Store(l)
+	close(ready)
+	<-trying
+	go func() {
+		l.Close()
+		close(closed)
+	}()
+	letGo.Do(func() { close(gate) })
+	<-closed
+	if outside.Load() {
+		t.Fatal("a try for the owner lock was made outside the ledger's lock: a Close could return with it under way")
+	}
+	if late.Load() {
+		t.Fatal("a try for the owner lock was made once Close had begun, or was still under way when it returned")
+	}
+	if ro, why := l.ReadOnly(); !ro {
+		t.Fatalf("the ledger closed while it waited took the lock: %s", why)
+	}
+}
+
+// A wait that comes to its try with the ledger closed makes none (#281).
+// A Close can land after the wait has taken its tick and before it takes
+// the ledger's lock, and the wait's select can pick a tick that is due
+// over a closed done: either way the wait reaches its try with the ledger
+// closed, and a try made then would open owner.lock, making it, and take
+// the lock when it is free, after Close had returned. The test above
+// holds a try that is under way when Close comes; this one runs the wait
+// on a ledger in the state a later Close leaves it in, closed with done
+// still open, so that its first tick brings it to the check.
+func TestAWaitThatFindsTheLedgerClosedMakesNoTry(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var tries atomic.Int32
+	old := takeLock
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		tries.Add(1)
+		return old(path)
+	}
+	t.Cleanup(func() { takeLock = old })
+	l := &Ledger{dir: dir, done: make(chan struct{}), closed: true}
+	l.awaitLock(filepath.Join(dir, Lock), filepath.Join(dir, File)) // returns at its first tick
+	if n := tries.Load(); n != 0 {
+		t.Errorf("a closed ledger tried for the owner lock %d time(s)", n)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 {
+		var made []string
+		for _, e := range entries {
+			made = append(made, e.Name())
+		}
+		t.Errorf("a closed ledger made %s in its directory", strings.Join(made, ", "))
 	}
 }
 
