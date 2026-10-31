@@ -3,8 +3,8 @@ import { accountItems } from '~/utils/sidebarActions'
 
 /**
  * The phone's bar at the foot (design 3e): Sessions, Yard (with the count),
- * Crews, Events; Roundhouse, Agents, Settings, Alerts and your menu under
- * More. Every target is at least 44 px tall; the padding reads the safe
+ * Crews, Events; Roundhouse, Agents, Dispatch, Settings, Alerts and your menu
+ * under More. Every target is at least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
  * at lg and up (a class from the layout would not reach several roots).
  */
@@ -33,6 +33,7 @@ const nameOpen = ref(false)
 const pages = computed(() => [
   { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
   { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
+  { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch' },
   ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
 /** Your menu's items as buttons, the sheet closed before each acts. */

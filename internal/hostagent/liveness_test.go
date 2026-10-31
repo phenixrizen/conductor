@@ -323,7 +323,13 @@ func liveHostParts(t *testing.T, base string, stall time.Duration, opts session.
 // no longer does.
 func untilVouches(t *testing.T, a *agent, want bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	untilVouchesWithin(t, a, want, 10*time.Second)
+}
+
+// untilVouchesWithin is untilVouches, waiting at most d.
+func untilVouchesWithin(t *testing.T, a *agent, want bool, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
 	for (a.vouches() == nil) != want {
 		if time.Now().After(deadline) {
 			t.Fatalf("vouches %v, want %v", a.vouches() == nil, want)

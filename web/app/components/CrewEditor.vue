@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
+import { draftMember, manifestIds, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -10,7 +10,8 @@ import { yoloChoice, yoloFromChoice, type YoloChoice } from '~/utils/yolo'
 
 /**
  * A saved crew's Setup: its goal, where its runs work, what each run does,
- * and its members as a table or as the graph of their start rules. The page
+ * and its members as a table or as the graph of their start rules; a crew
+ * with tasks has its tasks and, under them, its project manifest. The page
  * owns the name (in its header), saving, launching, duplicating and
  * deleting; the editor only changes the draft.
  */
@@ -113,7 +114,15 @@ const coordination = computed({
     if (v === 'tasks') {
       crew.value = { ...crew.value, isolation: 'worktree', tasks: crew.value.tasks ?? [], members: crew.value.members.map((m) => ({ ...m, start: { when: 'task' as const } })) }
     } else {
-      crew.value = { ...crew.value, tasks: undefined, setup: undefined, members: crew.value.members.map((m) => (m.start.when === 'task' ? { ...m, start: { when: 'immediately' as const } } : m)) }
+      // A crew by start rules has no tasks, and so no setup and no project manifest.
+      crew.value = {
+        ...crew.value,
+        tasks: undefined,
+        setup: undefined,
+        manifest: undefined,
+        liftedSetup: undefined,
+        members: crew.value.members.map((m) => (m.start.when === 'task' ? { ...m, start: { when: 'immediately' as const } } : m)),
+      }
     }
   },
 })
@@ -228,7 +237,8 @@ function refused(message: string) {
       </template>
     </div>
 
-    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :setup="crew.setup" :members="crew.members" :isolation="crew.isolation" @update:model-value="set('tasks', $event)" @update:setup="set('setup', $event)" />
+    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :members="crew.members" :isolation="crew.isolation" :taken="manifestIds(crew.manifest)" @update:model-value="set('tasks', $event)" />
+    <CrewManifestEditor v-if="managed" :model-value="crew.manifest" :tasks="crew.tasks ?? []" :setup="crew.setup" @update:model-value="set('manifest', $event)" />
 
     <UModal v-model:open="pickOpen" title="Add from a running session" description="Its agent becomes a new member, and its working directory the crew's when the crew has none yet.">
       <template #body>

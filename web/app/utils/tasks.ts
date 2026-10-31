@@ -4,7 +4,8 @@ import type { RunInfo, RunTask } from '~/composables/useSessions'
 // header says, a task's state in words, which actions apply to it, and the
 // commands a person sends with receipts (docs/protocol.md, "Commands with
 // receipts"): the browser mints the id, retries a lost reply once with the
-// same id, and reads a refusal from the receipt it got.
+// same id, and reads a refusal from the receipt it got. Dispatch's
+// operations (useDispatchOps.ts) are sent the same way, with their own body.
 
 /** A command's receipt as the server answers it. */
 export interface Receipt {
@@ -33,6 +34,19 @@ export interface ReceiptTask {
 export interface CommandBody {
   commandId: string
   expectedRevision?: number
+}
+
+/** A command's body with a minted id and, when one is given (above 0), the revision it expects. */
+export function commandBody(expectedRevision?: number): CommandBody {
+  const body: CommandBody = { commandId: mintCommandId() }
+  if (expectedRevision) body.expectedRevision = expectedRevision
+  return body
+}
+
+/** What a refusal's receipt carries, whatever it answers (a task command's, a Dispatch operation's): the rule's words. */
+export interface RefusalReceipt {
+  error?: string
+  refusal?: string
 }
 
 export type TaskCommand = 'cancel' | 'retry' | 'accept'
@@ -173,30 +187,30 @@ export function mintCommandId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-/** A command the run refused: the receipt says why (its `error`), and nothing changed. */
-export class CommandRefused extends Error {
+/** A command the run refused, or a Dispatch operation the store refused: the receipt says why (its `error`), and nothing changed. */
+export class CommandRefused<R extends RefusalReceipt = Receipt> extends Error {
   constructor(
     message: string,
-    public receipt: Receipt,
+    public receipt: R,
   ) {
     super(message)
   }
 }
 
 /**
- * Sends a command with a minted id. A reply lost to the network is asked for once more with the same id, which the server answers as the
- * first (the receipt); a second loss is the error. A refusal (a 409 carrying the receipt) is a CommandRefused with the server's words.
+ * Sends a command, or a Dispatch operation, with its body, which carries the id the browser minted (a command's `commandId`, from
+ * commandBody; an operation's `opId`), and resolves to the whole reply. A reply lost to the network is asked for once more with the same
+ * body, so the same id, which the server answers as the first (the receipt); a second loss is the error. A refusal (a 409, or a Dispatch
+ * operation's 404, carrying the receipt) is a CommandRefused with the server's words.
  */
-export async function sendCommand(send: (body: CommandBody) => Promise<{ receipt: Receipt }>, expectedRevision?: number): Promise<Receipt> {
-  const body: CommandBody = { commandId: mintCommandId() }
-  if (expectedRevision) body.expectedRevision = expectedRevision
+export async function sendCommand<B, R extends { receipt: RefusalReceipt } = { receipt: Receipt }>(send: (body: B) => Promise<R>, body: B): Promise<R> {
   for (let attempt = 1; ; attempt++) {
     try {
-      return (await send(body)).receipt
+      return await send(body)
     } catch (e) {
-      const err = e as { status?: number; message?: string; body?: { receipt?: Receipt } }
+      const err = e as { status?: number; message?: string; body?: { receipt?: R['receipt'] } }
       if (err.status === 0 && attempt === 1) continue
-      if (err.body?.receipt) throw new CommandRefused(err.body.receipt.error || err.message || 'refused', err.body.receipt)
+      if (err.body?.receipt) throw new CommandRefused<R['receipt']>(err.body.receipt.error || err.message || 'refused', err.body.receipt)
       throw e
     }
   }
