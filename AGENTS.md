@@ -109,6 +109,10 @@ add its rule here.
   drive the step through a seam the code offers (a fake clock, a hook, a
   gate), and when a bound is unavoidable make it the sum of the caps the
   code itself applies, with the test's timeout above it.
+- Two timers set for one deadline fire in no set order. Seeing one fire
+  (a viewer's lapse closing it) says nothing of the other (its link's
+  lapse telling the host): set the deadline far off and call what the
+  timers call, in the order the test needs.
 - The product's bound is not the test's. A 3 s probe limit or a 10 s kill
   wait is right for the product and wrong for a test that only needs the
   thing to happen: give the test its own wait where the product's is not
