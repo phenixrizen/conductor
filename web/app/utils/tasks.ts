@@ -129,8 +129,10 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
       if (run.state === 'interrupted') return { text: `${why}taken up when the run is continued`, tone: 'warning' }
       if (run.stoppedAt) return { text: `${why}ready, the run is stopped`, tone: 'muted' }
       // The run paused itself over this task's own reason (a project manifest's step that failed in a tree the agent had not
-      // touched, EN1): the pause is the news, the reason why.
-      if (run.paused && run.pausedWhy && t.reason) return { text: `ready, the dispatch is paused: ${t.reason}`, tone: 'warning' }
+      // touched, EN1: failUnusable gives the task and the pause the same words): the pause is the news, the reason why. A reason
+      // that is not the pause's (one kept from an attempt the server's end interrupted, or this task's failure while another's
+      // paused the run) is not presented as its cause: it reads as before, the pause after it.
+      if (run.paused && run.pausedWhy && t.reason && t.reason === run.pausedWhy) return { text: `ready, the dispatch is paused: ${t.reason}`, tone: 'warning' }
       if (run.paused) return { text: `${why}ready, scheduling is paused`, tone: 'warning' }
       return { text: `${why}ready to start`, tone: 'default' }
     }
@@ -213,7 +215,8 @@ export function stepDuration(ms: number): string {
 /**
  * A receipt's outcome in words (EN1): `exited 0 in 4.2 s`, `exited 1 in 3.0 s`, `timed out after 60 s`, `ready after 3 tries`,
  * `not ready after 30 tries`, a service's `exited 0 after 12 s` or `ended after 12 s` (a signal: the tree's end stops it), `running
- * since 2m ago`, `starting`, `interrupted`. The failure's own words are the step's `error`, shown beside these.
+ * since 2m ago`, `starting`, `interrupted`, and `failed in 2.0 s (exited 0)` for a step that exited 0 with an error. The failure's
+ * own words are the step's `error`, shown beside these.
  */
 export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: Tone } {
   const tries = (n: number) => `${n} ${n === 1 ? 'try' : 'tries'}`
@@ -237,7 +240,21 @@ export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: T
   }
   if (s.timedOut) return { text: `timed out after ${d}`, tone: 'error' }
   if (s.exit === undefined || s.exit < 0) return { text: s.error ? 'did not run' : `ended after ${d}`, tone: 'error' }
+  // A step that exited 0 and still failed (a check or verify step, or a setup step in a result's checkout, that changed tracked
+  // files): its error says how, and it never reads as a success.
+  if (s.exit === 0 && s.error) return { text: `failed in ${d} (exited 0)`, tone: 'error' }
   return { text: `exited ${s.exit} in ${d}`, tone: s.exit === 0 ? 'success' : 'error' }
+}
+
+/**
+ * Why the run's prerequisites failed with no receipt to show it (EN1): the run's pause words when they are the prerequisites'
+ * refusal ("the prerequisites failed: …", docs/protocol.md: a manifest `env` name the server does not allow or the host does not
+ * have, checked before any command runs, or a receipt the ledger refused), else ''. A prerequisite command that failed has its
+ * receipt, and its words ("the prerequisite <id> failed: …") are not this.
+ */
+export function prerequisitesRefused(run: Pick<RunInfo, 'paused' | 'pausedWhy'>): string {
+  const why = run.pausedWhy ?? ''
+  return run.paused && why.startsWith('the prerequisites failed: ') ? why : ''
 }
 
 /** A receipt's command as shown: a probe over HTTP is `GET <url>`; an argv is its words, one in quotes when it holds a space or a quote. */

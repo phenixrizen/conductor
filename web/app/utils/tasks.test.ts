@@ -4,6 +4,7 @@ import {
   CommandRefused,
   commandBody,
   mintCommandId,
+  prerequisitesRefused,
   sendCommand,
   stepCommand,
   stepDuration,
@@ -95,6 +96,17 @@ describe('taskWords', () => {
     // Unpaused, the reason reads as it did.
     expect(taskWords(task({ state: 'ready', reason: why }), { pausedWhy: '' })).toEqual({ text: `${why}; ready to start`, tone: 'default' })
   })
+  it("never presents a reason that is not the pause's as its cause (the reviews of #502)", () => {
+    // A continuation's task keeps the reason its interrupted attempt left; the continuation's prerequisites then fail.
+    const kept = "attempt 2 was interrupted by the server's end: the run continues it"
+    const prereq = 'the prerequisite tool failed: exited 1'
+    expect(taskWords(task({ state: 'ready', reason: kept }), { paused: true, pausedWhy: prereq })).toEqual({ text: `${kept}; ready, scheduling is paused`, tone: 'warning' })
+    // B's setup paused the run; A's attempt then could not be made usable either: A's words are its own, the pause B's.
+    const b = 'attempt 1 could not be made usable at setup deps: exited 1: npm ERR! network'
+    const a = 'attempt 1 could not be made usable at setup lint: exited 2'
+    expect(taskWords(task({ id: 'a', state: 'ready', reason: a }), { paused: true, pausedWhy: b })).toEqual({ text: `${a}; ready, scheduling is paused`, tone: 'warning' })
+    expect(taskWords(task({ id: 'b', state: 'ready', reason: b }), { paused: true, pausedWhy: b })).toEqual({ text: `ready, the dispatch is paused: ${b}`, tone: 'warning' })
+  })
 })
 
 describe('taskActions', () => {
@@ -143,12 +155,27 @@ describe('stepWords and the receipt helpers (EN1)', () => {
     [step({ phase: 'ready', id: 'up', exit: -1, tries: 0 }), 'never tried', 'error'],
     [step({ phase: 'service', id: 'web', exit: -1, duration: 12_000 }), 'ended after 12 s', 'muted'],
     [step({ phase: 'service', id: 'web', exit: 0, duration: 2000, error: 'exited 0 before the tree was ready: a service must stay in the foreground' }), 'exited 0 after 2.0 s', 'error'],
+    // A receipt that exited 0 and failed (the reviews of #502): a check or verify step, or a setup step in a result's checkout,
+    // that changed tracked files.
+    [step({ phase: 'check', id: 'unit', exit: 0, duration: 3000, error: 'changed tracked files: go.sum' }), 'failed in 3.0 s (exited 0)', 'error'],
+    [step({ phase: 'verify', id: 'fmt', exit: 0, duration: 1500, error: 'changed tracked files: main.go' }), 'failed in 1.5 s (exited 0)', 'error'],
+    [step({ phase: 'setup', id: 'deps', exit: 0, duration: 4200, error: 'setup deps changed tracked files: package-lock.json' }), 'failed in 4.2 s (exited 0)', 'error'],
     [step({ state: 'running' }), 'running since 2m ago', 'default'],
     [step({ phase: 'service', id: 'web', state: 'running' }), 'running since 2m ago', 'default'],
     [step({ state: 'started' }), 'starting', 'muted'],
     [step({ phase: 'cleanup', id: 'db', state: 'interrupted' }), 'interrupted', 'warning'],
   ] as const)('%o → %s', (s, text, tone) => {
     expect(stepWords(s, now)).toEqual({ text, tone })
+  })
+  it("says why the prerequisites failed when no receipt can: the run's pause words for a refused env name, none else", () => {
+    const env = 'the prerequisites failed: the host has no NPM_TOKEN: set it where the server starts, start it again and continue the run'
+    expect(prerequisitesRefused({ paused: true, pausedWhy: env })).toBe(env)
+    expect(prerequisitesRefused({ paused: true, pausedWhy: "the prerequisites failed: NPM_TOKEN is not in the server's envPassthrough" })).toMatch(/envPassthrough$/)
+    // A prerequisite command that failed has its receipt; a task's pause is not the prerequisites'; unpaused, nothing.
+    expect(prerequisitesRefused({ paused: true, pausedWhy: 'the prerequisite tool failed: exited 1' })).toBe('')
+    expect(prerequisitesRefused({ paused: true, pausedWhy: 'attempt 1 could not be made usable at setup deps: exited 1' })).toBe('')
+    expect(prerequisitesRefused({ paused: false, pausedWhy: env })).toBe('')
+    expect(prerequisitesRefused({ paused: true })).toBe('')
   })
   it('says a duration in seconds, then minutes', () => {
     expect([stepDuration(0), stepDuration(9_949), stepDuration(10_000), stepDuration(119_400), stepDuration(120_000), stepDuration(3_605_000)]).toEqual(['0.0 s', '9.9 s', '10 s', '119 s', '2 min', '60 min 5 s'])

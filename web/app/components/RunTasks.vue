@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import { relativeTime } from '~/utils/sessions'
-import { stepManifest, taskActions, taskDot, taskWords } from '~/utils/tasks'
+import { latestReads } from '~/utils/latestReads'
+import { prerequisitesRefused, stepManifest, taskActions, taskDot, taskWords } from '~/utils/tasks'
 
 /**
  * The tasks of a managed run (#334, row 7): one row per task in the crew's
@@ -67,49 +68,59 @@ function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
 }
 
-// The selected task's attempts, read when the selection or the run's revision changes (a run event brings the revision).
+// The selected task's attempts, read when the selection or the run's revision changes (a run event brings the revision). Reads at
+// two revisions can overlap and reply in any order: only the last one started is shown (latestReads), so an older reply that
+// arrives last never puts back a receipt's earlier state on a run that has nothing more to say.
 const attempts = ref<RunAttempt[]>([])
 const loadError = ref('')
+const attemptReads = latestReads()
 watch(
-  () => [props.selected, props.run.managed?.revision] as const,
-  async ([id]) => {
+  () => [props.run.id, props.selected, props.run.managed?.revision] as const,
+  ([run, id]) => {
     if (!id) {
+      attemptReads.drop()
       attempts.value = []
       return
     }
-    try {
-      const r = await api.runTask(props.run.id, id)
-      if (id !== props.selected) return
-      attempts.value = r.attempts
-      loadError.value = ''
-    } catch (e) {
-      if (id === props.selected) loadError.value = (e as Error).message
-    }
+    void attemptReads.read(
+      () => api.runTask(run, id),
+      (r) => {
+        attempts.value = r.attempts
+        loadError.value = ''
+      },
+      (e) => (loadError.value = (e as Error).message),
+    )
   },
   { immediate: true },
 )
 
-// The run's prerequisites' receipts (EN1), read while the run has a project manifest, again when its revision moves.
+// The run's prerequisites' receipts (EN1), read while the run has a project manifest, again when its revision moves; the last
+// read started is the one shown, as for the attempts.
 const prerequisites = ref<RunStep[]>([])
 const prereqError = ref('')
+const prereqReads = latestReads()
 watch(
   () => [props.run.id, !!props.run.manifest, props.run.managed?.revision] as const,
-  async ([id, has]) => {
+  ([id, has]) => {
     if (!has) {
+      prereqReads.drop()
       prerequisites.value = []
       return
     }
-    try {
-      const steps = await api.runPrerequisites(id)
-      if (id !== props.run.id) return
-      prerequisites.value = steps
-      prereqError.value = ''
-    } catch (e) {
-      if (id === props.run.id) prereqError.value = (e as Error).message
-    }
+    void prereqReads.read(
+      () => api.runPrerequisites(id),
+      (steps) => {
+        prerequisites.value = steps
+        prereqError.value = ''
+      },
+      (e) => (prereqError.value = (e as Error).message),
+    )
   },
   { immediate: true },
 )
+// The prerequisites failed before any of their commands ran (a manifest env name the server does not allow or the host does
+// not have): no receipt says so, the run's pause words do.
+const prereqRefused = computed(() => prerequisitesRefused(props.run))
 const manifestName = computed(() => {
   const m = props.run.manifest
   if (!m) return ''
@@ -146,9 +157,12 @@ async function confirm() {
         <span class="text-xs text-muted" :title="run.manifest.digest || undefined">{{ manifestName }}</span>
       </div>
       <UAlert v-if="prereqError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="prereqError" />
+      <p v-if="prereqRefused" class="whitespace-pre-wrap break-words text-xs text-error" data-run-prereq-refused>{{ prereqRefused }}</p>
       <RunAttemptSteps v-if="prerequisites.length" :steps="prerequisites" :now="now" :log="prereqLog" :save-as="prereqName" title="Prerequisites" />
-      <p v-else-if="run.manifest.prerequisites?.length" class="text-xs text-muted">The prerequisites have not run yet.</p>
-      <p v-else class="text-xs text-muted">No prerequisites.</p>
+      <template v-else-if="!prereqRefused">
+        <p v-if="run.manifest.prerequisites?.length" class="text-xs text-muted">The prerequisites have not run yet.</p>
+        <p v-else class="text-xs text-muted">No prerequisites.</p>
+      </template>
     </section>
     <p v-if="!tasks.length" class="text-sm text-muted">No tasks.</p>
     <ol v-else class="flex flex-col gap-1.5" data-task-rows>
