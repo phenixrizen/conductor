@@ -83,22 +83,25 @@ type fakeLauncher struct {
 	launchHold chan struct{}
 	launchHeld chan *session.Local
 	// ports draws the engine's trees' ports (treeExec.port): numbers from
-	// a range, never the network.
-	ports *fakePorts
+	// a range, never the network; probes answers its probes over HTTP
+	// (treeExec.probe) from a map, never the network.
+	ports  *fakePorts
+	probes *fakeProbes
 }
 
 func newFakeLauncher(t *testing.T) *fakeLauncher {
 	return &fakeLauncher{t: t, fail: map[string]error{}, procs: map[string]*sessiontest.FakeProc{},
-		locals: map[string]*session.Local{}, byID: map[string]*session.Local{}, ports: newFakePorts()}
+		locals: map[string]*session.Local{}, byID: map[string]*session.Local{}, ports: newFakePorts(), probes: newFakeProbes()}
 }
 
 // newEngine returns an engine over a new fakeLauncher, its trees' ports
-// drawn by the launcher's fakePorts: no engine test reaches the network
-// but through the executor.
+// drawn by the launcher's fakePorts and their probes over HTTP answered by
+// its fakeProbes: no engine test reaches the network but through the
+// executor.
 func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	fl := newFakeLauncher(t)
 	e := NewEngine(fl, fl.lookup)
-	e.exec.port = fl.ports.port
+	e.exec.port, e.exec.probe = fl.ports.port, fl.probes.probe
 	fl.engine = e
 	return e, fl
 }

@@ -247,9 +247,12 @@ func uncountedRow(a ledger.AttemptRow) bool {
 }
 
 // manifestStage reports whether stage is a project manifest's: one of its
-// phases' steps, or "manifest" for one that could not be resolved.
+// phases' steps, "ready" for the tree's readiness not recorded (treeReady:
+// its tree.ready refused), or "manifest" for one that could not be
+// resolved. A checkout's "ready" (its ready phase changed tracked files)
+// is a result's, which its row carries, so uncountedRow never takes it.
 func manifestStage(stage string) bool {
-	return stage == "manifest" || strings.HasPrefix(stage, "setup ") || strings.HasPrefix(stage, "service ") || strings.HasPrefix(stage, "ready ")
+	return stage == "manifest" || stage == "ready" || strings.HasPrefix(stage, "setup ") || strings.HasPrefix(stage, "service ") || strings.HasPrefix(stage, "ready ")
 }
 
 // readHistory reads the history a continuation of from takes, before the

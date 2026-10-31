@@ -20,20 +20,79 @@ type lifecycle struct {
 	reaped bool
 }
 
-// signal kills the process's group, and the process itself should it have
-// joined another group (Setpgid makes a group; it does not keep the process
-// in it). os.ErrProcessDone once the process is reaped, or before it exists.
-func (g *lifecycle) signal(cmd *exec.Cmd) error {
+// signalled, when set, is told each signal signal sends, once it is sent:
+// to the group, or to the process alone (alone). It is the tests' way to
+// see what is sent, and to let a process handle the group's SIGTERM before
+// anything more is sent. Set it before the process starts.
+var signalled func(s sig, alone bool)
+
+// signal sends s to the process's group, and to the process itself should
+// it have joined another group (Setpgid makes a group; it does not keep the
+// process in it): sigKill kills them, sigTerm asks them to end (a service's
+// stop). A SIGTERM reaches the process once: it is sent one of its own only
+// when it is no longer in the group, since a second, come after its handler
+// has put the default back while it cleans up, would end it before its
+// grace. One whose group cannot be read is sent none: unreaped, its pid
+// is still its own, so it has exited and needs none. A SIGKILL, which no
+// handler sees, goes to it either way. It is the one place proc signals a
+// process. os.ErrProcessDone once the process is reaped, or before it
+// exists.
+func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.reaped || cmd.Process == nil {
 		return os.ErrProcessDone
 	}
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	pid := cmd.Process.Pid
+	n := syscall.SIGKILL
+	if s == sigTerm {
+		n = syscall.SIGTERM
+	}
+	syscall.Kill(-pid, n)
+	if signalled != nil {
+		signalled(s, false)
+	}
+	if s == sigTerm {
+		if pgid, err := syscall.Getpgid(pid); err != nil || pgid == pid {
+			return nil
+		}
+	}
+	err := cmd.Process.Signal(n)
+	if signalled != nil {
+		signalled(s, true)
+	}
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	return nil
+}
+
+// members is the processes of cmd's process group that have not exited,
+// cmd's own left out, and known whether the group could be listed. It is
+// asked only before the reaping, while the exited process keeps the
+// group's id its own, so the answer is about this group and no later one;
+// the group is listed (groupMembers), never signalled, since a signal 0 to
+// it would reach the exited process itself, which stays in the group until
+// it is reaped.
+func (g *lifecycle) members(cmd *exec.Cmd) (pids []int, known bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reaped || cmd.Process == nil {
+		return nil, true
+	}
+	pids, err := groupMembers(cmd.Process.Pid, cmd.Process.Pid)
+	return pids, err == nil
+}
+
+// still is those of pids, members found before, that are still in cmd's
+// process group and have not exited, asked as members is.
+func (g *lifecycle) still(cmd *exec.Cmd, pids []int) []int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reaped || cmd.Process == nil {
+		return nil
+	}
+	return stillMembers(cmd.Process.Pid, pids)
 }
 
 // reap waits for the process (exec reaps it), after which no signal is sent.
@@ -49,8 +108,12 @@ func (g *lifecycle) reap(cmd *exec.Cmd) error {
 // process through the lifecycle, so never after the reaping.
 func attr(cmd *exec.Cmd, g *lifecycle) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return g.signal(cmd) }
+	cmd.Cancel = func() error { return g.signal(cmd, sigKill) }
 }
+
+// noServiceRunner is nil here: Serve runs a service. A test makes it the
+// refusal of a platform without a process group (run_other.go).
+var noServiceRunner = func() error { return nil }
 
 // group is the command's process group: its own pid (Setpgid).
 func group(cmd *exec.Cmd) int { return cmd.Process.Pid }
