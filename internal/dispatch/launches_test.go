@@ -448,7 +448,9 @@ func TestLaunchStartedOrFailedOnce(t *testing.T) {
 		t.Fatalf("an empty why: %q", w)
 	}
 
-	// The agents' shapes and bound, checked before anything is written.
+	// The agents' shapes and bound, checked before anything is written,
+	// their refusal kept by no receipt, so each record after it is looked
+	// at afresh.
 	fourth := mustLaunch(t, s, "l4", key, plan, "")
 	for _, bad := range []struct {
 		agents  []LaunchAgent
@@ -460,8 +462,11 @@ func TestLaunchStartedOrFailedOnce(t *testing.T) {
 	} {
 		rc, err := s.StartedLaunch(ctx, Op{}, fourth.ID, bad.agents)
 		want(t, rc, err, StatusFailed, bad.refusal)
-		if _, err := s.db.Exec("DELETE FROM ops WHERE actor = ? AND id = ?", ActorServer, fourth.ID+".started"); err != nil {
-			t.Fatal(err)
+		if rc.Repeat || rc.OpID != fourth.ID+".started" || launchOf(t, s, fourth.ID).State != LaunchPending {
+			t.Fatalf("bad agents %+v: %+v", bad.agents, rc)
+		}
+		if _, found, err := s.Receipt(ctx, ActorServer, fourth.ID+".started"); err != nil || found {
+			t.Fatalf("bad agents %+v left a receipt: %v %v", bad.agents, found, err)
 		}
 	}
 	// Twelve members at their bounds with versions at their escaped worst
@@ -484,6 +489,90 @@ func TestLaunchStartedOrFailedOnce(t *testing.T) {
 	want(t, rc, err, StatusFailed, RefusalNotFound)
 	if _, err := s.FailedLaunch(ctx, Op{}, "not an id", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an id of no shape: %v", err)
+	}
+}
+
+// A refused record of a launch's outcome never answers the next: a
+// revision expected is none of the outcome's (the operation keeps only
+// the display name), and agents refused are kept by no receipt, so the
+// valid record after either is done, the launch started, and a failure
+// recorded after it is refused, so a launch whose run exists is never
+// failed (which would free the run from the chain rule).
+func TestALaunchOutcomeRefusedFirstIsRecordedNext(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	plan := simplePlan(t, s, key)
+	agents := []LaunchAgent{{Member: "dev", Agent: "claude", Version: "2.1.304"}}
+
+	// A stale revision expected is not the outcome's to check.
+	stale := mustLaunch(t, s, "l1", key, plan, "")
+	rc, err := s.StartedLaunch(ctx, Op{Actor: "x", ID: "y", ExpectedRev: 7}, stale.ID, agents)
+	want(t, rc, err, StatusDone, "")
+	if rc.Repeat || launchOf(t, s, stale.ID).State != LaunchStarted {
+		t.Fatalf("a start with a revision expected: %+v", rc)
+	}
+	rc, err = s.StartedLaunch(ctx, Op{}, stale.ID, agents)
+	want(t, rc, err, StatusDone, "")
+	if !rc.Repeat {
+		t.Fatalf("the reconcile's record of the start: %+v", rc)
+	}
+	rc, err = s.FailedLaunch(ctx, Op{ExpectedRev: 7}, stale.ID, "reconcile")
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if launchOf(t, s, stale.ID).State != LaunchStarted {
+		t.Fatal("a failure after the start failed the launch")
+	}
+	failed := mustLaunch(t, s, "l2", key, plan, "")
+	rc, err = s.FailedLaunch(ctx, Op{ExpectedRev: 7}, failed.ID, "no agent")
+	want(t, rc, err, StatusDone, "")
+	if launchOf(t, s, failed.ID).State != LaunchFailed {
+		t.Fatal("a failure with a revision expected was not recorded")
+	}
+
+	// Bad agents first, then the good ones: done, and the start stands.
+	bad := mustLaunch(t, s, "l3", key, plan, "")
+	rc, err = s.StartedLaunch(ctx, Op{}, bad.ID, []LaunchAgent{{Member: "Dev", Agent: "claude"}})
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	rc, err = s.StartedLaunch(ctx, Op{}, bad.ID, agents)
+	want(t, rc, err, StatusDone, "")
+	if rc.Repeat {
+		t.Fatalf("the start after bad agents: %+v", rc)
+	}
+	got := launchOf(t, s, bad.ID)
+	if got.State != LaunchStarted || len(got.Agents) != 1 || got.Agents[0] != agents[0] {
+		t.Fatalf("the launch started after bad agents: %+v", got.LaunchSummary)
+	}
+	rc, err = s.FailedLaunch(ctx, Op{}, bad.ID, "reconcile")
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if launchOf(t, s, bad.ID).State != LaunchStarted {
+		t.Fatal("a failure after the start failed the launch")
+	}
+}
+
+// A launch's outcome is recorded whatever became of its ticket and its
+// project since the launch: one launch is recorded started and the other
+// failed after the ticket is deleted and the project archived, as the
+// reconcile at start must.
+func TestALaunchOutcomeOutlivesItsTicket(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	plan := simplePlan(t, s, key)
+	started := mustLaunch(t, s, "l1", key, plan, "")
+	failed := mustLaunch(t, s, "l2", key, plan, "")
+	rc, err := s.DeleteTicket(ctx, testOp("del"), key)
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.ArchiveProject(ctx, testOp("arch"), "CND")
+	want(t, rc, err, StatusDone, "")
+
+	agents := []LaunchAgent{{Member: "dev", Agent: "claude", Version: "2.1.304"}}
+	rc, err = s.StartedLaunch(ctx, Op{}, started.ID, agents)
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.FailedLaunch(ctx, Op{}, failed.ID, "the server stopped")
+	want(t, rc, err, StatusDone, "")
+	if got := launchOf(t, s, started.ID); got.State != LaunchStarted || len(got.Agents) != 1 || got.Agents[0] != agents[0] {
+		t.Fatalf("the launch started after its ticket went: %+v", got.LaunchSummary)
+	}
+	if got := launchOf(t, s, failed.ID); got.State != LaunchFailed || got.Why != "the server stopped" {
+		t.Fatalf("the launch failed after its ticket went: %+v", got.LaunchSummary)
 	}
 }
 

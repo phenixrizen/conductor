@@ -390,41 +390,72 @@ type launchIDArgs struct {
 // identity probe reported (at most MaxPlanAgents, each a member's name and
 // an agent's id, a version past MaxLaunchAgentVersion bytes cut). The
 // operation is the actor server's under the op id <id>.started, whatever
-// op names (its display name is kept), so it is the same whoever records
-// it: the first commit stands and the next is its receipt's repeat. A
-// launch started or failed already is invalid; none is not_found. It is
-// recorded whatever became of the ticket and its project since, since
-// the run exists. ErrNotFound for an id not of an id's shape.
+// op names (its display name alone is kept, never a revision expected),
+// so it is the same whoever records it: the first commit stands and the
+// next is its receipt's repeat. A launch started or failed already is
+// invalid; none is not_found. Agents refused (their shapes, their bound)
+// are answered failed with no receipt kept (unkeptRefusal), so a later
+// record with good agents is done: the only refusals the op id keeps are
+// not_found and a launch no longer pending, which no later record can
+// change. It is recorded whatever became of the ticket and its project
+// since, since the run exists. ErrNotFound for an id not of an id's
+// shape.
 func (s *Store) StartedLaunch(ctx context.Context, op Op, id string, agents []LaunchAgent) (Receipt, error) {
 	if !ValidID(id) {
 		return Receipt{}, ErrNotFound
 	}
-	op.Actor, op.ID = ActorServer, id+".started"
-	return s.Apply(ctx, op, IntentLaunchStarted, launchIDArgs{ID: id}, func(t *tx) error {
+	op = outcomeOp(op, id+".started")
+	rc, err := s.Apply(ctx, op, IntentLaunchStarted, launchIDArgs{ID: id}, func(t *tx) error {
 		base, before, err := t.pendingLaunch(id)
 		if err != nil {
 			return err
 		}
 		value, err := launchAgentsValue(agents)
 		if err != nil {
+			var ref *Refusal
+			if errors.As(err, &ref) {
+				return unkeptRefusal{ref}
+			}
 			return err
 		}
 		return t.setScalars("launches", base, before, []fieldValue{{"state", LaunchStarted}, {"started_at", stamp(t.now)}, {"agents", value}})
 	})
+	var unkept unkeptRefusal
+	if errors.As(err, &unkept) {
+		r := unkept.ref
+		return fitWords(Receipt{OpID: op.ID, Intent: IntentLaunchStarted, Status: StatusFailed, Refusal: r.Code, Error: words(r.Words), Missing: r.Missing, Key: r.Key}), nil
+	}
+	return rc, err
 }
+
+// outcomeOp is the operation of a launch's outcome under the op id: the
+// actor server's, with op's display name and nothing else of it, so no
+// record can bring a refusal (a revision expected) its op id would keep
+// for every later record.
+func outcomeOp(op Op, id string) Op {
+	return Op{Actor: ActorServer, ID: id, By: op.By}
+}
+
+// unkeptRefusal is a refusal a launch's outcome gives that no receipt may
+// keep, since a later record of the outcome could be done: Apply takes it
+// for an error not the store's rules' (it has no Unwrap, so it is no
+// *Refusal) and writes nothing, and the recorder answers it failed.
+type unkeptRefusal struct{ ref *Refusal }
+
+func (u unkeptRefusal) Error() string { return u.ref.Error() }
 
 // FailedLaunch records the pending launch with the id failed
 // (launch.failed), with why, in at most MaxLaunchWhy characters (cut, its
 // control characters but newlines and tabs made spaces; empty is "the run
 // could not be started"): state failed and why. As StartedLaunch, the
 // operation is the actor server's under the op id <id>.failed, whatever
-// op names; a launch started or failed already is invalid; none is
-// not_found.
+// op names (its display name alone is kept); a launch started or failed
+// already is invalid; none is not_found.
 func (s *Store) FailedLaunch(ctx context.Context, op Op, id, why string) (Receipt, error) {
 	if !ValidID(id) {
 		return Receipt{}, ErrNotFound
 	}
-	op.Actor, op.ID = ActorServer, id+".failed"
+	op = outcomeOp(op, id+".failed")
 	return s.Apply(ctx, op, IntentLaunchFailed, launchIDArgs{ID: id}, func(t *tx) error {
 		base, before, err := t.pendingLaunch(id)
 		if err != nil {
@@ -435,19 +466,16 @@ func (s *Store) FailedLaunch(ctx context.Context, op Op, id, why string) (Receip
 }
 
 // pendingLaunch reads the launch with the id inside its outcome's
-// operation: not_found when there is none; the revision expected, the
-// launch's; invalid unless it is pending. It gives the base of its rows
-// (entity launch, its ticket and project) and its scalars as they are.
+// operation: not_found when there is none; invalid unless it is pending
+// (no revision is expected: outcomeOp names none). It gives the base of
+// its rows (entity launch, its ticket and project) and its scalars as
+// they are.
 func (t *tx) pendingLaunch(id string) (ChangeRow, []fieldValue, error) {
 	var ticketID, state string
-	var rev int64
-	switch err := t.tx.QueryRowContext(t.ctx, "SELECT ticket_id, state, rev FROM launches WHERE id = ?", id).Scan(&ticketID, &state, &rev); {
+	switch err := t.tx.QueryRowContext(t.ctx, "SELECT ticket_id, state FROM launches WHERE id = ?", id).Scan(&ticketID, &state); {
 	case isNoRows(err):
 		return ChangeRow{}, nil, refuse(RefusalNotFound, "no launch %s", id)
 	case err != nil:
-		return ChangeRow{}, nil, err
-	}
-	if err := t.expect(rev); err != nil {
 		return ChangeRow{}, nil, err
 	}
 	if state != LaunchPending {
