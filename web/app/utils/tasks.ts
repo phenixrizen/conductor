@@ -215,8 +215,9 @@ export function stepDuration(ms: number): string {
 /**
  * A receipt's outcome in words (EN1): `exited 0 in 4.2 s`, `exited 1 in 3.0 s`, `timed out after 60 s`, `ready after 3 tries`,
  * `not ready after 30 tries`, a service's `exited 0 after 12 s` or `ended after 12 s` (a signal: the tree's end stops it), `running
- * since 2m ago`, `starting`, `interrupted`, and `failed in 2.0 s (exited 0)` for a step that exited 0 with an error. The failure's
- * own words are the step's `error`, shown beside these.
+ * since 2m ago`, `starting`, `interrupted`, `failed in 2.0 s (exited 0)` for a step that exited 0 with an error, and `failed after
+ * 2.0 s` for one with no exit status and an error (a signal ended it, or it never started). The failure's own words are the step's
+ * `error`, shown beside these.
  */
 export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: Tone } {
   const tries = (n: number) => `${n} ${n === 1 ? 'try' : 'tries'}`
@@ -240,7 +241,9 @@ export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: T
     return { text: `exited ${s.exit} after ${d}`, tone: s.error ? 'error' : 'muted' }
   }
   if (s.timedOut) return { text: `timed out after ${d}`, tone: 'error' }
-  if (s.exit === undefined || s.exit < 0) return { text: s.error ? 'did not run' : `ended after ${d}`, tone: 'error' }
+  // No exit status: a signal ended it (it may have run a while and written output) or it never started, which the receipt does not
+  // tell apart; its error says which, so the words claim neither.
+  if (s.exit === undefined || s.exit < 0) return { text: s.error ? `failed after ${d}` : `ended after ${d}`, tone: 'error' }
   // A step that exited 0 and still failed (a check or verify step, or a setup step in a result's checkout, that changed tracked
   // files): its error says how, and it never reads as a success.
   if (s.exit === 0 && s.error) return { text: `failed in ${d} (exited 0)`, tone: 'error' }

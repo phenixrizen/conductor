@@ -149,7 +149,10 @@ describe('stepWords and the receipt helpers (EN1)', () => {
     [step({ exit: -1, timedOut: true, duration: 60_040 }), 'timed out after 60 s', 'error'],
     [step({ phase: 'check', id: 'unit', exit: 0, duration: 125_000 }), 'exited 0 in 2 min 5 s', 'success'],
     [step({ phase: 'prerequisite', id: 'node', exit: 127, duration: 12 }), 'exited 127 in 0.0 s', 'error'],
-    [step({ exit: -1, error: 'could not start: no such file' }), 'did not run', 'error'],
+    [step({ exit: -1, error: 'could not start: no such file' }), 'failed after 0.0 s', 'error'],
+    // A command a signal ended after it ran a while and wrote output (Codex round 3 on #502): it ran, so never "did not run".
+    [step({ exit: -1, duration: 8300, logBytes: 2048, logSha256: 'ab'.repeat(32), error: 'setup deps was ended by a signal (killed)' }), 'failed after 8.3 s', 'error'],
+    [step({ phase: 'check', id: 'unit', exit: -1, duration: 61_000, error: 'ended by a signal (terminated)' }), 'failed after 61 s', 'error'],
     [step({ phase: 'ready', id: 'up', exit: 0, tries: 3, duration: 4000 }), 'ready after 3 tries', 'success'],
     [step({ phase: 'ready', id: 'up', exit: 0, tries: 1, duration: 10 }), 'ready after 1 try', 'success'],
     [step({ phase: 'ready', id: 'up', exit: 7, tries: 30, timedOut: true, duration: 60_000 }), 'not ready after 30 tries', 'error'],
