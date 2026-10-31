@@ -19,13 +19,10 @@ function goBack() {
   if (typeof from === 'string' && (from === list || from.startsWith(`${list}?`))) router.back()
   else void router.push(list)
 }
-defineShortcuts({
-  escape: () => {
-    // A dialog's, a menu's or a list of choices' Escape is its own (a picker's: the status, the owner…); a tooltip shown is none of them.
-    if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return
-    goBack()
-  },
-})
+// A dialog's, a menu's or a list of choices' Escape is its own (a picker's: the status, the owner…): the page's key is not there while
+// one is open, so the key reaches it whole (useOverlaid).
+const overlaid = useOverlaid()
+defineShortcuts(computed(() => (overlaid.value ? {} : { escape: goBack })))
 
 const copy = useCopy()
 const palette = usePalette()
