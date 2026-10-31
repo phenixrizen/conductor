@@ -43,11 +43,15 @@ bound, and `scripts/preflight_test.py` holds them to it.
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
 of a module of the `rocksolidlabs` organization other than this one
-(`private-module`), none required or replaced in `go.mod` (`go-mod`), no
-build constraint naming anything but a platform, a Go version or a test tier
-(`feature-tag`), and nothing but the standard library and `ext`'s own
-packages imported under `ext/` (`ext-std`). A problem names its rule, file
-and line; the race suite runs the same test, so CI's go job fails on it
+(`private-module`), none required or replaced in `go.mod` or a root
+`go.work`, and no other module's tree brought in by a local replace or a
+workspace `use` (`go-mod`), no build constraint naming anything but a
+platform, a Go version or a test tier (`feature-tag`), nothing but the
+standard library and `ext`'s own packages imported under `ext/` (`ext-std`),
+and no import of this module's package from a directory the lint does not
+read, such as `testdata`, a `_` directory or a symlinked one
+(`unread-package`; a symlinked `.go` file is read where its link stands). A
+problem names its rule, file and line; the race suite runs the same test, so CI's go job fails on it
 twice over.
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an

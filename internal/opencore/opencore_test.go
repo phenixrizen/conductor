@@ -127,9 +127,11 @@ func TestFeatureTagRule(t *testing.T) {
 	}
 }
 
-// TestGoModRule: go.mod's require, replace (either side) and tool
-// directives, on a line or in a block, quoted or not; this module itself,
-// another organization and a comment are not problems.
+// TestGoModRule: go.mod's require, replace (either side, and a directory
+// on the right whatever the module) and tool directives, on a line or in a
+// block, quoted or not; this module itself (replaced by a directory too,
+// which the go command ignores), another organization and a comment are
+// not problems.
 func TestGoModRule(t *testing.T) {
 	mod := `module github.com/rocksolidlabs/conductor // the module
 
@@ -149,12 +151,12 @@ replace (
 tool github.com/rocksolidlabs/conductor-cloud/cmd/gen
 require(github.com/rocksolidlabs/inline v0.1.0)
 `
-	problems, modulePath, err := checkGoMod([]byte(mod))
+	problems, file, err := checkGoMod("go.mod", []byte(mod))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modulePath != Module {
-		t.Errorf("module = %q, want %q", modulePath, Module)
+	if file.module != Module {
+		t.Errorf("module = %q, want %q", file.module, Module)
 	}
 	var got []string
 	for _, p := range problems {
@@ -166,6 +168,7 @@ require(github.com/rocksolidlabs/inline v0.1.0)
 	want := []string{
 		"go.mod:5: go-mod: require github.com/rocksolidlabs/conductor-premium",
 		"go.mod:8: go-mod: require github.com/rocksolidlabs/quoted",
+		"go.mod:13: go-mod: replace github.com/rocksolidlabs/boxcar with the directory ./boxcar",
 		"go.mod:13: go-mod: replace github.com/rocksolidlabs/boxcar",
 		"go.mod:14: go-mod: replace github.com/RockSolidLabs/websocket",
 		"go.mod:16: go-mod: tool github.com/rocksolidlabs/conductor-cloud/cmd/gen",
@@ -173,6 +176,120 @@ require(github.com/rocksolidlabs/inline v0.1.0)
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("problems =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestGoWorkRule: a go.work beside go.mod is read with go.mod's rule: a
+// use of any directory but the root's and a replace (either side, or a
+// directory on the right) are problems in go.work; without a go.work
+// nothing is reported for it.
+func TestGoWorkRule(t *testing.T) {
+	work := `go 1.26.0
+
+use .
+use ./
+use (
+	.
+	../conductor-premium
+)
+replace github.com/coder/websocket => github.com/rocksolidlabs/websocket v1.8.16
+replace github.com/coder/websocket v1.8.15 => /src/websocket
+`
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"go.mod":  "module " + Module + "\n",
+		"go.work": work,
+		"x.go":    "package x\n",
+	})
+	problems, err := Check(dir)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	var got []string
+	for _, p := range problems {
+		got = append(got, p.String()[:strings.Index(p.String(), ",")])
+	}
+	want := []string{
+		"go.work:7: go-mod: use ../conductor-premium",
+		"go.work:9: go-mod: replace github.com/rocksolidlabs/websocket",
+		"go.work:10: go-mod: replace github.com/coder/websocket with the directory /src/websocket",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("problems =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestExtStdKnowsADotlessModule: an import under ext/ with no dot in its
+// first element is the standard library's only when no module go.mod or
+// go.work requires or replaces holds it; helper, replaced by another
+// module, and tools/gen, required, are refused, and net/http is not.
+func TestExtStdKnowsADotlessModule(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"go.mod":   "module " + Module + "\n\nrequire (\n\thelper v0.0.0\n\ttools v0.0.0\n)\n\nreplace helper => example.com/helper v1.0.0\n",
+		"go.work":  "go 1.26.0\n\nuse .\n\nreplace tools => example.com/tools v1.0.0\n",
+		"ext/x.go": "package ext\n\nimport (\n\t\"net/http\"\n\t\"helper\"\n\t\"tools/gen\"\n\t\"helpers\"\n)\n",
+	})
+	got := rules(t, dir)
+	want := []string{"ext/x.go:5: ext-std", "ext/x.go:6: ext-std"}
+	if !slices.Equal(got, want) {
+		t.Errorf("problems = %q, want %q (helper and tools/gen are modules; net/http and helpers are in none)", got, want)
+	}
+}
+
+// TestCheckReadsWhatTheBuildCompiles: the go command compiles a package of
+// the module that a file imports from a directory the walk skips, a .go
+// file that is a symlink, and a package reached through a symlinked
+// directory. A linked .go file is read where its link stands; an import
+// into a skipped directory, another module's among them, is reported.
+func TestCheckReadsWhatTheBuildCompiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"go.mod":                "module " + Module + "\n",
+		"ext/local/local.go":    "package local\n\nimport (\n\t_ \"" + Module + "/ext/_impl\"\n\t_ \"" + Module + "/ext/testdata/t\"\n\t_ \"" + Module + "/ext\"\n)\n",
+		"ext/ext.go":            "package ext\n",
+		"ext/_impl/impl.go":     "package impl\n\nimport _ \"" + Module + "/internal/session\"\n",
+		"ext/testdata/t/t.go":   "//go:build premium\n\npackage t\n",
+		"internal/api/api.go":   "package api\n\nimport (\n\t_ \"" + Module + "/internal/linked\"\n\t_ \"" + Module + "/nested/x\"\n\t_ \"" + Module + "/internal/session\"\n)\n",
+		"internal/session/s.go": "package session\n",
+		"nested/go.mod":         "module " + Module + "/nested\n",
+		"nested/x/x.go":         "//go:build premium\n\npackage x\n",
+		"testdata/gate.go":      "//go:build premium\n\npackage api\n",
+		"testdata/plant.go":     "package ext\n\nimport _ \"" + Module + "/internal/session\"\n",
+		"testdata/pkg/p.go":     "//go:build premium\n\npackage linked\n",
+		"testdata/notes.txt":    "not Go\n",
+	})
+	for link, target := range map[string]string{
+		"internal/api/gate.go": "../../testdata/gate.go",
+		"ext/plant.go":         "../testdata/plant.go",
+		"internal/linked":      "../testdata/pkg",
+		"internal/api/notes":   "../../testdata/notes.txt",
+		"internal/api/gone":    "../../testdata/gone",
+	} {
+		if err := os.Symlink(target, filepath.Join(dir, filepath.FromSlash(link))); err != nil {
+			t.Skipf("symlinks: %v", err)
+		}
+	}
+	got := rules(t, dir)
+	want := []string{
+		"ext/local/local.go:4: unread-package",
+		"ext/local/local.go:5: unread-package",
+		"ext/plant.go:3: ext-std",
+		"internal/api/api.go:4: unread-package",
+		"internal/api/api.go:5: unread-package",
+		"internal/api/gate.go:1: feature-tag",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("problems = %q, want %q", got, want)
+	}
+
+	// A linked .go file whose target is gone cannot be read: an error, as
+	// a file that does not parse is.
+	if err := os.Symlink("../../testdata/gone.go", filepath.Join(dir, "internal", "api", "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+	if problems, err := Check(dir); err == nil {
+		t.Errorf("Check with a dangling .go link = %q, nil; want an error", problems)
 	}
 }
 

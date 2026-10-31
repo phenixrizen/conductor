@@ -9,7 +9,11 @@
 // The rules read each file's imports and build constraints only, with
 // go/parser, whatever the file's tags: a file a plain build leaves out is
 // read as well as one it compiles, which no build of the module and no
-// text search would do. The package imports the standard library only.
+// text search would do. What the build would compile from a place the walk
+// does not read is reported instead: an import of this module's package
+// from a skipped directory, and another module's tree brought in by a
+// local replace or a workspace. The package imports the standard library
+// only.
 package opencore
 
 import (
@@ -38,8 +42,10 @@ const (
 	// RulePrivateModule: a file imports a package of a module of the
 	// rocksolidlabs organization other than Module.
 	RulePrivateModule = "private-module"
-	// RuleGoMod: go.mod requires, replaces or names as a tool such a
-	// module.
+	// RuleGoMod: go.mod or a go.work at the root requires, replaces or
+	// names as a tool such a module, replaces a module with a local
+	// directory, or (go.work) uses a directory other than the root: the
+	// last two build another module's tree, which the walk does not read.
 	RuleGoMod = "go-mod"
 	// RuleFeatureTag: a build constraint names a tag that is not a
 	// platform (a GOOS or GOARCH the toolchain knows, unix), a compiler or
@@ -48,6 +54,12 @@ const (
 	// RuleExtStd: a file under ext/ imports anything but the standard
 	// library and ext's own packages.
 	RuleExtStd = "ext-std"
+	// RuleUnreadPackage: a file imports a package of this module from a
+	// directory the walk does not read (testdata, node_modules, vendor,
+	// internal/web/dist, a name beginning with "." or "_", another
+	// module's directory, a symlinked directory), which the build compiles
+	// all the same.
+	RuleUnreadPackage = "unread-package"
 )
 
 // Problem is one breach of a rule: the rule, the file (a slash path
@@ -98,27 +110,52 @@ func allowedTag(tag string) bool {
 // them) and the package managers' trees.
 var skipDirs = []string{"testdata", "node_modules", "vendor"}
 
-// Check reads go.mod and every .go file of the module rooted at root and
-// returns the problems it finds, ordered by file, line and rule. It skips
-// the directories the go command and the package managers own (testdata,
-// node_modules, vendor), the generated web bundle (internal/web/dist),
-// every directory whose name begins with "." or "_", and every directory
-// with a go.mod of its own (another module: a git worktree under .claude/
-// is both). root's go.mod must name Module. An error is a file Check
-// could not read or parse, never a problem.
+// ownImport is a file's import of a package of this module, kept until
+// the walk has seen every directory it skips.
+type ownImport struct {
+	file string
+	line int
+	path string
+}
+
+// Check reads go.mod, a go.work beside it if there is one, and every .go
+// file of the module rooted at root, a symlinked one as if it stood where
+// its link does, and returns the problems it finds, ordered by file, line
+// and rule. It does not read the directories the go command and the
+// package managers own (testdata, node_modules, vendor), the generated web
+// bundle (internal/web/dist), any directory whose name begins with "." or
+// "_", any directory with a go.mod of its own (another module: a git
+// worktree under .claude/ is both) or a symlinked directory; an import of
+// this module's package from one of them is a problem. root's go.mod must
+// name Module. An error is a file Check could not read or parse, never a
+// problem.
 func Check(root string) ([]Problem, error) {
 	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		return nil, err
 	}
-	problems, modulePath, err := checkGoMod(mod)
+	problems, gomod, err := checkGoMod("go.mod", mod)
 	if err != nil {
 		return nil, err
 	}
-	if modulePath != Module {
-		return nil, fmt.Errorf("opencore: %s: go.mod names module %q, not %q", root, modulePath, Module)
+	if gomod.module != Module {
+		return nil, fmt.Errorf("opencore: %s: go.mod names module %q, not %q", root, gomod.module, Module)
+	}
+	modules := gomod.modules
+	switch work, err := os.ReadFile(filepath.Join(root, "go.work")); {
+	case err == nil:
+		found, gowork, err := checkGoMod("go.work", work)
+		if err != nil {
+			return nil, err
+		}
+		problems = append(problems, found...)
+		modules = append(modules, gowork.modules...)
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, err
 	}
 	fset := token.NewFileSet()
+	var unread []string
+	var own []ownImport
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -135,24 +172,57 @@ func Check(root string) ([]Problem, error) {
 			name := d.Name()
 			if slices.Contains(skipDirs, name) || strings.HasPrefix(name, ".") ||
 				strings.HasPrefix(name, "_") || rel == "internal/web/dist" {
+				unread = append(unread, rel)
 				return filepath.SkipDir
 			}
 			if _, err := os.Lstat(filepath.Join(p, "go.mod")); err == nil {
+				unread = append(unread, rel)
 				return filepath.SkipDir
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() || !strings.HasSuffix(d.Name(), ".go") {
+		isGo := strings.HasSuffix(d.Name(), ".go")
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			// The go command follows a link: a linked .go file is compiled
+			// as one of its directory's, and an import reaches a package
+			// through a linked directory, which WalkDir does not enter.
+			st, err := os.Stat(p)
+			if err != nil {
+				if isGo {
+					return fmt.Errorf("opencore: %s: %w", rel, err)
+				}
+				return nil
+			}
+			if st.IsDir() {
+				unread = append(unread, rel)
+				return nil
+			}
+			if !st.Mode().IsRegular() || !isGo {
+				return nil
+			}
+		case !d.Type().IsRegular() || !isGo:
 			return nil
 		}
-		found, err := checkFile(fset, p, rel)
+		found, imports, err := checkFile(fset, p, rel, modules)
 		problems = append(problems, found...)
+		own = append(own, imports...)
 		return err
 	})
 	if err != nil {
 		return nil, err
+	}
+	for _, imp := range own {
+		sub := strings.TrimPrefix(strings.TrimPrefix(imp.path, Module), "/")
+		for _, dir := range unread {
+			if sub == dir || strings.HasPrefix(sub, dir+"/") {
+				problems = append(problems, Problem{RuleUnreadPackage, imp.file, imp.line,
+					fmt.Sprintf("imports %s, from %s, which the lint does not read and the build compiles", imp.path, dir)})
+				break
+			}
+		}
 	}
 	slices.SortStableFunc(problems, func(a, b Problem) int {
 		if c := strings.Compare(a.File, b.File); c != 0 {
@@ -161,17 +231,21 @@ func Check(root string) ([]Problem, error) {
 		if a.Line != b.Line {
 			return a.Line - b.Line
 		}
-		return strings.Compare(a.Rule, b.Rule)
+		if c := strings.Compare(a.Rule, b.Rule); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Detail, b.Detail)
 	})
 	return problems, nil
 }
 
 // checkFile applies the file rules to one .go file, rel its slash path
-// under the root.
-func checkFile(fset *token.FileSet, p, rel string) ([]Problem, error) {
+// under the root and modules the module paths go.mod and go.work name; it
+// returns the file's imports of this module's packages too.
+func checkFile(fset *token.FileSet, p, rel string, modules []string) ([]Problem, []ownImport, error) {
 	f, err := parser.ParseFile(fset, p, nil, parser.ImportsOnly|parser.ParseComments)
 	if err != nil {
-		return nil, fmt.Errorf("opencore: %w", err)
+		return nil, nil, fmt.Errorf("opencore: %w", err)
 	}
 	var problems []Problem
 	// The build constraints are the //go:build and // +build lines before
@@ -202,22 +276,26 @@ func checkFile(fset *token.FileSet, p, rel string) ([]Problem, error) {
 		}
 	}
 	inExt := rel == "ext" || strings.HasPrefix(rel, "ext/")
+	var own []ownImport
 	for _, spec := range f.Imports {
 		imp, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {
-			return nil, fmt.Errorf("opencore: %s: import %s: %w", fset.Position(spec.Pos()), spec.Path.Value, err)
+			return nil, nil, fmt.Errorf("opencore: %s: import %s: %w", fset.Position(spec.Pos()), spec.Path.Value, err)
 		}
 		line := fset.Position(spec.Pos()).Line
+		if imp == Module || strings.HasPrefix(imp, Module+"/") {
+			own = append(own, ownImport{rel, line, imp})
+		}
 		if privateModule(imp) {
 			problems = append(problems, Problem{RulePrivateModule, rel, line,
 				fmt.Sprintf("imports %s, of a module of the rocksolidlabs organization other than %s", imp, Module)})
 		}
-		if inExt && !standard(imp) && imp != Module+"/ext" && !strings.HasPrefix(imp, Module+"/ext/") {
+		if inExt && !standard(imp, modules) && imp != Module+"/ext" && !strings.HasPrefix(imp, Module+"/ext/") {
 			problems = append(problems, Problem{RuleExtStd, rel, line,
 				fmt.Sprintf("imports %s: ext/ takes only the standard library and ext's own packages", imp)})
 		}
 	}
-	return problems, nil
+	return problems, own, nil
 }
 
 // tags lists the tags a build constraint names, each once, in order.
@@ -259,21 +337,42 @@ func privateModule(p string) bool {
 }
 
 // standard reports whether an import path is the standard library's: its
-// first element has no dot, as the go command decides it. "C", cgo's
-// pseudo-package, is not.
-func standard(p string) bool {
+// first element has no dot, as the go command decides it, and it is in no
+// module that go.mod or go.work names. A module whose path has no dot
+// cannot be downloaded, so the main module or the workspace must replace
+// it, and both name it: modules lists every path they require or replace.
+// "C", cgo's pseudo-package, is not.
+func standard(p string, modules []string) bool {
 	first, _, _ := strings.Cut(p, "/")
-	return p != "C" && first != "" && !strings.Contains(first, ".")
+	if p == "C" || first == "" || strings.Contains(first, ".") {
+		return false
+	}
+	for _, m := range modules {
+		if p == m || strings.HasPrefix(p, m+"/") {
+			return false
+		}
+	}
+	return true
 }
 
-// checkGoMod applies the go-mod rule to go.mod's text and returns its
-// problems and the module path it names; an error is a line too long to
-// read. It reads the directives the go
-// command writes, one per line or in a parenthesised block: require,
-// replace (either side of the arrow) and tool.
-func checkGoMod(data []byte) ([]Problem, string, error) {
+// modFile is what checkGoMod reads from a go.mod or go.work besides its
+// problems: the module path go.mod names, and every module path it
+// requires or replaces.
+type modFile struct {
+	module  string
+	modules []string
+}
+
+// checkGoMod applies the go-mod rule to the text of go.mod or go.work
+// (name) and returns its problems and what it names; an error is a line
+// too long to read. It reads the directives the go command writes, one
+// per line or in a parenthesised block: require, replace (either side of
+// the arrow; a directory on the right, unless it replaces Module itself),
+// tool and use (a directory other than the root's).
+func checkGoMod(name string, data []byte) ([]Problem, modFile, error) {
 	var problems []Problem
-	var modulePath, block string
+	var file modFile
+	var block string
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for n := 1; sc.Scan(); n++ {
@@ -299,29 +398,58 @@ func checkGoMod(data []byte) ([]Problem, string, error) {
 		if len(fields) == 0 {
 			continue
 		}
+		report := func(detail string) {
+			problems = append(problems, Problem{RuleGoMod, name, n, detail})
+		}
 		var paths []string
 		switch verb {
 		case "module":
-			modulePath = unquote(fields[0])
+			file.module = unquote(fields[0])
 		case "require", "tool":
-			paths = append(paths, fields[0])
+			paths = append(paths, unquote(fields[0]))
+			if verb == "require" {
+				file.modules = append(file.modules, unquote(fields[0]))
+			}
 		case "replace":
-			paths = append(paths, fields[0])
+			old := unquote(fields[0])
+			paths = append(paths, old)
+			file.modules = append(file.modules, old)
 			if i := slices.Index(fields, "=>"); i >= 0 && i+1 < len(fields) {
-				paths = append(paths, fields[i+1])
+				// The main module is never replaced (the go command ignores
+				// it), so only another module's directory is reported.
+				if target := unquote(fields[i+1]); localPath(target) {
+					if old == Module {
+						continue
+					}
+					report(fmt.Sprintf("replace %s with the directory %s, another module's tree, which the lint does not read", old, target))
+				} else {
+					paths = append(paths, target)
+					file.modules = append(file.modules, target)
+				}
+			}
+		case "use":
+			if dir := unquote(fields[0]); filepath.Clean(filepath.FromSlash(dir)) != "." {
+				report(fmt.Sprintf("use %s, another module's tree, which the lint does not read", dir))
 			}
 		}
 		for _, p := range paths {
-			if p = unquote(p); privateModule(p) {
-				problems = append(problems, Problem{RuleGoMod, "go.mod", n,
-					fmt.Sprintf("%s %s, a module of the rocksolidlabs organization other than %s", verb, p, Module)})
+			if privateModule(p) {
+				report(fmt.Sprintf("%s %s, a module of the rocksolidlabs organization other than %s", verb, p, Module))
 			}
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, "", fmt.Errorf("opencore: go.mod: %w", err)
+		return nil, modFile{}, fmt.Errorf("opencore: %s: %w", name, err)
 	}
-	return problems, modulePath, nil
+	return problems, file, nil
+}
+
+// localPath reports whether a replacement is a directory rather than a
+// module path, as the go command tells them apart: a path beginning with
+// ./ or ../ (or .\ and ..\), "." or "..", or an absolute path.
+func localPath(p string) bool {
+	return p == "." || p == ".." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") ||
+		strings.HasPrefix(p, `.\`) || strings.HasPrefix(p, `..\`) || filepath.IsAbs(p) || strings.HasPrefix(p, "/")
 }
 
 // unquote takes the quotes off a go.mod token written as a Go string, and
