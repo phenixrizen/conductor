@@ -305,9 +305,22 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 	go func() {
 		defer close(l.eof)
 		io.Copy(sink, r)
+		if outputRead != nil {
+			outputRead()
+		}
 	}()
 	return l, res, true
 }
+
+// outputRead, when set, is called once the output's last byte is read and
+// before its end is told (launched.eof): the tests' way to have the end
+// come late, as it does on a loaded machine. Set it before the process
+// starts.
+var outputRead func()
+
+// settled, when set, is told what settle said of the output (held) once
+// it returns, before end kills the group. Set it before the process starts.
+var settled func(held bool)
 
 // end waits for the launched command's exit, ends what it left in its
 // group, reaps it and reads what became of it: the pipe given holdGrace to
@@ -326,6 +339,9 @@ func (l *launched) end(ctx context.Context) Result {
 	held := false
 	if watchErr == nil {
 		held = l.settle(ctx)
+		if settled != nil {
+			settled(held)
+		}
 	}
 	l.g.signal(l.cmd, sigKill)
 	err := l.wait()

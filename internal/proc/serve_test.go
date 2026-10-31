@@ -388,6 +388,60 @@ func TestStopGivesTheGraceToTheGroupNotItsFirstProcess(t *testing.T) {
 	})
 }
 
+// The output's end may be read after the last of a stopped group is gone:
+// on a loaded machine the group's listing, which reads every process's
+// stat, can outlast a member's shutdown, and the goroutine that reads the
+// output can be late to its end (#281: a member that had finished its
+// shutdown, the output closed, was read as one that held it, Killed). With
+// none of the group left, nothing of it held the output, whenever its end
+// is read. The end is held back here (outputRead) until settle has said
+// what it saw (settled), so it comes after the group is known gone, for a
+// member the listing finds and that ends later, and for one gone before
+// the listing.
+func TestAStoppedGroupsOutputReadLateIsNotHeld(t *testing.T) {
+	for _, tc := range []struct{ name, shutdown string }{{"a member that ends after the listing", "sleep 1; "}, {"a member gone before the listing", ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortGrace(t, time.Hour)
+			said := make(chan struct{})
+			var held atomic.Bool
+			settled = func(h bool) {
+				held.Store(h)
+				close(said)
+			}
+			var late atomic.Bool
+			outputRead = func() {
+				select {
+				case <-said:
+				case <-time.After(10 * time.Second):
+					late.Store(true)
+				}
+			}
+			t.Cleanup(func() { settled, outputRead = nil, nil })
+			dir := t.TempDir()
+			member := `trap '` + tc.shutdown + `echo done > done; exit 0' TERM; echo $$ > child; while :; do sleep 0.05; done`
+			svc := serve(t, dir, `sh -c "$1" & echo $$ > pid; wait`, func(s *Spec) { s.Argv = append(s.Argv, "sh", member) })
+			pid, child := pidFile(t, filepath.Join(dir, "pid")), pidFile(t, filepath.Join(dir, "child"))
+			if err := svc.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if late.Load() {
+				t.Fatal("settle had not returned 10 s after the output's last byte was read")
+			}
+			if b, err := os.ReadFile(filepath.Join(dir, "done")); err != nil || string(b) != "done\n" {
+				t.Fatalf("the member was killed before it finished its shutdown: %q %v", b, err)
+			}
+			if res := svc.Result(); held.Load() || res.Signal != "terminated" || res.Exit != -1 || res.Killed || res.Err != "" {
+				t.Fatalf("held %v: %+v", held.Load(), res)
+			}
+			for _, p := range []int{pid, child} {
+				if !gone(t, p, 3*time.Second) {
+					t.Fatalf("%d outlived the stop", p)
+				}
+			}
+		})
+	}
+}
+
 // Stop may be called from more than one goroutine at once: each returns
 // once the service has ended, and it ends once.
 func TestStopFromManyGoroutines(t *testing.T) {
@@ -497,30 +551,37 @@ func TestServeIsRefusedWhereNoServiceRunnerIs(t *testing.T) {
 }
 
 // A process that left the service's group is not the service's: its stop
-// leaves it alone, as Run does (TestRunLeavesAloneAChildThatLeftTheGroup).
+// leaves it alone, as Run does (TestRunLeavesAloneAChildThatLeftTheGroup),
+// whether it redirected its output or holds the service's. One that holds
+// it is no member of the group, gone once the first process has ended: the
+// output is given WaitDelay after the reaping, as Run gives it, and the
+// result says what holds it, not that the group's kill took it (Killed).
 func TestAServicesStopLeavesAloneWhatLeftTheGroup(t *testing.T) {
-	shortGrace(t, time.Hour)
-	dir := t.TempDir()
-	svc := serve(t, dir, `"$0" -test.run='^TestHelperLeavesTheGroup$' >/dev/null 2>&1 & echo $! > child; echo $$ > pid; wait`, func(s *Spec) {
-		s.Argv = append(s.Argv, os.Args[0])
-		s.Env = map[string]string{"PROC_HELPER": "setsid"}
-	})
-	pidFile(t, filepath.Join(dir, "pid"))
-	child := pidFile(t, filepath.Join(dir, "child"))
-	// The helper writes "ready" once it has left the group.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the helper did not leave the group")
-		}
-		time.Sleep(10 * time.Millisecond)
+	for _, tc := range []struct {
+		name, out string
+		holds     bool
+	}{{"its output redirected", " >/dev/null 2>&1", false}, {"holding the service's output", "", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortGrace(t, time.Hour)
+			dir := t.TempDir()
+			svc := serve(t, dir, `"$0" -test.run='^TestHelperLeavesTheGroup$'`+tc.out+` & echo $! > child; echo $$ > pid; wait`, func(s *Spec) {
+				s.Argv = append(s.Argv, os.Args[0])
+				s.Env = map[string]string{"PROC_HELPER": "setsid"}
+			})
+			pidFile(t, filepath.Join(dir, "pid"))
+			child := pidFile(t, filepath.Join(dir, "child"))
+			t.Cleanup(func() { syscall.Kill(child, syscall.SIGKILL) })
+			// The helper writes "ready" once it has left the group.
+			if !appears(filepath.Join(dir, "ready"), 10*time.Second) {
+				t.Fatal("the helper did not leave the group")
+			}
+			svc.Stop(context.Background())
+			if err := syscall.Kill(child, 0); err != nil {
+				t.Fatalf("the child that left the group was ended with the service: %v", err)
+			}
+			if res := svc.Result(); tc.holds && (res.Killed || !strings.Contains(res.Err, "left the group")) {
+				t.Fatalf("%+v", res)
+			}
+		})
 	}
-	svc.Stop(context.Background())
-	if err := syscall.Kill(child, 0); err != nil {
-		t.Fatalf("the child that left the group was ended with the service: %v", err)
-	}
-	syscall.Kill(child, syscall.SIGKILL)
 }
