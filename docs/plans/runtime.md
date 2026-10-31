@@ -110,7 +110,7 @@ session or a run starts are few and known:
 After this item:
 
 - `ext.Runtime` is the one interface behind all three: a terminal process
-  (`Start`), a bounded command (`Run`), a service (`Serve`), one try of a
+  (`StartTerminal`), a bounded command (`Run`), a service (`Serve`), one try of a
   probe (`Probe`), a port (`Port`), whether it runs a managed run
   (`Takes`), and its names (C1's `Name`, and `Where`). `ext/local`'s
   native Runtime is `main`'s code and takes every run.
@@ -170,7 +170,7 @@ type Runtime interface {
 	Provider // Name, as C1 declares it
 	Where() Where
 	Takes(ref ProcessRef) bool
-	Start(ctx context.Context, s TerminalSpec) (Terminal, error)
+	StartTerminal(ctx context.Context, s TerminalSpec) (Terminal, error)
 	Run(ctx context.Context, s CommandSpec) CommandResult
 	Serve(ctx context.Context, s CommandSpec) (ServiceProcess, error)
 	Probe(ctx context.Context, s ProbeSpec) (status int, err error)
@@ -179,7 +179,21 @@ type Runtime interface {
 
 // TakesWait is the most the server waits for Takes (C1's guard).
 const TakesWait = 100 * time.Millisecond
+
+// StopKillWait is the most a Terminal's Stop waits for its process after
+// forcing it: Stop returns within grace plus StopKillWait.
+const StopKillWait = 5 * time.Second
 ```
+
+The terminal launch is `StartTerminal`, not `Start`: C1's `ext.Starter`
+(`docs/plans/ext.md`, "`ext`: Host and Start") is `Start(ctx, h Host)
+error`, and one Go type cannot have two methods named `Start`, so a
+Runtime that needs the server (item F's, to reach `Host` or its data
+directory) implements `Starter` beside `Runtime` and gets C1's lifecycle
+unchanged: `StartExtensions` calls its `Start(ctx, host)` once it is
+registered, and until that has succeeded its slot answers the free
+default (C1's rule), so `Takes` is not asked and a run made meanwhile runs
+natively, as a declined one does (decision RT7).
 
 - `ProcessRef{Session, Run, Task string; Attempt int; Tree string}`: what a
   process is for. A session's terminal names its session, and a managed
@@ -218,10 +232,10 @@ Each method's doc states the contract, which is what the native one does:
 `Takes` answers from the ref alone, with no I/O and no wait, whether this
 Runtime runs the managed run the ref names (`{Run}`), and is asked once
 for a run, when the run is made or continued (a provider that cannot run
-now, its machine's KVM gone, declines, and the run runs natively); `Start`
-starts the process in `DirFile`'s directory with exactly `Env` on a
-terminal of `Cols` by `Rows`, `ctx` bounding the start, not the process's
-life; `Run` and `Serve` keep `proc`'s semantics (argv, never a shell; a
+now, its machine's KVM gone, declines, and the run runs natively);
+`StartTerminal` starts the process in `DirFile`'s directory with exactly
+`Env` on a terminal of `Cols` by `Rows`, under the cancellation rules
+below; `Terminal.Stop` under the stop rules below; `Run` and `Serve` keep `proc`'s semantics (argv, never a shell; a
 timeout `Run` requires, at most `proc.MaxTimeout`; the output's head and
 tail; the log within `LogLimit`; `Started` once the process exists and
 before its output is read; what the command left in its process group
@@ -230,6 +244,58 @@ ended with it); `Probe` tries once from where the tree's services listen;
 Runtime's life. A Runtime receives a session's environment whole, its
 agent token among it (the address-based path of constraint 4), and logs
 and keeps none of it.
+
+`StartTerminal`'s context bounds the start, never the process's life:
+
+- A context already ended is answered with its error and nothing is
+  started.
+- A start the context ends before it completes returns the context's
+  error and leaves no process: whatever the Runtime began (a process, a
+  guest) it ends before returning. A start that completed returns its
+  `Terminal`, which is the caller's from then on whether or not the
+  context has ended since, so a process is always owned by exactly one
+  side: the Runtime until `StartTerminal` returns, the caller once it has
+  returned a `Terminal`.
+- `DirFile` is lent for the call: the Runtime neither closes it nor keeps
+  it once `StartTerminal` returns, and the caller closes it then, as
+  `createLocalSession` and `hostagent.Run` do on `main`.
+
+The native Runtime meets them with `pty.Start` unchanged, which takes no
+context and forks synchronously (`internal/pty/pty.go:56`): it checks the
+context, then runs a test seam of `ext/local` (a gate before the second
+check and a hook after `pty.Start`, both nil outside its tests), checks
+the context again, and calls `pty.Start`; an ended context
+at either check returns its error with no `pty.Start` made. Once
+`pty.Start` is called the start is not interruptible (a fork and an exec,
+bounded by the kernel, as on `main`), so it completes and its `Terminal`
+is returned; there is no window in which a process exists that neither
+side owns. `pty.Start` is done with `DirFile` when it returns (its
+`runtime.KeepAlive` holds it until the child has changed into it). What
+callers pass keeps `main`'s behaviour (I4): `handleCreateSession` and the
+resume pass `context.WithoutCancel` of the request's context, since `main`
+starts a person's session whose client has gone; `Launch` passes its own,
+which it already refuses when ended (`internal/api/runs.go:56`), the
+refusal now also made at the fork; `hostagent.Run` passes its context, an
+ended one taking the existing start-failed path (the connection closed
+"start failed").
+
+`Terminal.Stop(ctx, grace)` promises the process `StartTerminal` started,
+its leader, and is what `pty.Process.Stop` does (`internal/pty/pty.go:155`),
+unchanged:
+
+- A process that has exited is not signalled: `Stop` closes the terminal
+  and returns nil.
+- Otherwise it asks the process's group to end (natively SIGTERM to the
+  group), waits for the leader's exit until `grace` passes or `ctx` ends,
+  then forces the group (SIGKILL to the group) and waits at most
+  `StopKillWait` for the leader to be reaped: nil once it has been, an
+  error if not. It closes the terminal in every case and returns within
+  `grace` plus `StopKillWait`.
+- It promises nothing of a descendant that outlives the leader: one that
+  ignores the ask and the hangup when the leader exits on the ask, or one
+  left behind by a leader that exited on its own before `Stop`, is left as
+  `main` leaves it (Out of scope). The force reaches every member still in
+  the group when it is sent.
 
 The registry holds one Runtime (section 2.4), read once by the
 composition root through C1's `Freeze()` and `local.Fill`. PR-1 adds two
@@ -244,11 +310,14 @@ nothing in this item asks again.
 
 `local.Native()` (`ext/local/runtime.go`): `Name` `local`, as C1's
 defaults are named; `Where` `ext.WhereNative`; `Takes` true for every
-ref; `Start` is `pty.Start`, its `*pty.Process` wrapped (`Exit`'s error
-as words, `Process` from `PID()` with the group the same number, as
-`creack/pty`'s setsid makes it, and the time `Start` returned); `Run` is
+ref; `StartTerminal` is `pty.Start` behind the two context checks above,
+its `*pty.Process` wrapped (`Exit`'s error as words, `Process` from `PID()`
+with the group the same number, as `creack/pty`'s setsid makes it, and the
+time `pty.Start` returned, `Stop` its `Stop`); `Run` is
 `proc.Run` with `Spec.Environ`; `Serve` is `proc.Serve` likewise; `Probe`
-is `proc.Probe`; `Port` is `proc.FreePort`. PR-1 adds it to `local.Fill`,
+is `proc.Probe`; `Port` is `proc.FreePort`. PR-1 names `pty.Process.Stop`'s literal
+five-second wait after SIGKILL `pty.KillWait`, the same value, so that
+`ext.StopKillWait` can be held to it by a test. PR-1 adds it to `local.Fill`,
 which puts it in the Runtime slot when nothing is registered, as C1's
 `Fill` does for the other slots. `internal/api`, `internal/crew` and
 `internal/hostagent` take the native Runtime from it, so `ext/local` must
@@ -420,16 +489,16 @@ place below it. A read of such a database answers as before, every row
   engine launches or continues a run (C1's order, `serve.go:173`), and
   `Engine.SetRuntime`'s refusal after a launch makes a later call an error.
 - `createLocalSession(ctx, req, crewRef, where)` starts the process
-  through a Runtime's `Start` instead of `pty.Start`: the offered one when
+  through a Runtime's `StartTerminal` instead of `pty.Start`: the offered one when
   `where` is its `Where` (an attempt of a run it took), the native one when
   `where` is empty or `native` (a person's session, a resume, a legacy
   crew member, an attempt of a run it declined); a `where` that is neither
   is refused. The `ProcessRef` is the one its `crewRef` gives; a refused
   start is `502 start_failed` as today. The "session started" log line
   keeps its `pid`, from `Terminal.Process()` (`sessions.go:375`). Its
-  three callers pass their context and their `where`: the request's
-  (`handleCreateSession`, the resume at `resume.go:173`, both empty) and
-  `Launch`'s own (a crew launch's, bounded by `runTimeout`, or an
+  three callers pass their context and their `where`: the request's, made
+  `context.WithoutCancel` (`handleCreateSession`, the resume at
+  `resume.go:173`, both empty; above) and `Launch`'s own (a crew launch's, bounded by `runTimeout`, or an
   attempt's, which ends with the attempt; `LaunchSpec.Where`).
 - No route is added or changed: the task read, the steps route and the
   prerequisites route report `where` through `crew`'s types.
@@ -617,6 +686,14 @@ of the rows.
   asking the Runtime instead of the server's machine.
 - Managed runs on a host: `Crew.Launchable` refuses a crew whose `where` is
   `host` (`internal/crew/crew.go:599`), unchanged.
+- Ending a session's descendants that outlive its leader on `Stop`: on
+  `main` `pty.Process.Stop` returns once the leader has exited, and a
+  descendant that ignores SIGTERM and SIGHUP, or one left by a leader that
+  exited on its own, survives it. Changing that changes `main`'s behaviour,
+  which this item's boundary forbids, so the contract states it rather
+  than mends it; it is a defect outside this stream (this item neither
+  causes nor needs it), filed as its own issue when this plan is cut, for
+  the owner to place (AGENTS.md).
 - Offering a registered Runtime a session that is not a managed run's: a
   person's, a resume, a legacy crew member's, a hosted one (item F's first
   surface is `conductor host`). Item F proposes it, with how a person
@@ -655,11 +732,31 @@ Go, by package, the tests the PRs add:
 
 - `ext` (PR-1): `TestRegisterRuntimeRefusesItsWhere` (a `Where`
   `Where.Valid` refuses and `WhereNative` each panic, naming the slot, as
-  C1's other refusals do).
+  C1's other refusals do), `TestARuntimeMayBeAStarter` (one type with
+  `StartTerminal` and C1's `Start(ctx, Host)` is both an `ext.Runtime` and
+  an `ext.Starter`, and registers as a Runtime).
 - `ext/local` (PR-1): `TestNativeStartsATerminalInItsFolder` (the folder
   renamed after it was opened, the process's working directory still it on
   Linux, as `internal/pty`'s start tests have it; output, input, resize, exit
-  0, a `Process` with a pid), `TestNativeStopEndsTheGroup`,
+  0, a `Process` with a pid; `DirFile` closed as soon as it returns),
+  `TestNativeStartRefusesAnEndedContext` (a context ended before the call:
+  its error, and the seam's count of `pty.Start` calls still 0),
+  `TestNativeStartCancelledWhileGated` (the seam's gate holds the start,
+  the context is cancelled, the gate let go: the context's error and no
+  `pty.Start` made), `TestNativeStartCompletedIsTheCallers` (the context
+  cancelled from the seam's hook after `pty.Start`: the `Terminal` is
+  returned, its process runs and its `Stop` ends it),
+  `TestNativeStopAsksTheGroup` (a leader and a child in its group, both
+  ending on SIGTERM: nil within the grace, each pid gone, read from the pid
+  files they write), `TestNativeStopForcesALeaderThatIgnoresTheAsk` (the
+  leader ignores SIGTERM: SIGKILL after the grace, nil, returned within
+  `grace` plus `StopKillWait`, the test's timeout above that sum),
+  `TestNativeStopAfterExitSignalsNothing`,
+  `TestNativeStopPromisesTheLeaderOnly` (a descendant ignoring SIGTERM and
+  SIGHUP and a leader that exits on the ask: `Stop` returns nil and the
+  descendant, read from its pid file, still runs, as on `main`; the test
+  ends it itself), `TestStopKillWaitIsPtys` (`ext.StopKillWait` equals
+  `pty.KillWait`),
   `TestNativeRunIsProcRun` (exit, signal, head and tail, a log within its
   limit, `Started` before the output, a timeout told from a cancel),
   `TestNativeServeStartsAndStops`, `TestNativeProbeAndPortAreProcs` (the
@@ -752,10 +849,18 @@ Go, by package, the tests the PRs add:
   registered), `TestUseExtensionsOffersTheEngineTheRuntime` (an attempt's
   session and its check in the same fake), `TestATakesThatPanicsOrStallsRunsNatively`
   (the guard: a panic, and an answer past `ext.TakesWait`, each run the run
-  natively, logged as C1's guard logs), `TestAServerWithNothingRegisteredStartsNatively`.
+  natively, logged as C1's guard logs), `TestAServerWithNothingRegisteredStartsNatively`,
+  `TestARuntimeThatIsAStarterIsStartedFirst` (a fake that is both, given
+  as the set's Runtime: `StartExtensions` calls its `Start(ctx, host)`
+  once; a run launched before that has succeeded is not offered it and
+  runs natively; one launched after is offered it, and its attempt's
+  session starts through its `StartTerminal`),
+  `TestAPersonsSessionOutlivesItsRequest` (the request's context cancelled
+  as the start is made, through `launchHook`: the session starts, as on
+  `main`).
   (PR-4) `TestAnAttemptAndItsChecksRanWhereTheyReport` (a managed run of the
   stub worker on a real ledger under a `FakeRuntime` with `Base` native and
-  `where` `fake`, taking the run: the fake recorded the attempt's `Start`
+  `where` `fake`, taking the run: the fake recorded the attempt's `StartTerminal`
   and its check's `Run`, and the task read's attempts and steps, the steps
   route and the prerequisites route say `fake`), `TestTheTaskReadReportsWhere`
   (the same run with nothing registered: `native`),
@@ -869,8 +974,10 @@ export and restore exist, and their tests run against version 6 in
 PR-4's own checks; PR-5 adds to the `ext/exttest` that C9 made.
 
 **PR-1: the Runtime's contract and its native default.** `ext`'s Runtime
-members, `TakesWait` and `RegisterRuntime`'s two refusals, added to C1's
-declaration; `ext/local`'s `Native()` and its place in `Fill`; the
+members, `TakesWait`, `StopKillWait` and `RegisterRuntime`'s two refusals,
+added to C1's declaration; `ext/local`'s `Native()` (its context checks
+and start seam) and its place in `Fill`; `internal/pty`'s `KillWait`
+named; the
 `ext-std` amendment and its plants in `internal/opencore`;
 `TestPlainBuildRegistersNothing`'s Runtime slot; `internal/proc`'s
 `Prepare`, `Spec.Environ`, and `Probe` and `FreePort` moved from
@@ -879,7 +986,8 @@ them; the boundary test with its allowlist as it stands; the errata line
 in `docs/plans/agent-harness.md`; `docs/repository-map.md` (`ext`,
 `ext/local` and its "May import", `internal/proc`); the features entry
 opened. Nothing calls the Runtime yet: behaviour is `main`'s. Touches
-`ext`, `ext/local`, `internal/opencore`, `cmd/conductor`, `internal/proc`,
+`ext`, `ext/local`, `internal/opencore`, `cmd/conductor`, `internal/pty`
+(the constant's name), `internal/proc`,
 `internal/crew` (the move), `docs`. Tests: the `ext`, `ext/local`,
 `cmd/conductor`, `internal/opencore` and `internal/proc` tests above.
 Depends on C1 to C9 (decision RT15) and #441. About 1,100 lines.
@@ -929,9 +1037,13 @@ as set, every call recorded, `Base` passing a call through), and
 `exttest.Runtime(t, rt, c RuntimeCase)`, added to `RunAll` for
 `Providers.Runtime`: the rules this plan writes, checked as PR-1 checks
 the native one. A valid `Name` and `Where`, constant; `Takes` within
-`TakesWait` from 32 goroutines at once; `Start` in the directory given
-with exactly `Env`, output, input, resize and exit, `Stop` ending its
-group within its grace; `Run` with argv never a shell (an argument with
+`TakesWait` from 32 goroutines at once; `StartTerminal` in the directory
+given with exactly `Env`, output, input, resize and exit, `DirFile`
+closed by the check as soon as it returns, an ended context answered with
+its error and no `Terminal`; `Stop` by the rules above, asked (a helper
+that exits on the ask: nil within its grace) and forced (a helper that
+ignores it: nil within `grace` plus `StopKillWait`), and after an exit
+(nil), descendants not checked, as the contract promises none; `Run` with argv never a shell (an argument with
 `;` printed as it is), a timeout told from a cancel, head and tail, the
 log within `LogLimit`, `Started` once and before the output; `Serve`
 started and stopped; `Probe` one try, no redirect followed; `Port` a free
@@ -1000,7 +1112,7 @@ overturned is rewritten here before the PRs are cut.
 - **RT8, Conductor builds the environment.** A Runtime receives it whole.
   Reason: the filter that keeps tokens and loaders out stays in one place.
 - **RT9, the whole tree executor.** `Serve`, `Probe` and `Port` beside
-  `Start` and `Run`. Reason: a service is a process of a run (constraint
+  `StartTerminal` and `Run`. Reason: a service is a process of a run (constraint
   1), and a tree's probe or port must be the tree's runtime's, not the
   server's loopback (EN1's executor).
 - **RT10, git stays Conductor's.** Reason: the tree is made and compared
