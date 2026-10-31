@@ -20,6 +20,8 @@ watch(rename.open, (o) => {
   if (!o) return
   draft.value = rename.target.value?.name ?? ''
   refused.value = ''
+  // A save still under way belongs to an earlier opening: this one is not waiting on it.
+  saving.value = false
   selectNext = true
 })
 function onFocus(e: FocusEvent) {
@@ -40,14 +42,18 @@ async function save() {
     rename.open.value = false
     return
   }
+  // The opening this save is sent from: its reply closes the dialog or shows its refusal only while that opening lasts, never in
+  // a dialog opened since (the save's dialog dismissed while it was under way, then Rename… on another session).
+  const sentFrom = rename.opening.value
+  const current = () => rename.open.value && rename.opening.value === sentFrom
   saving.value = true
   try {
     await api.rename(t.id, state.value.name)
-    rename.open.value = false
+    if (current()) rename.open.value = false
   } catch (e) {
-    refused.value = (e as Error).message
+    if (current()) refused.value = (e as Error).message
   } finally {
-    saving.value = false
+    if (rename.opening.value === sentFrom) saving.value = false
   }
 }
 </script>

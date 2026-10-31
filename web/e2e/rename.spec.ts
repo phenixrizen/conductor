@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
 // Renaming a server session (#318): from a sidebar row's More menu, from the palette's row (the same descriptors, #302) and from
@@ -16,6 +17,19 @@ async function launch(api: { ok: <T>(method: string, path: string, body?: unknow
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
   sessions.push(s.id)
   return s
+}
+
+/** Opens the Rename dialog from the session's sidebar row's More menu and returns the dialog, its field and its save button. */
+async function renameFromRow(page: Page, s: Session) {
+  const row = page.locator(`[data-session-list] [data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toContainText(s.name)
+  await row.hover()
+  await row.locator('[data-row-more]').click()
+  await page.getByRole('menuitem', { name: /^Rename/ }).click()
+  const dialog = page.getByRole('dialog')
+  const field = dialog.getByRole('textbox', { name: 'Session name' })
+  await expect(field).toHaveValue(s.name)
+  return { dialog, field, save: dialog.locator('[data-rename-save]') }
 }
 
 test('a sidebar row renames its session through the dialog, which sends only a name the server keeps whole', async ({ page, api }) => {
@@ -108,4 +122,79 @@ test('a rename made elsewhere reaches an open page, and a resume starts under th
   expect(next.name).toBe('e2e resumed under it')
   expect(next.resumedFrom).toBe(s.id)
   await expect(title).toHaveText('e2e resumed under it')
+})
+
+test('a save of the name the session has sends nothing and closes the dialog', async ({ page, api }) => {
+  const s = await launch(api, 'e2e rename same')
+  const patches: string[] = []
+  page.on('request', (r) => {
+    if (r.method() === 'PATCH') patches.push(r.url())
+  })
+  await page.goto('/crews')
+  const { dialog, field } = await renameFromRow(page, s)
+  // The same name, with space around it that the server would trim: still the name it has.
+  await field.fill('  e2e rename same ')
+  await field.press('Enter')
+  await expect(dialog).toHaveCount(0)
+  expect(patches).toEqual([])
+  expect((await api.session(s.id)).name).toBe('e2e rename same')
+})
+
+test("a refusal shows the server's words and keeps the dialog open on the draft", async ({ page, api }) => {
+  const s = await launch(api, 'e2e rename refused')
+  await page.goto('/crews')
+  const { dialog, field, save } = await renameFromRow(page, s)
+  // The session goes while the dialog is open: stopped, then removed from the list.
+  await api.stopSession(s.id)
+  await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+  await api.stopSession(s.id)
+  await expect.poll(async () => (await api.call('GET', `/api/sessions/${s.id}`)).status).toBe(404)
+  await field.fill('e2e renamed too late')
+  const refused = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/sessions/${s.id}`))
+  await save.click()
+  expect((await refused).status()).toBe(404)
+  await expect(dialog).toContainText('no such session')
+  await expect(dialog).toBeVisible()
+  await expect(field).toHaveValue('e2e renamed too late')
+  // Editing the draft clears the refusal.
+  await field.fill('e2e renamed again')
+  await expect(dialog).not.toContainText('no such session')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+})
+
+test("a save's reply after its dialog was dismissed leaves the dialog opened since on another session alone", async ({ page, api }) => {
+  const a = await launch(api, 'e2e rename slow')
+  const b = await launch(api, 'e2e rename next')
+  // A's rename is held at the network until the test lets it go: the dialog is dismissed and opened on B meanwhile.
+  let arrived!: () => void
+  const held = new Promise<void>((r) => (arrived = r))
+  let release!: () => void
+  const released = new Promise<void>((r) => (release = r))
+  await page.route(`**/api/sessions/${a.id}`, async (route) => {
+    if (route.request().method() !== 'PATCH') return route.continue()
+    arrived()
+    await released
+    await route.continue()
+  })
+  await page.goto('/crews')
+  const first = await renameFromRow(page, a)
+  await first.field.fill('e2e renamed slow')
+  await first.save.click()
+  await held
+  await page.keyboard.press('Escape')
+  await expect(first.dialog).toHaveCount(0)
+  const second = await renameFromRow(page, b)
+  await second.field.fill('e2e next draft')
+  const replied = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/sessions/${a.id}`))
+  release()
+  expect((await replied).status()).toBe(200)
+  // A's rename went through, and reached A's row; B's dialog is still open on its draft, and its save is not held by A's.
+  await expect(page.locator(`[data-session-list] [data-sidebar-row="s:${a.id}"]`).first()).toContainText('e2e renamed slow')
+  await expect(second.dialog).toBeVisible()
+  await expect(second.field).toHaveValue('e2e next draft')
+  await expect(second.save).toBeEnabled()
+  await second.save.click()
+  await expect(second.dialog).toHaveCount(0)
+  expect((await api.session(b.id)).name).toBe('e2e next draft')
 })
