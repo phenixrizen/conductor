@@ -150,10 +150,23 @@ func TestACheckThatLeavesManyLongPathsIsRecorded(t *testing.T) {
 	seg := strings.Repeat("d", 200)
 	long := filepath.Join(seg, seg, strings.Repeat("f", 200)) // 602 bytes, and the number
 	build := work("build", "lead")
-	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", `for i in $(seq 100 249); do mkdir -p "$(dirname "$i$1")" && : > "$i$1"; done`, "sh", "/" + long}}}
+	// The check's timeout is the code's bound on the check: 120 s here,
+	// well inside the test binary's 10 minutes, so a check that hangs
+	// fails the test by it.
+	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", `for i in $(seq 100 249); do mkdir -p "$(dirname "$i$1")" && : > "$i$1"; done`, "sh", "/" + long}, TimeoutSeconds: 120}}
 	run := launchManaged(t, e, repoCrew(dir, build))
 	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	commitResult(t, e, a, "built.txt", "b\n", "built")
+	// The check starts some 300 processes, a dirname and a mkdir for each
+	// path, and the verify then reads the checkout back: on a loaded
+	// machine that takes longer than waitTask's 10 s, which is no cap of
+	// the code's. So the test waits on the mechanism, as the run's stop
+	// does: the run's checks, on which the submit registered the verify
+	// before it returned. The task is decided before the verify is done.
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	r.checks.Wait()
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
 	// The event keeps its lists, cut short, not the oversized note that
 	// stands in for an event too large.
