@@ -210,10 +210,33 @@ func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Reque
 	if f := beforeSessionComment.Load(); f != nil {
 		(*f)()
 	}
-	rc, key, err := ds.AddRunComment(ctx, dispatch.Op{Actor: agentActor(member), ID: body.OpID}, run, body.Body)
+	op := dispatch.Op{Actor: agentActor(member), ID: body.OpID}
+	rc, err := ds.AddRunComment(ctx, op, run, body.Body)
 	if errors.Is(err, dispatch.ErrNoRunTicket) {
 		noTicket(w, run)
 		return
 	}
-	s.writeOp(w, "comment", rc, err, true, "comment", commentAfter(ctx, ds, key, ""))
+	s.writeOp(w, "comment", rc, err, true, "comment", runCommentAfter(ctx, ds, op))
+}
+
+// runCommentAfter is a session's comment as its reply carries it: the
+// ticket it went to read from the operation's log (dispatch.Store.OpTicket),
+// then the comment (commentAfter). Both are reads after the commit, so a
+// failure of either, the operation's deadline spent among them, answers
+// the receipt with a null comment (writeOp) and never an error a client
+// would send again under a new opId.
+func runCommentAfter(ctx context.Context, ds *dispatch.Store, op dispatch.Op) func(dispatch.Receipt) (any, error) {
+	return func(rc dispatch.Receipt) (any, error) {
+		if rc.ID == "" {
+			return nil, nil
+		}
+		key, found, err := ds.OpTicket(ctx, op.Actor, op.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("dispatch: operation %s is done and its log names no ticket", op.ID)
+		}
+		return commentAfter(ctx, ds, key, "")(rc)
+	}
 }

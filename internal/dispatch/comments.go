@@ -62,15 +62,17 @@ var ErrNoRunTicket = errors.New("dispatch: no live ticket is linked to the run")
 // the ticket; a new id goes to the ticket that holds the run when it
 // commits, so no link moved or removed between a lookup and the write can
 // send it elsewhere. No live ticket holding the run is ErrNoRunTicket,
-// with nothing written. key is the ticket a done operation commented on,
-// the first row of its log names it (OpTicket), so a repeat names it
-// too, its receipt pruned or its ticket deleted since; "" for a refusal.
-func (s *Store) AddRunComment(ctx context.Context, op Op, run, body string) (rc Receipt, key string, err error) {
+// with nothing written. The ticket a done operation commented on is
+// OpTicket's, the first row of its log naming it, so a repeat names it
+// too, its receipt pruned or its ticket deleted since: a read after the
+// commit, which a caller makes as it reads the comment back, so that a
+// failure of it (the operation's deadline spent) loses no receipt.
+func (s *Store) AddRunComment(ctx context.Context, op Op, run, body string) (Receipt, error) {
 	args := struct {
 		Run  string `json:"run"`
 		Body string `json:"body"`
 	}{run, body}
-	rc, err = s.Apply(ctx, op, "comment.add", args, func(t *tx) error {
+	return s.Apply(ctx, op, "comment.add", args, func(t *tx) error {
 		tk, found, err := runTicket(t.ctx, t.tx, run)
 		if err != nil {
 			return err
@@ -80,17 +82,6 @@ func (s *Store) AddRunComment(ctx context.Context, op Op, run, body string) (rc 
 		}
 		return t.addComment(tk.Key, body)
 	})
-	if err != nil || rc.Status != StatusDone {
-		return rc, "", err
-	}
-	key, found, err := s.OpTicket(ctx, op.Actor, op.ID)
-	if err != nil {
-		return Receipt{}, "", err
-	}
-	if !found {
-		return Receipt{}, "", fmt.Errorf("dispatch: operation %s is done and its log names no ticket", op.ID)
-	}
-	return rc, key, nil
 }
 
 // addComment is comment.add's change: the comment on the live ticket

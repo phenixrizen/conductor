@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -338,8 +339,19 @@ func TestARunCommentKeepsTheTicketItWentTo(t *testing.T) {
 	_, a := newTicket(t, s, "RCM", "A")
 	_, b := newTicket(t, s, "RCM", "B")
 	s.SetRunExists(runs("run1"))
+	// comment is the run's comment and, for a done one, the ticket its
+	// log names (OpTicket), as the API reads it back.
 	comment := func(id, body string) (Receipt, string, error) {
-		return s.AddRunComment(ctx, testOp(id), "run1", body)
+		t.Helper()
+		rc, err := s.AddRunComment(ctx, testOp(id), "run1", body)
+		if err != nil || rc.Status != StatusDone {
+			return rc, "", err
+		}
+		key, found, err := s.OpTicket(ctx, "test", id)
+		if err != nil || !found {
+			t.Fatalf("%s is done and its log names no ticket: %v", id, err)
+		}
+		return rc, key, nil
 	}
 	count := func(key string) int {
 		t.Helper()
@@ -405,5 +417,46 @@ func TestARunCommentKeepsTheTicketItWentTo(t *testing.T) {
 	}
 	if na, nb := count(a), count(b); na != 1 || nb != 1 {
 		t.Fatalf("at the end: %d comments on A and %d on B", na, nb)
+	}
+}
+
+// A run's comment is answered by its receipt once it commits, whatever
+// becomes of its context after: cancelled from OnChange, after the commit
+// and before AddRunComment returns, the receipt is done, the comment on
+// the ticket, and the ticket it went to is OpTicket's to read with a
+// live context; the same id sent again is a repeat.
+func TestARunCommentKeepsItsReceiptWhenItsContextEndsAfterTheCommit(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	newProject(t, s, "RCX")
+	_, key := newTicket(t, s, "RCX", "A")
+	s.SetRunExists(runs("run1"))
+	link, err := addLink(s, "l1", key, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, link, err, StatusDone, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var commits atomic.Int32
+	s.OnChange(func([]Change) {
+		commits.Add(1)
+		cancel()
+	})
+	rc, err := s.AddRunComment(ctx, testOp("c1"), "run1", "seen")
+	want(t, rc, err, StatusDone, "")
+	if commits.Load() != 1 || ctx.Err() == nil || rc.ID == "" {
+		t.Fatalf("the comment's commit: %d commits, context %v, receipt %+v", commits.Load(), ctx.Err(), rc)
+	}
+	if _, _, err := s.OpTicket(ctx, "test", "c1"); err == nil {
+		t.Fatal("OpTicket read with the cancelled context")
+	}
+	live := context.Background()
+	if got, found, err := s.OpTicket(live, "test", "c1"); err != nil || !found || got != key {
+		t.Fatalf("OpTicket after the commit: %q %v %v", got, found, err)
+	}
+	if c, err := s.Comment(live, key, rc.ID); err != nil || c.Body != "seen" {
+		t.Fatalf("the comment: %+v %v", c, err)
+	}
+	again, err := s.AddRunComment(live, testOp("c1"), "run1", "seen")
+	want(t, again, err, StatusDone, "")
+	if !again.Repeat || again.ID != rc.ID {
+		t.Fatalf("the resend: %+v", again)
 	}
 }

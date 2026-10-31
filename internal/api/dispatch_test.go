@@ -2849,6 +2849,41 @@ func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 	resend("A deleted")
 }
 
+// A session's comment that commits is answered by its receipt though
+// nothing can be read after the commit: the store closed from OnChange,
+// after the comment's commit and before the reply looks up the ticket it
+// went to, the reply is 201 with the done receipt and a null comment,
+// never an error a client would send again under a new opId.
+func TestDispatchSessionCommentKeepsItsReceiptWhenTheReadAfterFails(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Unread")
+	e.newDispatchProject(t, "URD", nil)
+	key := e.newDispatchTicket(t, "URD", "A", nil)["key"].(string)
+	done(ds.AddLink(ctx, adminOp(""), key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+	var closed atomic.Bool
+	ds.OnChange(func([]dispatch.Change) {
+		if closed.CompareAndSwap(false, true) {
+			if err := ds.Close(); err != nil {
+				t.Errorf("closing the store: %v", err)
+			}
+		}
+	})
+	out := e.expectAs(t, tok, "POST", "/api/sessions/"+sid+"/ticket/comments", map[string]any{"opId": opID(), "body": "seen"}, http.StatusCreated, "")
+	if rc := entityOf(t, out, "receipt"); rc["status"] != "done" || rc["id"] == "" || rc["id"] == nil {
+		t.Fatalf("the receipt: %v", out)
+	}
+	if c, ok := out["comment"]; !ok || c != nil {
+		t.Fatalf("the comment, unreadable: %v", out)
+	}
+	if !closed.Load() {
+		t.Fatal("no commit closed the store")
+	}
+}
+
 // A comment and its resend that overlap, the resend sent before the
 // comment commits, answer as one operation whatever the run's link does
 // in between: the resend held after its run is found, the comment
