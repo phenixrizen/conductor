@@ -47,6 +47,11 @@ RECEIPT_VERSION = 1
 # check branch protection requires, green when every other job passed).
 # The order is CI's: the web build first, since the Go binary embeds it.
 GATE_JOBS = ("required-checks",)
+# The whole module's race tests, as ci.yml, make test and docs/checks.md run
+# them (preflight_test.py holds them to one bound). The bound catches a hang:
+# go test's default, ten minutes a package, is less than internal/api takes
+# on a machine shared with other runs.
+GO_TEST_RACE = ["go", "test", "-race", "-count=1", "-timeout", "30m", "./..."]
 LINUX_STEPS = [
     # First: it takes a second, the rest an hour, so an unsigned commit is the
     # first line of the receipt (CONTRIBUTING.md, Sign-off). origin/main is
@@ -57,7 +62,7 @@ LINUX_STEPS = [
     {"name": "web-build", "covers": "web", "argv": ["make", "web-build"]},
     {"name": "lint", "covers": "go", "argv": ["make", "lint"]},
     {"name": "lint-static", "covers": "go", "argv": ["make", "lint-static"]},
-    {"name": "go-test-race", "covers": "go", "argv": ["go", "test", "-race", "-count=1", "./..."]},
+    {"name": "go-test-race", "covers": "go", "argv": [*GO_TEST_RACE]},
     {
         "name": "build-linux-arm64",
         "covers": "build-matrix",
@@ -87,7 +92,7 @@ LINUX_STEPS = [
 # and CI's desktop-test row for macOS. On Windows: CI's desktop-test row.
 MAC_STEPS = [
     {"name": "lint", "argv": ["make", "lint"]},
-    {"name": "go-test-race", "argv": ["go", "test", "-race", "-count=1", "./..."]},
+    {"name": "go-test-race", "argv": [*GO_TEST_RACE]},
     {"name": "build-go", "argv": ["make", "build-go"]},
     {"name": "check-version", "argv": ["make", "check-version"]},
     {"name": "desktop-install", "argv": ["npm", "--prefix", "desktop", "ci"]},

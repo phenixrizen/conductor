@@ -71,7 +71,9 @@ jobs:
           path: internal/web/dist
       - run: make lint
       - run: make lint-static
-      - run: go test -race -count=1 ./...
+      # The bound catches a hang; go test's default, ten minutes a package, is
+      # less than internal/api takes on a loaded machine (docs/checks.md).
+      - run: go test -race -count=1 -timeout 30m ./...
       - run: make build-go
       - run: make check-version
       - run: python3 scripts/brand_assets.py --check

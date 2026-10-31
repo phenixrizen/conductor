@@ -13,7 +13,7 @@ Run the narrow tests while iterating, then the complete checks for every affecte
 ```bash
 git fetch origin && python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job); the fetch so that origin/main is GitHub's
 make lint                      # gofmt -l, go vet
-go test -race -count=1 ./...   # includes PTY, WebSocket and pion loopback tests
+go test -race -count=1 -timeout 30m ./...   # includes PTY, WebSocket and pion loopback tests; its bound is explained below
 npm --prefix web run typecheck
 npm --prefix web test          # vitest (link detection)
 make web-build                 # nuxt generate + copy into internal/web/dist
@@ -31,6 +31,14 @@ python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)
 ```
+
+The race tests' `-timeout 30m` catches a hang; it is not a speed target.
+go test's default, ten minutes a package, is less than `internal/api` takes
+on a machine shared with other runs: 17.7 minutes in a run of the whole
+module on the 64-core Linux box at a load average of 77 to 160
+(2026-10-30), against 6.3 in CI. A run left at the default fails there for
+no defect. `make test`, `ci.yml` and `scripts/preflight.py` pass the same
+bound, and `scripts/preflight_test.py` holds them to it.
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
 impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
