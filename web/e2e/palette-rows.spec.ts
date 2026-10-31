@@ -22,25 +22,44 @@ test.afterAll(async ({ api }) => {
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
 
-/** Closes the palette: Escape from a row returns to the input first, and a fading palette swallows a key, so Escape until hidden. */
-async function closePalette(page: Page) {
-  const palette = page.locator('[data-palette]')
-  for (let i = 0; i < 4 && (await palette.isVisible()); i++) {
-    await page.keyboard.press('Escape')
-    await palette.waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {})
-  }
-  await expect(palette).toBeHidden()
+/**
+ * Where the palette is: gone, closing (its dialog's data-state turns closed as Escape or a row closes it, before the fade ends
+ * and it leaves the page), or open.
+ */
+function paletteState(page: Page): Promise<'gone' | 'closing' | 'open'> {
+  return page.evaluate(() => {
+    const p = document.querySelector('[data-palette]')
+    if (!p) return 'gone'
+    return p.closest('[role="dialog"]')?.getAttribute('data-state') === 'closed' ? 'closing' : 'open'
+  })
 }
 /**
- * Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares; the layout's own listener, from a terminal or
- * not). Alt+/ only ever opens it, so a second press is safe where Ctrl+K, a toggle, was not: under load the first Alt+/ opened the
- * palette after the 1.5 s look, and the Ctrl+K sent then closed it again.
+ * Closes the palette with one Escape from its input, and waits with the expect's bound for it to go. From a row, a field or a
+ * question Escape goes back a step instead, and a key pressed on the clock (Escape again 1.5 s on, #281) landed wherever the
+ * focus was by then, a fading palette's or the page's: so the input takes the focus first, and a closing palette is only waited for.
+ */
+async function closePalette(page: Page) {
+  if ((await paletteState(page)) === 'open') {
+    const inInput = await page.evaluate(() => {
+      const input = document.querySelector<HTMLElement>('[data-palette] input[data-palette-input]')
+      input?.focus()
+      return !!input && document.activeElement === input
+    })
+    if (inInput) await page.keyboard.press('Escape')
+  }
+  await expect(page.locator('[data-palette]')).toBeHidden()
+}
+/**
+ * Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares; the layout's own listener, from a terminal
+ * or not, and it only ever opens the palette), pressed once, when the layout listens for it, and the expect's bound for it to
+ * show. A key pressed before the layout is mounted is lost (#281: after a goto, Alt+/ went in 1.1 s on, the page's first request
+ * 4.9 s on), and a second press on a 1.5 s clock only hid that; the sidebar's root is the layout's own, in the page once it is.
  */
 async function openPalette(page: Page) {
   const palette = page.locator('[data-palette]')
   await closePalette(page)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
   await page.keyboard.press('Alt+/')
-  if (!(await palette.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false))) await page.keyboard.press('Alt+/')
   await expect(palette).toBeVisible()
   return palette
 }
