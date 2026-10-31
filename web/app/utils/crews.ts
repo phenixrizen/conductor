@@ -9,7 +9,7 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as
  * they are. The project manifest goes when it holds something, and the legacy setup only while the crew still has one.
  */
-export function toCrewInput(c: Omit<CrewInput, 'tasks'> & { tasks?: ReadonlyArray<CrewTask | DraftTask> }): CrewInput {
+export function toCrewInput(c: Omit<CrewInput, 'tasks' | 'manifest'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; manifest?: DraftManifest }): CrewInput {
   const out: CrewInput = {
     name: c.name,
     goal: c.goal,
@@ -91,6 +91,50 @@ export function toCrewCheck(c: CrewCheck): CrewCheck {
 /** A check in the editor: its fields, and the argv text typed and not yet committed (an unclosed quote), which blocks a save. */
 export interface DraftCheck extends CrewCheck {
   pending?: string
+}
+
+/**
+ * A readiness probe in the editor: its fields, the argv text typed and not yet committed, and whether the row is a command or a URL (`by`),
+ * so a row with neither yet keeps the kind it was given. toCrewProbe leaves both out.
+ */
+export interface DraftProbe extends CrewProbe {
+  pending?: string
+  by?: 'command' | 'url'
+}
+
+/** A project manifest in the editor: its steps and probes as the editor holds them, with what is still being typed. */
+export interface DraftManifest extends Omit<CrewManifest, 'prerequisites' | 'setup' | 'services' | 'ready' | 'verify' | 'cleanup'> {
+  prerequisites?: DraftCheck[]
+  setup?: DraftCheck[]
+  services?: DraftCheck[]
+  ready?: DraftProbe[]
+  verify?: DraftCheck[]
+  cleanup?: DraftCheck[]
+  /**
+   * The lists set aside while the file switch is on (file: true), given back when it is turned off; never sent (toCrewManifest leaves it out).
+   * In the draft, not the editor, so that it lasts while the editor is away (the Runs tab) and across a save (keepParked).
+   */
+  parked?: DraftManifest
+}
+
+/** The ids of a project manifest's steps and probes, in every list: what a task's new check is not given (CrewTasksTable). */
+export function manifestIds(m: DraftManifest | undefined): string[] {
+  const out: string[] = []
+  for (const name of ['prerequisites', 'setup', 'services', 'ready', 'verify', 'cleanup'] as const) for (const row of m?.[name] ?? []) out.push(row.id)
+  return out
+}
+
+/**
+ * A number of seconds as typed into a timeout or an interval: nothing (the default) for an empty field, else the number as typed, so a
+ * negative or a fraction stays for the rules to mark (checkProblems, manifestProblems) rather than turn into a value nobody typed.
+ */
+export function typedSeconds(text: string): number | undefined {
+  return text.trim() === '' ? undefined : Number(text)
+}
+
+/** A typed number of seconds as its field shows it: empty for none. */
+export function secondsText(n: number | undefined): string {
+  return n === undefined ? '' : String(n)
 }
 
 /**
@@ -202,6 +246,9 @@ export const TASK_LIMITS = {
   taskText: 40 << 10,
   /** Prerequisites, setup, ready, verify and cleanup steps of a project manifest, each. */
   manifestSteps: 8,
+  /** A prerequisite's and a cleanup step's timeout when none is given (internal/crew steps.go); a setup or verify step's is a check's. */
+  prerequisiteTimeoutDefault: 60,
+  cleanupTimeoutDefault: 60,
   manifestServices: 4,
   manifestEnv: 32,
   manifestPorts: 8,
@@ -226,27 +273,25 @@ const bytes = (s: string) => new TextEncoder().encode(s).length
 
 /**
  * How many bytes v takes as JSON as the server writes it (Go's encoding/json, compact, with <, > and & as they are: internal/crew
- * encodeManifest). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
- * the three-byte character, and a lone surrogate, which JSON.stringify sends as a six-byte escape, reaches the server as U+FFFD, three bytes.
+ * encodeManifest, and encodeTaskJSON, whose indent leaves a string as it is). JSON.stringify's own text is off both ways: the server escapes
+ * U+2028 and U+2029, six bytes each where JSON.stringify keeps the three-byte character, and a lone surrogate, which JSON.stringify sends as a
+ * six-byte escape, reaches the server as U+FFFD, three bytes. One pass over JSON.stringify's text corrects both without building a string:
+ * the tasks table counts every task's text for each row it draws.
  */
 function serverJsonBytes(v: unknown): number {
-  const text = JSON.stringify(v, (_key, x: unknown) => (typeof x === 'string' ? wellFormed(x) : x))
+  const text = JSON.stringify(v)
   let n = bytes(text)
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i)
     if (c === 0x2028 || c === 0x2029) n += 3
+    else if (c === 0x5c) {
+      // An escape, its letter skipped, so the second backslash of an escaped one starts none. A u escape whose code starts with d is a lone
+      // surrogate's: JSON.stringify writes a u escape for no other code unit past U+001F.
+      if (text.charCodeAt(i + 1) === 0x75 && text.charCodeAt(i + 2) === 0x64) n -= 3
+      i++
+    }
   }
   return n
-}
-
-/** s with each lone surrogate as U+FFFD: the string the server decodes from JSON.stringify's escape of one. */
-function wellFormed(s: string): string {
-  let out = ''
-  for (const ch of s) {
-    const c = ch.charCodeAt(0)
-    out += ch.length === 1 && c >= 0xd800 && c <= 0xdfff ? String.fromCharCode(0xfffd) : ch
-  }
-  return out
 }
 
 /** Why the server would refuse a check or setup command (its id, argv and timeout), in order; empty when it is fine. */
@@ -311,9 +356,22 @@ const withinBound = (n: number | undefined, most: number) => n === undefined || 
 
 /** What a crew looks like to the project manifest's rules: its manifest, its legacy setup and its tasks (a saved crew's or the editor's). */
 export interface ManifestShape {
-  manifest?: CrewManifest
+  manifest?: DraftManifest
   setup?: readonly CrewCheck[]
   tasks?: ReadonlyArray<CrewTask | DraftTask>
+}
+
+/** A project manifest's lists of steps and probes, each a list of rows in the editor. */
+export type ManifestList = 'prerequisites' | 'setup' | 'services' | 'ready' | 'verify' | 'cleanup'
+
+/** How manifestProblems names a row of each list, `<label> <n>: …` with n from 1, which manifestMarks reads back. */
+const MANIFEST_ROWS: Record<ManifestList, string> = {
+  prerequisites: 'Prerequisite',
+  setup: 'Setup step',
+  services: 'Service',
+  ready: 'Ready probe',
+  verify: 'Verify step',
+  cleanup: 'Cleanup step',
 }
 
 /**
@@ -358,10 +416,10 @@ export function manifestProblems(c: ManifestShape): string[] {
     if (task !== undefined) out.push(`${what}: ${id} is also a check of task ${task}: a step's id is its own`)
     ids.push(id)
   }
-  const steps = (list: readonly CrewCheck[] | undefined, label: string, words: string, most: number, rule: 'tree' | 'prerequisite' | 'service') => {
+  const steps = (list: readonly DraftCheck[] | undefined, name: ManifestList, words: string, most: number, rule: 'tree' | 'prerequisite' | 'service') => {
     if ((list?.length ?? 0) > most) out.push(`At most ${most} ${words}`)
     for (const [i, ch] of (list ?? []).entries()) {
-      const what = `${label} ${i + 1}`
+      const what = `${MANIFEST_ROWS[name]} ${i + 1}`
       if (rule === 'service' && ch.timeoutSeconds) out.push(`${what}: a service has no timeout: it runs as long as its tree`)
       out.push(...checkProblems(ch, what, ids))
       takeId(what, ch.id)
@@ -369,13 +427,13 @@ export function manifestProblems(c: ManifestShape): string[] {
       for (const a of ch.argv) for (const p of strayPlaceholders(a, ports)) out.push(`${what}: ${p} names no port of the manifest`)
     }
   }
-  steps(r.prerequisites, 'Prerequisite', 'prerequisites', TASK_LIMITS.manifestSteps, 'prerequisite')
-  steps(r.setup, 'Setup step', 'setup steps', TASK_LIMITS.manifestSteps, 'tree')
-  steps(r.services, 'Service', 'services', TASK_LIMITS.manifestServices, 'service')
+  steps(r.prerequisites, 'prerequisites', 'prerequisites', TASK_LIMITS.manifestSteps, 'prerequisite')
+  steps(r.setup, 'setup', 'setup steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.services, 'services', 'services', TASK_LIMITS.manifestServices, 'service')
   const ready = r.ready ?? []
   if (ready.length > TASK_LIMITS.manifestSteps) out.push(`At most ${TASK_LIMITS.manifestSteps} ready probes`)
   for (const [i, p] of ready.entries()) {
-    const what = `Ready probe ${i + 1}`
+    const what = `${MANIFEST_ROWS.ready} ${i + 1}`
     const idErr = taskIdError(p.id, ids)
     if (idErr) out.push(`${what}: ${idErr}`)
     const argv = p.argv ?? []
@@ -385,23 +443,75 @@ export function manifestProblems(c: ManifestShape): string[] {
       for (const a of argv) for (const ph of strayPlaceholders(a, ports)) out.push(`${what}: ${ph} names no port of the manifest`)
     } else if (p.url) out.push(...urlProblems(p.url, `${what}: the URL`, TASK_LIMITS.probeUrl, ports))
     else out.push(`${what}: give it a command or a URL`)
+    // The editor's own rule, as checkProblems has it for a step: the text of an argument with its quote still open is not sent.
+    if (p.pending) out.push(`${what}: an argument is still being typed: close its quote, or press Enter`)
     if (!withinBound(p.timeoutSeconds, TASK_LIMITS.probeTimeout)) out.push(`${what}: the timeout is 1 to ${TASK_LIMITS.probeTimeout} seconds`)
     if (!withinBound(p.intervalSeconds, TASK_LIMITS.probeInterval)) out.push(`${what}: the interval is 1 to ${TASK_LIMITS.probeInterval} seconds`)
     takeId(what, p.id)
   }
   if (r.preview) out.push(...urlProblems(r.preview, 'The preview', TASK_LIMITS.preview, ports))
-  steps(r.verify, 'Verify step', 'verify steps', TASK_LIMITS.manifestSteps, 'tree')
-  steps(r.cleanup, 'Cleanup step', 'cleanup steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.verify, 'verify', 'verify steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.cleanup, 'cleanup', 'cleanup steps', TASK_LIMITS.manifestSteps, 'tree')
   const size = serverJsonBytes(toCrewManifest(r))
   if (size > TASK_LIMITS.manifestJson) out.push(`The project manifest is ${size} bytes as JSON, more than ${TASK_LIMITS.manifestJson}`)
   return out
 }
 
-/** What a crew with tasks and its members look like to the task rules: a saved crew's tasks or the editor's. */
+/** Where the editor marks the problems of a project manifest (manifestMarks). */
+export interface ManifestMarks {
+  /** Each row's first problem, by its index in its list, with `<label> <n>: ` taken off; '' for a row without one. */
+  rows: Record<ManifestList, string[]>
+  /** The first problem of the env names, of the ports and of the preview, each in full; '' for none. */
+  env: string
+  ports: string
+  preview: string
+  /** Every problem that no row or field holds, in full: the manifest's own (it needs tasks, never sits beside a setup, the file form alone, a list past its count, its size as JSON). */
+  manifest: string[]
+}
+
+const MANIFEST_ROW = new RegExp(`^(${Object.values(MANIFEST_ROWS).join('|')}) (\\d+): `)
+
+/**
+ * The problems of c's project manifest (manifestProblems) where the editor shows them: each under the row or the field it names, the rest at the
+ * head of the manifest, so every rule the server holds a manifest to has its words beside what breaks it before a save.
+ */
+export function manifestMarks(c: ManifestShape): ManifestMarks {
+  const r = c.manifest ?? {}
+  const rows = Object.fromEntries((Object.keys(MANIFEST_ROWS) as ManifestList[]).map((name) => [name, Array.from({ length: r[name]?.length ?? 0 }, () => '')])) as Record<ManifestList, string[]>
+  const marks: ManifestMarks = { rows, env: '', ports: '', preview: '', manifest: [] }
+  const listOf = new Map((Object.entries(MANIFEST_ROWS) as Array<[ManifestList, string]>).map(([name, label]) => [label, name]))
+  for (const p of manifestProblems(c)) {
+    const row = MANIFEST_ROW.exec(p)
+    const list = row ? rows[listOf.get(row[1]!)!] : undefined
+    const i = row ? Number(row[2]) - 1 : -1
+    if (list && i >= 0 && i < list.length) {
+      if (!list[i]) list[i] = p.slice(row![0].length)
+    } else if (p.startsWith('Env ') || p === `At most ${TASK_LIMITS.manifestEnv} env names`) marks.env ||= p
+    else if (p.startsWith('Port ') || p === `At most ${TASK_LIMITS.manifestPorts} ports`) marks.ports ||= p
+    else if (p.startsWith('The preview')) marks.preview ||= p
+    else marks.manifest.push(p)
+  }
+  return marks
+}
+
+/** What a crew with tasks and its members look like to the task rules: a saved crew's tasks or the editor's, with its project manifest. */
 export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & {
   goal?: string
   tasks?: ReadonlyArray<CrewTask | DraftTask>
   members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { prompt?: string; key?: number }>
+  manifest?: DraftManifest
+  /** The legacy setup the editor lifted into the manifest (DraftCrew.liftedSetup). */
+  liftedSetup?: readonly CrewCheck[]
+}
+
+/**
+ * Whether c's project manifest is still the legacy setup the editor lifted into it, unchanged (DraftCrew.liftedSetup). Saved, the crew is that
+ * manifest, held to a manifest's rules; launched as it is, it is the crew as stored, whose setup the server holds to a setup's rules alone (an
+ * id a task's check shares too, as a legacy setup may). So the manifest's problems hold the save (taskSaveProblems), never that launch.
+ */
+function liftedAsStored(c: TaskShape): boolean {
+  if (!c.liftedSetup?.length || c.setup?.length || !c.manifest) return false
+  return JSON.stringify(toCrewManifest(c.manifest)) === JSON.stringify(toCrewManifest({ setup: [...c.liftedSetup] }))
 }
 
 /** Characters as the server counts them (runes), not UTF-16 units. */
@@ -409,15 +519,18 @@ const chars = (s: string) => [...s].length
 
 /**
  * Why the server would refuse a crew's tasks (internal/crew checkTasks), every problem in the server's order; empty when the crew would be
- * accepted. A crew without tasks has no problem but a task-started member or a setup.
+ * accepted. A crew without tasks has no problem but a task-started member, a setup or a project manifest. The project manifest's come last, as
+ * the server checks it last (manifestProblems), unless it is still the setup the editor lifted into it (liftedAsStored).
  */
 export function taskProblems(c: TaskShape): string[] {
   const out: string[] = []
   const tasks = plainTasks(c.tasks ?? [])
   const drafts = (c.tasks ?? []).filter((t): t is DraftTask => 'key' in t)
+  const manifest = liftedAsStored(c) ? [] : manifestProblems(c)
   if (!tasks.length) {
     if (c.setup?.length) out.push('Setup commands need tasks')
     for (const m of c.members) if (m.start.when === 'task') out.push(`${m.name || 'a member'} starts by its tasks, but the crew has none`)
+    out.push(...manifest)
     return out
   }
   if (tasks.length > TASK_LIMITS.tasks) out.push(`At most ${TASK_LIMITS.tasks} tasks`)
@@ -491,17 +604,20 @@ export function taskProblems(c: TaskShape): string[] {
     }
   }
   for (const m of c.members) if (!tasks.some((t) => t.member === m.name)) out.push(`${m.name || 'A member'} has no task; every member of a crew with tasks does one`)
+  out.push(...manifest)
   return out
 }
 
 /**
  * Why the server would refuse to save a crew's tasks beyond taskProblems (internal/crew ValidateSave): rules a crew is held to as it is
  * saved, not as one saved before is launched, so an unchanged crew from before them still launches. A task needs another once, and its
- * goal, role and instructions as its task.json keeps them (JSON, quotes and escapes) leave room for the rest of a task file, which never
- * cuts them.
+ * goal, role and instructions as its task.json keeps them (each string as the server writes it as JSON, quotes and escapes: internal/crew
+ * taskTextBytes) leave room for the rest of a task file, which never cuts them. A legacy setup the editor lifted into the project manifest,
+ * unchanged, is held here to the manifest's rules (liftedAsStored), first, as the server checks a crew before these: saved, it is a manifest;
+ * launched as it is, the crew as stored.
  */
 export function taskSaveProblems(c: TaskShape): string[] {
-  const out: string[] = []
+  const out: string[] = liftedAsStored(c) ? manifestProblems(c) : []
   for (const t of plainTasks(c.tasks ?? [])) {
     const what = t.id ? `Task ${t.id}` : 'A task'
     const seen = new Set<string>()
@@ -509,7 +625,7 @@ export function taskSaveProblems(c: TaskShape): string[] {
     for (const n of t.needs ?? []) (seen.has(n) ? twice : seen).add(n)
     for (const n of twice) out.push(`${what}: needs ${n} twice`)
     const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
-    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + serverJsonBytes(s), 0)
     if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
   }
   return out
@@ -574,11 +690,20 @@ export interface DraftMember extends CrewMember {
   argsText: string
 }
 
-/** A crew in the editor; no id until it is saved. Its tasks are keyed (DraftTask). */
-export interface DraftCrew extends Omit<CrewInput, 'tasks'> {
+/**
+ * A crew in the editor; no id until it is saved. Its tasks are keyed (DraftTask) and its project manifest holds what is still being typed
+ * (DraftManifest). A crew stored with a legacy setup has it lifted into the manifest's setup phase (toDraft), so the editor has one place for it.
+ */
+export interface DraftCrew extends Omit<CrewInput, 'tasks' | 'manifest'> {
   id?: string
   members: DraftMember[]
   tasks?: DraftTask[]
+  manifest?: DraftManifest
+  /**
+   * The legacy setup lifted into `manifest`, as the crew stores it; never sent. While the manifest is that setup unchanged, the crew launches
+   * as it is stored and a manifest's rules hold only its save (taskSaveProblems).
+   */
+  liftedSetup?: CrewCheck[]
 }
 
 let memberKeys = 0
@@ -587,10 +712,25 @@ export function draftMember(m: CrewMember): DraftMember {
   return { ...toCrewMember(m), key: ++memberKeys, argsText: joinArgv(m.args ?? []) }
 }
 
+/**
+ * next, a draft made from the crew as the server has it (toDraft), with the lists prev set aside under the file switch (DraftManifest.parked),
+ * while next's manifest is still read from the file: a save or a read of the crew keeps what turning the switch off gives back.
+ */
+export function keepParked(next: DraftCrew, prev: DraftCrew | undefined): DraftCrew {
+  const parked = prev?.manifest?.parked
+  if (!parked || !next.manifest?.file) return next
+  return { ...next, manifest: { ...next.manifest, parked } }
+}
+
+/** A saved crew, or the new one, as the editor holds it: its members and tasks keyed, a legacy setup lifted into its project manifest (liftSetup). */
 export function toDraft(c: CrewInput & { id?: string }): DraftCrew {
-  const input = toCrewInput(c)
+  const lifted = liftSetup(c)
+  const input = toCrewInput(lifted)
   const members = c.members.map(draftMember)
-  return { ...input, id: c.id, members, tasks: input.tasks ? draftTasks(input.tasks, members) : undefined }
+  const out: DraftCrew = { ...input, id: c.id, members, tasks: input.tasks ? draftTasks(input.tasks, members) : undefined }
+  // liftSetup hands back the crew itself when it lifts nothing.
+  if (lifted !== c) out.liftedSetup = (c.setup ?? []).map(toCrewCheck)
+  return out
 }
 
 /** The extra arguments typed for a member, split as the Launch dialog splits them; undefined when there are none. */
@@ -599,18 +739,29 @@ export function argsFrom(text: string): string[] | undefined {
   return args.length ? args : undefined
 }
 
-/** A crew as the server would store it, for telling a draft from what is saved. */
+/**
+ * A crew as the server would store it, for telling a draft from what is saved. A legacy setup counts as the project manifest it lifts into
+ * (liftSetup), the one manifest to the server (its revision unchanged), so the editor's lift alone is no change.
+ */
 export function crewKey(c: Parameters<typeof toCrewInput>[0]): string {
-  return JSON.stringify([toCrewInput(c), pendingTexts(c)])
+  return JSON.stringify([toCrewInput(liftSetup(c)), pendingTexts(c)])
 }
 
-/** The argv text typed into checks and setup commands and not yet committed: part of what is unsaved (a draft with it is kept), never of what is sent. */
+/**
+ * The argv text typed into checks, setup commands and the project manifest's steps and probes and not yet committed: part of what is unsaved
+ * (a draft with it is kept), never of what is sent.
+ */
 function pendingTexts(c: Parameters<typeof toCrewInput>[0]): string[] {
   const out: string[] = []
   for (const [i, ch] of (c.setup ?? []).entries()) if ('pending' in ch && ch.pending) out.push(`setup ${i}: ${ch.pending}`)
   for (const t of c.tasks ?? []) {
     if (!('key' in t)) continue
     for (const [i, ch] of (t.checks ?? []).entries()) if (ch.pending) out.push(`${t.key} ${i}: ${ch.pending}`)
+  }
+  const m: DraftManifest = c.manifest ?? {}
+  for (const name of Object.keys(MANIFEST_ROWS) as ManifestList[]) {
+    const rows: ReadonlyArray<{ pending?: string }> = m[name] ?? []
+    for (const [i, row] of rows.entries()) if (row.pending) out.push(`manifest ${name} ${i}: ${row.pending}`)
   }
   return out
 }

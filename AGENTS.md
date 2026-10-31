@@ -146,10 +146,13 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
-- A run's log is not its ledger. The engine notes a change in the run's
-  log inside the change and commits its rows and events after it, outside
-  the lock: a test that saw the note and reads the ledger at once can read
-  it before the commit. Wait on the ledger for what the ledger must hold.
+- A run's log is not its ledger, and neither is the rest of the engine's
+  view. The engine makes a change (its log line, a task's state, an
+  attempt's) inside the change and commits its rows and events after it,
+  outside the lock: a test that saw the change in the view (a log line,
+  `waitTask`, `attemptFailed`) and reads the ledger at once can read it
+  before the commit. Wait on the ledger for what the ledger must hold
+  (`attemptWhen`, `taskWhen`), every row and event the test then reads.
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
@@ -173,6 +176,14 @@ add its rule here.
   a tab left before the Neovim opened, which nothing closed (2026-10-31,
   #429's review). The pid in the file, the frames the page sent and the
   processes still alive say whose it is; a longer wait would only hide it.
+- Check what must last again after a redraw the test causes. A check made
+  only as a view first appears races the page's own redraws (a clock
+  tick, a live update): the run page's graph dropped a task's needs edge
+  at every redraw after its first (Vue Flow ran the editor's connection
+  check on every edge it was handed, #281), and the spec that read the
+  edge on arrival failed only when the page's 5 s tick came first. Switch
+  a mode or toggle a setting, then check again, so a bug that only a
+  redraw shows fails every run.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

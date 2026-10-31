@@ -58,9 +58,13 @@ type touchedReply struct {
 // touchedReplyMax bytes in all. A session with nothing touched is left out.
 // Admin only.
 func (s *Server) handleTouched(w http.ResponseWriter, r *http.Request) {
+	q, ok := queryValues(w, r)
+	if !ok {
+		return
+	}
 	limit := touchedLimitDefault
-	if q := r.URL.Query().Get("limit"); q != "" {
-		n, err := strconv.Atoi(q)
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
 			writeError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive integer")
 			return

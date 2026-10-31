@@ -176,6 +176,8 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
 
 // A run page keeps the Crews page lit in the foot: a run is the Crews page's.
 const runRoute = computed(() => route.path.startsWith('/runs/'))
+// Dispatch's pages (its projects, a project's list, a ticket) keep it lit.
+const dispatchRoute = computed(() => route.path === '/dispatch' || route.path.startsWith('/dispatch/'))
 
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
@@ -187,6 +189,7 @@ const nav = computed<NavigationMenuItem[]>(() => [
     to: '/crews',
     active: route.path.startsWith('/crews') || runRoute.value,
   },
+  { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch', active: dispatchRoute.value },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
   ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
@@ -218,6 +221,7 @@ defineShortcuts({
   'g-a': chord(() => router.push('/agents')),
   'g-e': chord(() => router.push('/events')),
   'g-c': chord(() => router.push('/crews')),
+  'g-d': chord(() => router.push('/dispatch')),
   'g-s': chord(goSettings),
   ']': () => cursor.step(1),
   '[': () => cursor.step(-1),
@@ -230,6 +234,7 @@ defineShortcuts({
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
   alt_e: { ...inTerminal, handler: () => router.push('/events') },
   alt_c: { ...inTerminal, handler: () => router.push('/crews') },
+  alt_d: { ...inTerminal, handler: () => router.push('/dispatch') },
 })
 </script>
 
@@ -307,5 +312,6 @@ defineShortcuts({
     <CommandPalette @token="showToken = true" />
     <NeedsYouPill />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
+    <RenameSessionModal />
   </UDashboardGroup>
 </template>

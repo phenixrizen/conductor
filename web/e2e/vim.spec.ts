@@ -658,6 +658,18 @@ test('a Neovim lost behind another tab keeps the characters typed it never had, 
   }
 })
 
+// How many Neovims the server has opened on this page for file name, from the answers to the page's opens (watchSockets). The status
+// line shows normal mode before a tab's Neovim answers, so keys typed then reach none; and a tab left then would leave its Neovim
+// running on the server (#500), holding its file's swap file and one of the four a connection keeps. A tab that comes to the front,
+// opened or shown again as another closes, has its Neovim before a test goes on: nvimUp.
+function nvimOpens(page: Page, name: string): Promise<number> {
+  return page.evaluate(
+    (n) =>
+      ((window as unknown as SocketSeam).nvimOpened ?? []).filter((o) => o.reqId !== 'undefined' && (o.path === n || o.path.endsWith(`/${n}`))).length,
+    name,
+  )
+}
+
 // A tab left while keys Neovim has not done are on their way keeps its Neovim: they may be making a change it has not said yet. Neovim
 // is slow here and answers in the middle of a key (its config waits 1.5 s with vim.wait in InsertCharPre and in an x mapped to x, so
 // a key's acknowledgement comes before its change; j is busy for 2 s). Its change then shows on the tab not in front, or folded: the
@@ -686,10 +698,18 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     const lines = area.locator('.monaco-editor .view-lines')
     const status = area.locator('[data-nvim-status]')
     const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    // A tab that comes to the front, opened or shown again as another closes (other.txt here), has its Neovim before the test goes on:
+    // one left before would stay running on the server (#500), a fifth of the four a connection keeps, and later opens are refused.
+    const opens = (name: string) => nvimOpens(page, name)
+    const nvimUp = async (name: string, before: number) => {
+      await expect.poll(() => opens(name), { timeout: 30_000 }).toBeGreaterThan(before)
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    }
     const open = async (name: string) => {
+      const before = await opens(name)
       await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
       await expect(lines).toContainText(name, { timeout: 30_000 })
-      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+      await nvimUp(name, before)
     }
     const typeInto = async () => {
       await lines.click()
@@ -699,17 +719,19 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     }
     const question = page.locator('[role="dialog"]')
     const discard = async (name: string) => {
+      const before = await opens('other.txt')
       await tab(name).click()
       await page.keyboard.press('Escape')
       await area.locator('[data-editor-tab-active] [data-editor-close]').click()
       await expect(question).toContainText(`Save ${name}?`)
       await question.locator('[data-editor-discard]').click()
       await expect(tab(name)).toHaveCount(0)
+      await nvimUp('other.txt', before)
     }
     await pane.locator(`[data-file-node="${cwd}/edit.txt"]`).click()
     await expect(lines).toContainText('edit.txt', { timeout: 30_000 })
     await area.locator('[data-editor-keymap]').click()
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await nvimUp('edit.txt', 0)
     // Another tab in front while x is on its way: once Neovim has it, the tab not in front wears the dot, and its text holds x.
     await typeInto()
     await open('other.txt')
@@ -730,18 +752,22 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     // Closed right after typing, before Neovim has the character: the close asks.
     await open('quick.txt')
     await typeInto()
+    let before = await opens('other.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(question).toContainText('Save quick.txt?')
     await question.locator('[data-editor-discard]').click()
     await expect(tab('quick.txt')).toHaveCount(0)
+    await nvimUp('other.txt', before)
     // Closed right after typing, and Save chosen: the character is waited for, then written, then the tab closes.
     await open('saved.txt')
     await typeInto()
+    before = await opens('other.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(question).toContainText('Save saved.txt?')
     await question.locator('[data-editor-close-save]').click()
     await expect(tab('saved.txt')).toHaveCount(0, { timeout: 15_000 })
     expect(readFileSync(join(cwd, 'saved.txt'), 'utf8')).toBe('saved.txtx\nsecond\n')
+    await nvimUp('other.txt', before)
     // The area folded while x is on its way: once Neovim has it, the folded tab says so, and Close all asks. Opened once the page has
     // let go of the Neovims of the tabs closed above (a close waits for the keys on their way).
     await roomForNeovim(page)
@@ -1556,6 +1582,7 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
   writeFileSync(join(cwd, 'b.txt'), 'beta\n')
   const swapDir = join(state.home, '.local', 'state', 'nvim', 'swap')
   const swaps = () => (existsSync(swapDir) ? readdirSync(swapDir).filter((f) => f.includes('files-tabs')) : [])
+  await watchSockets(page)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'tabs', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
@@ -1566,15 +1593,22 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     const lines = area.locator('.monaco-editor .view-lines')
     const status = area.locator('[data-nvim-status]')
     const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    // A tab that comes to the front (opened, or shown again as another closes) has its Neovim's answer before the test goes on: one
+    // left before it stays running on the server, its swap file with it (#500).
+    const nvimUp = async (name: string, before: number) => {
+      await expect.poll(() => nvimOpens(page, name), { timeout: 30_000 }).toBeGreaterThan(before)
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    }
     const open = async (name: string, text: string) => {
+      const before = await nvimOpens(page, name)
       await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
       await expect(lines).toContainText(text, { timeout: 30_000 })
-      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+      await nvimUp(name, before)
     }
     await pane.locator(`[data-file-node="${cwd}/a.txt"]`).click()
     await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
     await area.locator('[data-editor-keymap]').click()
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await nvimUp('a.txt', 0)
     await lines.click()
     await page.keyboard.type('Ixx ')
     await page.keyboard.press('Escape')
@@ -1596,10 +1630,13 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await expect(lines).toContainText('xx alpha!', { timeout: 15_000 })
     // Closing it asks; Don't save drops the changes, the file is as it was, and its swap file goes.
     const question = page.locator('[role="dialog"]', { hasText: 'Save a.txt?' })
+    // b.txt comes to the front as a.txt closes, with a Neovim of its own.
+    let before = await nvimOpens(page, 'b.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(question).toBeVisible()
     await question.locator('[data-editor-discard]').click()
     await expect(tab('a.txt')).toHaveCount(0)
+    await nvimUp('b.txt', before)
     expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alpha\n')
     await expect.poll(() => swaps().filter((f) => f.includes('a.txt')), { timeout: 15_000, message: "a.txt's swap file goes with its changes" }).toEqual([])
     await expect(area.locator('[data-editor-keymap]')).toBeEnabled()
@@ -1611,14 +1648,15 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await page.keyboard.type('Ayy')
     await page.keyboard.press('Escape')
     await expect(tab('a.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    before = await nvimOpens(page, 'b.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await question.locator('[data-editor-close-save]').click()
     await expect(tab('a.txt')).toHaveCount(0, { timeout: 15_000 })
     expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alphayy\n')
-    // Neovim's own :q on b.txt: the tab closes and no swap file is left.
+    // Neovim's own :q on b.txt (in front again as a.txt closed): the tab closes and no swap file is left.
     await tab('b.txt').click()
     await expect(lines).toContainText('beta', { timeout: 15_000 })
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await nvimUp('b.txt', before)
     await lines.click()
     await page.keyboard.type(':q')
     await page.keyboard.press('Enter')

@@ -50,7 +50,11 @@ type crewInput struct {
 // name: GET /api/crews?offset=0&limit=100. total counts every crew. Without a
 // data directory there are none.
 func (s *Server) handleListCrews(w http.ResponseWriter, r *http.Request) {
-	offset, limit, err := pageParams(r.URL.Query())
+	q, ok := queryValues(w, r)
+	if !ok {
+		return
+	}
+	offset, limit, err := pageParams(q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
