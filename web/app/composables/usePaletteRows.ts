@@ -1,4 +1,6 @@
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
+import type { TicketSummary } from '~/composables/useDispatch'
+import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
@@ -8,7 +10,7 @@ import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } 
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
 import { resolveTyped } from '~/utils/fileTree'
-import { parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
+import { capGroup, parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
@@ -39,18 +41,25 @@ export interface PaletteContext {
   close: () => void
   /** The time the rows are read at: ages and "how long" are from it. */
   now: () => number
+  /** A ticket's picker (Set status…, Set priority…), opened once the palette has closed. */
+  pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
 const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon: string }> = [
   { id: 'yard', label: 'Yard', to: '/yard', kbds: ['G', 'Y'], icon: 'i-lucide-layout-grid' },
   { id: 'roundhouse', label: 'Roundhouse', to: '/roundhouse', kbds: ['G', 'R'], icon: 'i-lucide-gallery-horizontal' },
   { id: 'crews', label: 'Crews', to: '/crews', kbds: ['G', 'C'], icon: 'i-lucide-users' },
+  { id: 'dispatch', label: 'Dispatch', to: '/dispatch', kbds: ['G', 'D'], icon: 'i-lucide-ticket' },
   { id: 'agents', label: 'Agents', to: '/agents', kbds: ['G', 'A'], icon: 'i-lucide-bot' },
   { id: 'events', label: 'Events', to: '/events', kbds: ['G', 'E'], icon: 'i-lucide-radio-tower' },
   { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', kbds: [], icon: 'i-lucide-route' },
   { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', kbds: [], icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', kbds: [], icon: 'i-lucide-clipboard-paste' },
 ]
+
+/** The Tickets group's rows shown with nothing typed, and with something typed (capGroup). */
+const TICKETS_IDLE = 10
+const TICKETS_MATCHED = 50
 
 /** The row's second line, in the sidebar's grammar: `agent · where · how long`. */
 function sessionDetail(s: SessionInfo, now: number): string {
@@ -76,6 +85,9 @@ export function usePaletteRows(ctx: PaletteContext) {
   const copy = useCopy()
   const quick = useQuickReply()
   const shortcutsModal = useShortcutsModal()
+  const identity = useIdentity()
+  // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
+  const ticketOps = useDispatchOps(palette.ticketsGate)
   const renameModal = useRenameModal()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
@@ -410,11 +422,69 @@ export function usePaletteRows(ctx: PaletteContext) {
     return desktop.isDesktop.value ? [{ key: 'go:settings', label: 'Settings', icon: 'i-lucide-settings', kbds: ['G', 'S'], run: () => go('/settings'), href: '/settings' }] : []
   }
 
+  // ---------------------------------------------------------------------------
+  // Dispatch's tickets (docs/plans/dispatch.md, "web/app"; Owner decisions, 11: no new prefix, no new verb): the open tickets of every
+  // project in the search, a key or a word of the title finding one, a key typed whole ranking its ticket first; → offers Open, Copy key,
+  // Set status…, Set priority… and Assign to me.
+
+  /** Assign to me: the display name, as a person, added to the ticket's assignees; one operation, said in a toast. */
+  function assignToMe(t: TicketSummary) {
+    const name = identity.name.value.trim()
+    if (!name) return
+    // Queued behind the palette's other edits, and made on the ticket as they left it (usePalette's editTicket).
+    void palette.editTicket(t, (x) => ticketOps.editTickets([x], (y) => pickEdit('assignees', y, `person:${name}`, true), { apply: (y) => palette.patchTicket(ticketSummaryOf(y)), done: () => `${t.key} assigned to ${name}` }))
+  }
+
+  function ticketItem(t: TicketSummary): PaletteItem {
+    const status = statusWord(t.status)
+    const name = identity.name.value.trim()
+    const mine = !!name && t.assignees.includes(`person:${name}`)
+    const assignees = t.assignees.map((a) => (a.startsWith('person:') ? a.slice(7) : a.startsWith('agent:') ? (palette.catalog.value.find((x) => `agent:${x.id}` === a)?.name ?? a.slice(6)) : a))
+    const path = ticketPath(t.key)
+    return {
+      key: `ticket:${t.key}`,
+      label: `${t.key} ${t.title}`,
+      detail: [status.label, priorityWord(t.priority).label, t.owner ? `owner ${t.owner}` : '', assignees.length ? assignees.join(', ') : ''].filter(Boolean).join(' · '),
+      words: [t.key, t.title, t.owner, ...assignees],
+      exact: [t.key],
+      icon: status.icon,
+      run: () => go(path),
+      href: path,
+      actions: [
+        { id: 'open', kind: 'page', target: t.key, label: 'Open', icon: 'i-lucide-arrow-right', run: () => go(path) },
+        { id: 'copy-key', kind: 'page', target: t.key, label: 'Copy key', icon: 'i-lucide-copy', kbds: ['C'], run: () => void copy(t.key, `${t.key} copied`) },
+        { id: 'set-status', kind: 'page', target: t.key, label: 'Set status…', icon: 'i-lucide-circle-dot', kbds: ['S'], run: () => ctx.pickTicket('status', t) },
+        { id: 'set-priority', kind: 'page', target: t.key, label: 'Set priority…', icon: 'i-lucide-signal-high', kbds: ['P'], run: () => ctx.pickTicket('priority', t) },
+        { id: 'assign-me', kind: 'page', target: t.key, label: name ? (mine ? `Assigned to you (${name})` : `Assign to me (${name})`) : 'Assign to me: say your name first', icon: 'i-lucide-user-plus', kbds: ['A'], disabled: !name || mine, run: () => assignToMe(t) },
+      ],
+    }
+  }
+
+  /** The rows of the tickets read, made once per read (not per keystroke): a query filters them. */
+  const ticketRows = computed(() => (admin.hasToken.value ? palette.tickets.value.map(ticketItem) : []))
+  /**
+   * The Tickets group: the open tickets read (usePalette.tickets), the latest updated first; a key typed whole that none of them has is a
+   * row of its own that opens its page (a closed ticket's, one past the most read), which says what it is.
+   */
+  function ticketItems(query: string): PaletteItem[] {
+    if (!admin.hasToken.value) return []
+    const rows = [...ticketRows.value]
+    const typed = parseTicketKey(query.trim().toUpperCase())
+    if (typed && !palette.tickets.value.some((t) => t.key === typed.key)) {
+      rows.unshift({ key: `ticket:${typed.key}`, label: `Open ${typed.key}`, detail: 'Not among the open tickets read: its page says what it is', words: [typed.key], exact: [typed.key], icon: 'i-lucide-ticket', run: () => go(ticketPath(typed.key)), href: ticketPath(typed.key) })
+    }
+    return rows
+  }
+
   /** `>` alone: every action (the page's group goes first, outside this). */
   function actionItems(): PaletteItem[] {
     const out: PaletteItem[] = []
     out.push({ key: 'action:launch', label: 'Launch an agent', icon: 'i-lucide-play', kbds: ['N'], run: () => ctx.launch() })
     out.push(...launchItems())
+    // New ticket in each project not archived (docs/plans/dispatch.md: `>` gains them), the dialog opened by the palette.
+    for (const p of palette.projects.value) {
+      out.push({ key: `action:new-ticket:${p.key}`, label: `New ticket in ${p.key}`, detail: p.name, icon: 'i-lucide-ticket-plus', run: () => palette.askNewTicket(p.key) })
+    }
     const done = attention.sessions.value.filter((s) => sessionLive(s.status) && s.attention?.state === 'done')
     out.push({
       key: 'action:stop-done',
@@ -747,6 +817,10 @@ export function usePaletteRows(ctx: PaletteContext) {
       else groups.push({ id: 'exited', label: 'Exited', rows: [{ key: 'exited:unfold', label: `${exited.length} exited ${exited.length === 1 ? 'session' : 'sessions'}`, detail: 'Enter unfolds them', icon: 'i-lucide-chevron-right', keepOpen: true, run: () => (showExited.value = true) }] })
     }
     groups.push({ id: 'runs', label: 'Runs', rows: blocks.map((b) => runItem(b, attention.runOf(b.runId))) })
+    // A ticket's key typed whole puts the Tickets group first after Needs you and the page's, so Enter opens that ticket.
+    const tickets: PaletteGroup<PaletteItem> = { id: 'tickets', label: 'Tickets', rows: ticketItems(query) }
+    if (parseTicketKey(query.trim().toUpperCase())) groups.splice(page ? 2 : 1, 0, tickets)
+    else groups.push(tickets)
     groups.push({ id: 'shared', label: 'Shared with you', rows: sharedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })
     groups.push({ id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] })
@@ -765,7 +839,9 @@ export function usePaletteRows(ctx: PaletteContext) {
         const row = verbRow(verb, now)
         if (row) return { mode, verb, groups: [{ id: 'verb', label: 'Do', pinned: true, rows: [row] }, ...rank(searchGroups(rest, now).filter((g) => g.id === 'needs'), '', r, now)] }
       }
-      return { mode, verb: null, groups: rank(searchGroups(rest, now), rest, r, now) }
+      // The Tickets group shows its first rows as ranked: a few with nothing typed (those used lately, then the latest updated), more
+      // once something is; the rest are found by typing.
+      return { mode, verb: null, groups: capGroup(rank(searchGroups(rest, now), rest, r, now), 'tickets', rest ? TICKETS_MATCHED : TICKETS_IDLE) }
     }
     if (mode === 'actions') {
       const page = palette.page.value

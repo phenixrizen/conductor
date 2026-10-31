@@ -42,6 +42,15 @@ export function listWatch(project: () => string, read: () => Promise<unknown>): 
   return { later: (e) => e.project !== '' && e.project === project(), read }
 }
 
+/**
+ * A list's, a board's or a roadmap's saved views' watch: read again, after the window, on a `view` event of its project or of every
+ * project (`project` ""): a view of every project is offered on every project's pages beside the project's own, and its save, edit and
+ * delete name no project.
+ */
+export function viewsWatch(project: () => string, read: () => Promise<unknown>): DispatchWatch {
+  return { later: (e) => e.entity === 'view' && (e.project === '' || e.project === project()), read }
+}
+
 /** The projects page's watch: itself, after the window, on any event at all, since a ticket's status moves its project's counts. */
 export function projectsWatch(read: () => Promise<unknown>): DispatchWatch {
   return { later: () => true, read }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { apiQuery, emptyFilter, filterFromURL, filterFromView, filterNarrows, filterToURL, filterToView, MAX_SEARCH, milestoneChoices, type DispatchFilter } from './dispatchQuery'
+import { sameFilter } from './dispatchQuery'
+import type { TicketStatus } from '~/composables/useDispatch'
 
 const names = {
   labels: [
@@ -179,5 +181,30 @@ describe("the list's request", () => {
     expect(apiQuery('CND', filterOf({ labels: ['nosuch'] }), names)).toBeNull()
     expect(apiQuery('CND', filterOf({ milestone: 'v9' }), names)).toBeNull()
     expect(apiQuery('CND', filterOf({ labels: ['nosuch', 'api'] }), names)).toContain('label=aaaaaaaaaaaaaaa1')
+  })
+})
+
+describe('the filter a saved view applies (PR-9)', () => {
+  it('is the same filter whatever the order of its values, its search trimmed', () => {
+    const a = { ...emptyFilter(), status: ['ready', 'in_progress'] as TicketStatus[], labels: ['api', 'ui'], q: 'login ' }
+    const b = { ...emptyFilter(), status: ['in_progress', 'ready'] as TicketStatus[], labels: ['ui', 'api'], q: 'login' }
+    expect(sameFilter(a, b)).toBe(true)
+    expect(sameFilter(emptyFilter(), emptyFilter())).toBe(true)
+  })
+  it('differs by any value, the sort, its direction or the grouping', () => {
+    const base = emptyFilter()
+    expect(sameFilter(base, { ...base, status: ['ready'] })).toBe(false)
+    expect(sameFilter(base, { ...base, sort: 'priority' })).toBe(false)
+    expect(sameFilter(base, { ...base, desc: false })).toBe(false)
+    expect(sameFilter(base, { ...base, group: 'status' })).toBe(false)
+    expect(sameFilter(base, { ...base, blocked: true })).toBe(false)
+    expect(sameFilter(base, { ...base, milestone: 'v1' })).toBe(false)
+    expect(sameFilter(base, { ...base, priority: [4] })).toBe(false)
+  })
+  it('round-trips a saved view: the filter saved reads back the same', () => {
+    const names = { labels: [{ id: '00000000000000a1', name: 'api' }], milestones: [{ id: '00000000000000b1', name: 'v1' }] }
+    const f = { ...emptyFilter(), status: ['in_review'] as TicketStatus[], labels: ['api'], milestone: 'v1', sort: 'priority' as const, desc: true }
+    const q = filterToView(f, names)!
+    expect(sameFilter(filterFromView(q, names), f)).toBe(true)
   })
 })
