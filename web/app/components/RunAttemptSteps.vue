@@ -10,8 +10,10 @@ import { stepCommand, stepManifest, stepPorts, stepWhere, stepWords } from '~/ut
  * manifest that produced it and its ports, and Log, which fetches the
  * receipt's log through the API with the bearer header (`log`: `stepLog` or
  * `prerequisiteLog`, never a link the browser follows) and shows it with its
- * SHA-256 and a Save that downloads it from a blob URL. A run the server
- * has let go reads the same: the steps come from the ledger.
+ * SHA-256 and a Save that downloads it from a blob URL: the log's bytes as
+ * the server sent them, never its decoded text, so the file matches the hash
+ * even where the log holds bytes that are no UTF-8. A run the server has let
+ * go reads the same: the steps come from the ledger.
  */
 const props = defineProps<{
   steps: RunStep[]
@@ -32,7 +34,7 @@ const key = (s: RunStep) => `${s.phase}:${s.id}:${s.k}`
 /** A log can be asked for once the step ended; one dropped past the run's bound says so instead. */
 const hasLog = (s: RunStep) => (s.state === 'finished' || s.state === 'interrupted') && (s.logBytes > 0 || !!s.logDropped)
 
-const shown = ref<{ step: RunStep; text: string; sha256: string; error: string; loading: boolean } | null>(null)
+const shown = ref<{ step: RunStep; text: string; bytes?: Uint8Array; sha256: string; error: string; loading: boolean } | null>(null)
 const open = computed({
   get: () => !!shown.value,
   set: (v: boolean) => {
@@ -44,7 +46,7 @@ async function showLog(s: RunStep) {
   try {
     const l = await props.log(s)
     if (shown.value?.step !== s) return
-    shown.value = { step: s, text: l.text, sha256: l.sha256, error: '', loading: false }
+    shown.value = { step: s, text: l.text, bytes: l.bytes, sha256: l.sha256, error: '', loading: false }
   } catch (e) {
     if (shown.value?.step !== s) return
     const err = e as { status?: number; code?: string; message?: string }
@@ -54,8 +56,8 @@ async function showLog(s: RunStep) {
 }
 function save() {
   const v = shown.value
-  if (!v || v.error) return
-  const url = URL.createObjectURL(new Blob([v.text], { type: 'text/plain;charset=utf-8' }))
+  if (!v || v.error || !v.bytes) return
+  const url = URL.createObjectURL(new Blob([v.bytes as BlobPart], { type: 'text/plain' }))
   const a = document.createElement('a')
   a.href = url
   a.download = `${props.saveAs(v.step)}.log`

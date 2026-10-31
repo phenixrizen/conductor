@@ -584,9 +584,13 @@ export interface RunManifest {
   prerequisites?: RunPrerequisite[]
 }
 
-/** A receipt's log as `stepLog` and `prerequisiteLog` read it: its text and the SHA-256 the server sent beside it. */
+/**
+ * A receipt's log as `stepLog` and `prerequisiteLog` read it: its text, its bytes as the server sent them (what Save downloads,
+ * so the file matches the hash), and the SHA-256 the server sent beside it.
+ */
 export interface StepLog {
   text: string
+  bytes: Uint8Array
   sha256: string
 }
 
@@ -735,7 +739,7 @@ export function useSessions() {
   const { request, requestText } = useApi()
   /** A receipt's log, with the SHA-256 the server sent in `X-Conductor-Log-SHA256`. */
   const readLog = (path: string): Promise<StepLog> =>
-    requestText(path).then((r) => ({ text: r.text, sha256: r.headers.get('X-Conductor-Log-SHA256') ?? '' }))
+    requestText(path).then((r) => ({ text: r.text, bytes: r.bytes, sha256: r.headers.get('X-Conductor-Log-SHA256') ?? '' }))
 
   return {
     list: () => request<{ sessions: SessionInfo[] }>('/api/sessions').then((r) => r.sessions ?? []),
