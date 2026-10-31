@@ -92,16 +92,27 @@ item does for each:
    first: the token chain before the identity provider, the configured ICE
    servers before a provider's, the webhooks before a provider's sinks. No
    file outside `ext/` names the entitlement source (C7, the same lint).
-8. **Served** by the guard every provider call goes through: bounded by a
-   wait `ext` names, its panic recovered, its answer checked against
-   `ext`'s bounds, and the free default answered on any failure, call by
-   call, with nothing remembered about the failure, so a provider that
-   recovers is used again at its next call and nothing restarts. Calls fed
-   from queues never hold the code that queues them: a full queue drops its
-   oldest. Start-up waits on no provider past `StartWait`, and a restore
-   from a provider runs only when a person asks for it. The outage and
-   lapse tests themselves are the private repositories' plans' (article 8
-   asks each of them for one).
+8. **Served** by three rules. First, the contract of every interface: a
+   call answers from what the provider holds on this machine, never with a
+   round trip to its service on the call's path; the provider talks to its
+   service only on goroutines of its own, begun in `Start`, and keeps what
+   it holds current there (`ext`'s package documentation says so, and the
+   contract suite, C9, checks every call against it). Second, the guard
+   every provider call goes through, which bounds a provider that breaks
+   the contract: a wait `ext` names (a bound of a hang, never what a normal
+   answer takes), its panic recovered, its answer checked against `ext`'s
+   bounds, and the free default answered on any failure, call by call,
+   with nothing remembered about the failure, so a provider that recovers
+   is used again at its next call and nothing restarts. Calls fed from
+   queues never hold the code that queues them: a full queue drops its
+   oldest. Third, start-up: `Start` returns at once, and one that errs,
+   panics or is late is started again with backoff while its slots answer
+   the free default, so a provider whose service was down when the server
+   started is used once `Start` succeeds, with no restart (Host and Start).
+   `GET /api/ice`, which anyone may call, never asks a provider, and a
+   restore from a provider runs only when a person asks for it. The outage
+   and lapse tests themselves are the private repositories' plans' (article
+   8 asks each of them for one).
 9. **Respected.** No new dependency and no cgo. Export snapshots the two
    SQLite databases with SQLite's `VACUUM INTO` through `modernc.org/sqlite`,
    already their driver (checked 2026-10-30 with v1.61.0, SQLite 3.54.1, on
@@ -182,12 +193,14 @@ How a provider plugs in, from the provider's side:
 3. `conductor serve` starts. `runServe` calls `ext.Freeze()` (which
    closes the registry, so a later register panics, and returns what it
    holds), fills every empty slot with its free default (`local.Fill`),
-   and hands the result to `srv.UseExtensions`, which wraps every provider
-   in the guard.
+   and hands the result to `api.New` (`api.WithExtensions`), which wraps
+   every provider in the guard before the server's first write.
 4. Before the server serves, every provider that implements `ext.Starter`
    gets `Start(ctx, host)`, its one door into the app: start a crew's run,
    type into a session or answer its question, send a notice, a directory
-   of its own, a logger.
+   of its own, a logger. `Start` returns at once; reaching its service is
+   the work of the goroutines it begins, and a `Start` that fails is
+   called again later.
 5. From then on each seam calls its interface; the guard turns a late,
    failed, panicking or out-of-bounds answer into the free default's.
 
@@ -250,8 +263,8 @@ type Registration struct {
 func Registered() []Registration
 
 // Providers is what the registry holds, as the composition root reads it.
-// The entitlement source is not in it: no code of this repository reads
-// that slot (C7).
+// The entitlement source has no typed field: no code of this repository
+// asks it (C7). It is in All, as every registered provider is.
 type Providers struct {
 	Identity      IdentityProvider
 	Router        DecisionRouter
@@ -260,6 +273,18 @@ type Providers struct {
 	Continuity    ContinuityStore
 	Media         MediaRoomProvider
 	Runtime       Runtime
+	// All is every registered provider, the entitlement source's slot
+	// among them, in Registered's order: what the server starts (Host and
+	// Start) and GET /api/capabilities lists. A value is typed only as a
+	// Provider, so a caller learns its kind and name, and whether it is a
+	// Starter, and nothing it could gate a feature on.
+	All []Entry
+}
+// Entry is one registered provider in one slot.
+type Entry struct {
+	Kind  string
+	Name  string
+	Value Provider
 }
 // Freeze closes the registry and returns what it holds. Every call after
 // the first returns the same; a Register after it panics.
@@ -284,8 +309,12 @@ A `Register` panics on a nil interface, on a name `ValidName` refuses, on
 a second provider in a one-value slot, on a name a list already holds, on
 a list past `MaxPerList`, and after `Freeze`. One provider may register in
 several slots under one name (a premium package that is both a router and
-a sink); it is then started once (Host and Start, below). The registry is
-guarded by a mutex; `Registered`, the accessors and `Freeze` return copies.
+a sink), as one value: a name already registered in another slot is taken
+only for the same value (its dynamic type comparable and the two `==`, as
+a pointer is), and panics for a different or an incomparable one, so one
+name is always one provider. It is then started once (Host and Start,
+below). The registry is guarded by a mutex; `Registered`, the accessors
+and `Freeze` return copies.
 
 ### `ext`: the eight interfaces and their records (PR-1)
 
@@ -294,7 +323,10 @@ on what may be absent, `omitzero` on times), because the cloud repository
 takes these types as its wire records. Each bound below is a constant of
 `ext`, and each record a provider returns has a `Valid` method the guard
 applies and a provider can call itself. Each wait below is the most the
-server waits for one call; the guard applies it.
+server waits for one call; the guard applies it. A wait bounds a provider
+that hangs: the contract of every method is to answer from what the
+provider holds (article 8), so a provider that keeps it answers in
+microseconds and the wait is never felt.
 
 **Identity** (`ext/identity.go`; wired in C2):
 
@@ -313,7 +345,7 @@ type IdentityProvider interface {
 // a launch's By): a subject, a display name and, from Authenticate, what
 // it may do here.
 type Principal struct {
-	Subject string  `json:"subject"`          // 1 to MaxSubject bytes of printable ASCII, no space; never "admin"
+	Subject string  `json:"subject"`          // 1 to MaxSubject bytes of printable ASCII, no space
 	Name    string  `json:"name"`             // 1 to MaxPrincipalName characters, one line
 	Grants  []Grant `json:"grants,omitempty"` // from Authenticate: at least one
 }
@@ -322,8 +354,13 @@ const (
 	GrantAdmin Grant = "admin" // what the workbench token may do
 	GrantHost  Grant = "host"  // register a hosted session, as a host token
 )
+// SubjectActor is the prefix a principal's subject takes as the actor of
+// the receipts it makes (C2): "user:" + Subject, at most 53 bytes, inside
+// Dispatch's MaxActor (60) and never one of the actors this repository
+// keeps for itself ("admin", "merge", "agent:<member>").
+const SubjectActor = "user:"
 const (
-	MaxSubject       = 128
+	MaxSubject       = 48
 	MaxPrincipalName = 40 // proto.MaxNameLen, a viewer's display name
 	IdentityWait     = time.Second
 )
@@ -505,15 +542,23 @@ type ContinuityStore interface {
 	Saved(ctx context.Context, d Doc) error
 	Deleted(ctx context.Context, d Doc) error
 	// Restore writes this device's latest copy as an archive of `conductor
-	// export`'s format; ErrNothingToRestore when it keeps none. Called only
-	// by `conductor restore --provider`, with no server running.
-	Restore(ctx context.Context, w io.Writer) error
+	// export`'s format, holding any part of data/ that the archive's checks
+	// accept (C6); ErrNothingToRestore when it keeps none. Called only by
+	// `conductor restore --provider`, with no server running and no Start:
+	// r gives the provider its own directory and a logger, all it has then.
+	Restore(ctx context.Context, r RestoreRequest, w io.Writer) error
+}
+// RestoreRequest is what a provider's Restore is given on a machine where
+// no server has started it.
+type RestoreRequest struct {
+	Dir string       // <dataDir>/ext/<name>, made 0700, empty on a fresh machine: the provider's sign-in goes there
+	Log *slog.Logger // naming the provider
 }
 // Doc is one local commit.
 type Doc struct {
 	Store string    `json:"store"` // data | ledger | dispatch | gap
 	Path  string    `json:"path"`  // a document's path in the data directory, a run's id, "commit"
-	Rev   int64     `json:"rev,omitempty"` // the run's revision; the commit's last change in Dispatch's log
+	Rev   int64     `json:"rev,omitempty"` // data: the data directory's commit sequence; ledger: the run's revision; dispatch: the commit's last change in its log
 	At    time.Time `json:"at"`
 	Size  int64     `json:"size,omitempty"` // the document's bytes; for a gap, how many docs were dropped
 	Data  []byte    `json:"data,omitempty"` // the bytes as written, when at most MaxDocData
@@ -550,14 +595,13 @@ type MediaRoomProvider interface {
 	Provider
 	// ICEServers answers the servers one connection may use, beside the
 	// configured ones: a hosted session's viewer, a host's registration, a
-	// paste invite's answer, an offer gathered before any session. Safe for
-	// concurrent use.
+	// paste invite's answer. Safe for concurrent use.
 	ICEServers(ctx context.Context, r ICERequest) ([]ICEServer, error)
 	// Room answers how to join the room of a piece of work; ok false: none.
 	Room(ctx context.Context, r RoomRequest) (RoomJoin, bool, error)
 }
 type ICERequest struct {
-	Purpose string `json:"purpose"` // viewer | host | paste | offer
+	Purpose string `json:"purpose"` // viewer | host | paste (GET /api/ice's offer never reaches a provider)
 	Session string `json:"session,omitempty"`
 	Role    string `json:"role,omitempty"`
 	Viewer  string `json:"viewer,omitempty"`
@@ -578,7 +622,7 @@ type RoomJoin struct {
 	ExpiresAt time.Time `json:"expiresAt,omitzero"`
 }
 const (
-	MaxICEServers = 8 // the configured ones and a provider's together
+	MaxICEServers = 8 // a provider's, per connection; the configured ones are not counted and never cut
 	MaxICEURLs    = 4
 	MaxICEURL     = 512
 	MaxICESecret  = 256
@@ -596,10 +640,14 @@ native default are C10's to add, before anything implements it
 ### `ext`: Host and Start (PR-1 declares them, PR-4 builds them)
 
 ```go
-// Starter is a provider that needs the server: Start is called once, after
-// the server is made and before it serves, with the provider's one door
-// into the app. It returns within StartWait; ctx ends when the server
-// shuts down, and the provider's goroutines end with it.
+// Starter is a provider that needs the server: Start is called after the
+// server is made and before it serves, with the provider's one door into
+// the app. It returns at once, never waiting on its service (it begins
+// goroutines that reach it), and it does not fail for an outage: an error
+// is for what no retry mends (a bad configuration). One that errs, panics
+// or has not returned within StartWait is called again, with a new ctx,
+// after a backoff (Host and Start); ctx ends when the server shuts down or
+// gives that try up, and the provider's goroutines end with it.
 type Starter interface {
 	Start(ctx context.Context, h Host) error
 }
@@ -664,7 +712,7 @@ native default is C10's.
 func Fill(p ext.Providers) ext.Providers
 ```
 
-### `app` and `cmd/conductor` (PR-2)
+### `app` and `cmd/conductor` (PR-1)
 
 ```go
 // Package app is Conductor's entry point for a main of this module or of
@@ -678,8 +726,9 @@ func Main() // SIGINT and SIGTERM end ctx; Run(os.Args[1:]); the error printed; 
 `cmd/conductor/main.go` becomes `func main() { app.Main() }`; what it did
 moves into `Main` unchanged. `cmd/conductor/main_test.go` gains
 `TestPlainBuildRegistersNothing`: its binary links every package `main`
-links, every `init` has run, and `ext.Registered()` is empty. It runs in
-every PR's `go test ./...`, so every PR of the stream carries it.
+links, every `init` has run, and `ext.Registered()` is empty. It lands
+in PR-1, the stream's first, and runs in every PR's `go test ./...`
+after it, so every PR of the stream carries it.
 `docs/repository-map.md`'s "Adding things" gains **A provider**: implement
 an `ext` interface in another module, register it in `init`, build a
 `main` that blank-imports it and calls `app.Main`, start from `ext`'s
@@ -687,21 +736,33 @@ package documentation.
 
 ### The composition root, and the guard (PR-3)
 
-`internal/cli/serve.go`: right after `api.New`, `srv.UseExtensions(
-local.Fill(extensions()))`, where `extensions` is a package variable
-holding `ext.Freeze` that a test replaces (as `writeAssets` and
-`runHostAgent` are); when anything is registered, one line at info names it
-(`extensions: identity cloud, notifications push`), and a plain build logs
-nothing new. `internal/cli/host.go`: `extensions()` too, so the registry
-is closed in host mode as well; nothing is injected there until C10's
-Runtime.
+`internal/cli/serve.go`: `api.New(cfg, cat, log, web, st,
+api.WithExtensions(local.Fill(extensions())))`, where `extensions` is a
+package variable holding `ext.Freeze` that a test replaces (as
+`writeAssets` and `runHostAgent` are); when anything is registered, one
+line at info names it (`extensions: identity cloud, notifications push`),
+and a plain build logs nothing new. The providers go into `api.New`, not
+after it, because `New` already writes: it saves `catalog.json` with
+configured env values masked, migrates the crews, and opens the ledger,
+whose recovery runs `Recover`'s transitions and `syncRecords`' record
+writes before `New` returns (`internal/api/ledger.go`). The sync hooks
+(C6) are installed from the option before the first of those writes, so
+no commit of the start-up is missed. `internal/cli/host.go`:
+`extensions()` too, so the registry is closed in host mode as well;
+nothing is injected there until C10's Runtime.
 
-`internal/api/extensions.go` (new): the server's slots, set in `api.New`
-to `local.Fill(ext.Providers{})`, so a server made in a test without
-`UseExtensions` is the free build; `UseExtensions(p ext.Providers)`, which
-takes a filled set (it asks nothing) and wraps every provider in the
-guard, defaults included, so no call site tells the two apart; and the
-guard itself:
+`internal/api/extensions.go` (new): `New` gains a trailing `...Option`,
+and `WithExtensions(p ext.Providers)` the one option of this item, so
+every existing caller of `New`, the tests among them, compiles unchanged.
+The server's slots are `local.Fill(ext.Providers{})` when no option sets
+them, so a server made in a test without it is the free build;
+`WithExtensions` takes a filled set (it asks nothing) and `New` wraps
+every provider in the guard, defaults included, so no call site tells the
+two apart. Queue-fed calls made during `New` wait in their queues, whose
+drains begin once the provider's `Start` has succeeded (below; at once
+`StartExtensions` runs for a provider that is no `Starter`); a queue that
+fills meanwhile drops its oldest and the gap is told (C6). And the guard
+itself:
 
 ```go
 // extCall runs fn for the provider name of kind within wait and answers
@@ -755,14 +816,22 @@ its others (`track`).
   `ext/` out (it may hold a provider's credentials).
 - `Log` is the server's logger with `provider=<name>`.
 
-`(*Server).StartExtensions(ctx)` calls `Start` once per provider name that
-implements `ext.Starter` (through the value registered first), all at
-once, each on its own goroutine with `StartWait`; one that errs, panics or
-has not returned by then is logged, and every slot it holds keeps the free
-default for this server's life. `runServe` calls it after
-`UseExtensions` and before the listeners serve, with the maintenance
-context, which ends at shutdown. `conductor host` starts none: it has no
-`Host` to give.
+`(*Server).StartExtensions(ctx)` walks `Providers.All` and calls `Start`
+once per distinct value that implements `ext.Starter` (one name is one
+value, the registry's rule), the entitlement source's slot included, all
+at once, each on its own goroutine with `StartWait`. Until a provider's
+`Start` has succeeded, every slot it holds answers its free default and
+its queues hold what reaches them. One that errs, panics or has not
+returned by `StartWait` is logged (once a minute, as the guard logs), its
+try's context is cancelled, so the work it left behind ends, and it is
+started again with a new context after a backoff, 1 s doubling to 5
+minutes, for as long as the server runs; a late `Start` that returns
+after its try was given up has its answer ignored. Once one succeeds, its
+slots are its own from their next call: a provider whose service was
+down at start-up is used as soon as it is back, with no restart (article
+8). `runServe` calls it after `api.New` and before the listeners serve,
+with the maintenance context, which ends at shutdown and ends every try.
+`conductor host` starts none: it has no `Host` to give.
 
 ### C2, identity at `authenticate` and `hostTokenOK` (PR-6)
 
@@ -782,8 +851,13 @@ a refused principal is logged at debug by its provider's name, never by
 its token.
 
 **The subject in receipts.** `principal.actor()` is `adminActor` ("admin")
-for the workbench token and the principal's subject otherwise, which is
-why the subject "admin" is refused. `requireAdmin` puts the request's
+for the workbench token and `ext.SubjectActor` + the principal's subject
+(`user:<subject>`) otherwise. The prefix and `MaxSubject` (48) keep every
+provider actor within Dispatch's `MaxActor` (60 bytes, `Op.check`'s
+`ErrBadActor`) and the tags built from it, and apart from the actors
+this repository keeps for itself: "admin", Dispatch's `ActorMerge`
+("merge") and `agent:<member>`. No provider subject can be refused by
+Dispatch or share another actor's receipts. `requireAdmin` puts the request's
 principal in its context (`withPrincipal`), and `actorOf(r)` reads it. The
 ledger's commands (`handlePause`, `handleCancelTask`, `handleRetryTask`,
 `handleAcceptTask`), its receipt read (`handleGetCommand`), Dispatch's
@@ -796,9 +870,14 @@ actor that made it, as today; nothing stored changes shape.
 ### C3, notification sinks over the event hub; webhooks the first (PR-7)
 
 `internal/api/notify.go` (new): `notifier`, the sinks in order, each with
-its `extQueue` of `SinkQueue` notifications and its `Events` filter. The
-event hub's `activity` hands each entry to the internal sinks first, as
-today (the run engine's `OnActivity`), then to the notifier, which types it
+its `extQueue` of `SinkQueue` notifications and its `Events` filter. On
+main the webhooks' sink is added to the event hub first
+(`startWebhooks`, `webhooks.go`, called in `New` before
+`s.events.addSink(s.runs.OnActivity)`), and the hub's comment says so:
+the webhooks, then the crew runs. The notifier takes the webhooks' place
+in that order, added by `New` where `startWebhooks` is called today, so
+the hub's sinks stay in main's order: the notifier (the webhooks first in
+it), then the run engine's `OnActivity`. The notifier types each entry
 once (`eventTypeOf`), looks the session up once (name, agent, crew
 reference) when a sink wants it, and queues one `ext.Notification` for
 every sink whose `Events` is nil or lists the entry's event name or its own
@@ -813,8 +892,10 @@ signs and delivers once, as `deliver` does. The ring of `push`, `pop` and
 `run` becomes `extQueue`, shared with the providers' sinks; the queue's
 bound (256, the oldest dropped, the first drop and every hundredth logged),
 the timeout, the address rule, the redirect rule and the order are
-unchanged. The webhooks come first, in config order, then the registered
-sinks, in registration order. `Host.Notify` reaches the provider sinks.
+unchanged: the webhooks are still handed each entry before the run
+engine, as on main. Within the notifier the webhooks come first, in
+config order, then the registered sinks, in registration order.
+`Host.Notify` reaches the provider sinks.
 
 ### C4, context in the task file and `task_context`; touches to the providers (PR-8)
 
@@ -871,15 +952,25 @@ chat's "answered" line). A text answer stays `Local.Submit` with
 `Question` and `ByName`. A held turn, a question no longer shown and a
 question answered in the terminal refuse it as they refuse a viewer.
 
-**The router** (`internal/api/router.go`, PR-9): an internal activity sink
-of the hub that queues the session's id (256, the oldest dropped) on a
-`needs_input` attention entry, and on any entry of a session with a routed
-question not yet resolved. A worker (at most 16 at once) reads the
-session's attention from the registry; when it shows a question whose id
-is not the last one routed for that session (a question's id is new with
-each change, so one id per session is enough; it goes with the session),
-it builds the `ext.Decision`, calls `Route` through
-`extCall` (`RouteWait`), and:
+**The router** (`internal/api/router.go`, PR-9) watches the sessions'
+attention itself, not their activity: a question can stop waiting with
+nothing recorded (`Local.withdrawShownLocked` records no entry, and the
+terminal may stay quiet after it). It is fed by the session change hooks
+every attention change already calls, after the session's lock is let
+go: `localChange` (a server session's `OnChange`) and the hosted hub's
+`OnChange`, each of which queues the session's id (256, the oldest
+dropped, never waiting) after its work of today. One worker per session
+id at a time (at most 16 sessions at once) reads the session's attention
+from the registry and keeps, per session, the questions it routed: their
+ids, each `outstanding` or `resolved`, at most 64 per session (the
+oldest resolved forgotten first), forgotten with the session. An id's
+lifecycle is the router's own, never inferred from the id being new: a
+question an agent asked and the work set aside comes back at the turn's
+done with its first id (`TestAQuestionSetAsideByWorkShowsAgainAtTheDone`),
+so an id already in the set is never routed again, whether it shows for
+the first time since or again. When the session shows a question whose id
+the set does not hold, the worker adds it as outstanding, builds the
+`ext.Decision`, calls `Route` through `extCall` (`RouteWait`), and:
 
 - an empty route records nothing: the free default, byte for byte;
 - a route with destinations records one `status` entry in the session's
@@ -890,10 +981,19 @@ it builds the `ext.Decision`, calls `Route` through
   a line. A person's answer that came first wins and the route's is
   refused (`ErrQuestionAnswered`, logged at debug).
 
-The worker tells `Resolved` once when the session next records anything
-after the question stops waiting (answered, withdrawn, the screen moved on)
-and when the session leaves the registry (`Ended`). `Host.Submit`'s
-`Input` lands here for server sessions.
+The same worker, serialised per session, tells `Resolved` once per
+outstanding id and marks it resolved, when the change it reads shows that
+the question no longer waits: for a server session, when it neither shows
+nor is kept by the session (set aside in its turn, or held over by a held
+turn: `Local.Keeps(id)`, new, which reads what `keeps` reads in the
+session's tests), so a question set aside and shown again at the done is
+one routed question, told `Resolved` once, at its real end; for a hosted
+session, whose host tells the server only what shows, when it stops
+showing, and a resolved id that shows again is neither routed nor
+resolved again (the people watching answer it, as on main, and a router's
+answer through `Host.Submit` is still decided by the claim). When the
+session leaves the registry, each id still outstanding is told with
+`Ended`. `Host.Submit`'s `Input` lands here for server sessions.
 
 **Hosted sessions** (PR-10): one new host control message, server to host.
 
@@ -911,7 +1011,7 @@ type HostAnswerAsMsg struct {
 	Input     string `json:"input,omitempty"`     // at most MaxAnswerInput (48) bytes
 	Text      string `json:"text,omitempty"`      // at most MaxSubmit (4,096) bytes
 	ByName    string `json:"byName"`              // 1 to MaxNameLen (40) characters
-	BySubject string `json:"bySubject,omitempty"` // at most 128 bytes of printable ASCII
+	BySubject string `json:"bySubject,omitempty"` // at most 48 bytes (ext.MaxSubject) of printable ASCII
 }
 func (m HostAnswerAsMsg) Valid() bool // the bounds, exactly one of Input and Text
 // HostInfo gains:
@@ -923,12 +1023,35 @@ and `Valid` holds every field to its bound. The three places:
 `internal/proto/hostmsg.go`; `web/app/utils/protocol.ts`
 (`HostAnswerAsMessage`, `HOST_MAX_ANSWER_AS_SUBJECT`, `answerAs` on the
 host's info); `docs/protocol.md`, Host control connection (the message's
-row and the register's field). `internal/hostagent/agent.go` sets
-`AnswerAs` in its register (so `conductor host` and a server's uplink to a
-switchyard both say it) and handles the message on a goroutine of its own,
-never in the control loop: an invalid one is dropped and logged; a valid
-one is applied and its outcome logged at debug; the result reaches the
-server as the host's attention and activity always do.
+row and the register's field).
+
+**A switchyard never answers.** A switchyard, which someone else may run,
+has no authority over the terminal today: `hostagent.Options.Switchyard`
+takes no attention or activity from it, its stop never stops the
+process, and `api`'s principal gives a switchyard's administrator no
+terminal role. `answer_as` carries who answered, not a right to answer,
+so it keeps that boundary: `internal/hostagent/agent.go` sets `AnswerAs`
+in its register only when `Options.Switchyard` is off (`conductor host`,
+which publishes to the owner's own server, says it; a server's uplink to
+a switchyard never does), and in switchyard mode a `HostAnswerAs` that
+arrives anyway is dropped unread, as a `HostAttention` is, and logged. A
+server in switchyard mode sends none: there `Host.Submit` for a hosted
+session answers `ErrUnsupported` and the router routes only its own
+server sessions. A routed answer reaches a hosted session only from the
+owner's server, where the router and the providers run.
+
+**Bounded on the host.** `hostagent` applies the message off the control
+loop through one answer queue per connection: at most `answerQueue` (4)
+messages wait, a fifth is dropped and logged (the first answer wins, so a
+dropped later one loses nothing a person could not redo), and one
+goroutine applies them in order, each under `submitDeadline()` (the
+deadline `peer.typeIn` gives a viewer's reply), so a `Local.Submit` that
+waits in `awaitTurn` behind a program not reading holds at most the
+queue's four, never a goroutine per message. The queue and its goroutine
+end with the control connection (its context), and a message waiting
+then is dropped. An invalid message is dropped and logged; a valid one is
+applied and its outcome logged at debug; the result reaches the server as
+the host's attention and activity always do.
 `internal/signal/hosted.go` keeps the flag from the register and gains
 `(*HostedSession).AnswerAs(msg)`: `Tell` when the host takes it, else
 `ext.ErrUnsupported`. `Host.Submit` and the router send a hosted session's
@@ -940,28 +1063,61 @@ stays `ErrUnsupported`: no message types plain text into a host's session.
 
 **The hooks** (PR-11):
 
+Each hook hands over its events in commit order, because calling an
+observer outside the lock that serialises the commits does not: a commit
+that lets the lock go can pause before its call while the next commits
+and calls first (Dispatch's `Apply` already unlocks `s.mu` before
+`s.notify`). So each hook *queues* an immutable event under that lock,
+right after the commit, into a queue that never waits (the sync adapter's
+`extQueue` push), and the provider is called from the queue's own
+goroutine, outside every lock:
+
 - `internal/store`: `(*Store).Observe(fn func(Event))` on the data
-  directory's store, inherited by every `Sub` with its path prefix; `Event{
-  Op ("saved" | "deleted"), Path (slash path from the data directory),
-  Data}` is handed over after the rename or the remove, outside the store's
-  lock, never on a failed write. `Save` hands its bytes; `WriteFile`,
-  `RemoveFile` and `Delete` hand none, so a plain file's bytes (the
-  workbench token's) never leave the package.
-- `internal/crew/ledger`: `OnCommit(func(RunPointer))`, called after each
-  committed `Transition` (`Recover`'s are transitions too), outside `l.mu`;
+  directory's store, inherited by every `Sub` with its path prefix. The
+  root store and its `Sub`s, each a `*Store` with its own `mu`, share one
+  observer record holding a mutex and a sequence; a write takes that
+  mutex around its rename or remove (the temp file is written and synced
+  before, outside it), numbers the event from the sequence and queues it
+  before letting the mutex go, so two saves of one document, through the
+  root or through two `Sub`s, are queued in the order of their renames and
+  numbered so. `Event{Op ("saved" | "deleted"), Path (slash path from the
+  data directory), Seq, Data}`; never on a failed write. `Save` hands its
+  bytes; `WriteFile`, `RemoveFile` and `Delete` hand none, so a plain
+  file's bytes (the workbench token's) never leave the package. The data
+  doc's `Rev` is `Seq`, so a store can order data docs itself too.
+- `internal/crew/ledger`: `OnCommit(func(RunPointer))`, called under
+  `l.mu` right after each committed `Transition` (`Recover`'s are
+  transitions too), for an observer that only queues;
   `RunPointer{ID, CrewID, State, Outcome, Paused, Revision, ContinuedFrom,
   ContinuedBy, CreatedAt, ClosedAt}`, read in the transaction by the
-  statement that reads the new revision. `OnPrune(func(runID))` after a
-  committed `Prune`. Never on a failed commit (`beforeCommit` failing in a
-  test proves it).
-- Dispatch: `Store.OnChange`, which already runs after each commit.
+  statement that reads the new revision. `OnPrune(func(runID))` the same
+  way after a committed `Prune`. Never on a failed commit (`beforeCommit`
+  failing in a test proves it). `openLedger` takes the observer and
+  installs it before `Recover` (the composition root, above).
+- Dispatch: `Store.OnCommit(func([]Change))` (new), called under `s.mu`
+  after each commit, for an observer that only queues; `OnChange`, which
+  feeds the pages, is unchanged. The doc's `Rev` is the commit's last
+  change's position in Dispatch's log, which the lock makes increasing.
+
+The observers are installed in `api.New` before its first write (the
+store's at its top, before `loadCatalog`'s save and the crews'
+migration; the ledger's through `openLedger`; Dispatch's as it opens), so
+the start-up's own commits (the masked catalog, the migrated crews,
+`Recover`'s transitions and `syncRecords`' rewritten records) are told
+like any other.
 
 `internal/api/sync.go` (new) turns them into `ext.Doc`s for the sync
 store, through an `extQueue` of `SyncQueue`; when the queue has dropped
 docs, the next delivery is preceded by `Doc{Store: "gap", Size: <dropped>}`
 so the store knows it must catch up. What reaches it is an allowlist:
 `catalog.json`, `crews/<id>.json` and `runs/<id>.json` (`Store: "data"`,
-with the bytes up to `MaxDocData`); a run's pointer from the ledger
+with the bytes up to `MaxDocData`). `catalog.json` keeps saved agents'
+env values in full (`keepMaskedEnv`, `internal/api/catalog.go`), which
+`GET /api/catalog` shows only as `catalog.RedactedValue`; its doc carries
+the catalog as that route masks it, every env value replaced by
+`catalog.RedactedValue`, re-encoded by the adapter from the saved bytes,
+so no env value reaches a sync store; a `catalog.json` that does not
+decode is sent as a doc with no `Data`. Then a run's pointer from the ledger
 (`Store: "ledger"`, `Path` the run's id, `Rev` its revision, `Data` the
 pointer as JSON: never the crew as launched, the rows or the logs); a
 Dispatch commit (`Store: "dispatch"`, `Path` "commit", `Rev` the commit's
@@ -994,7 +1150,8 @@ type Source struct {
 	Snapshot func(ctx context.Context, rel, dst string) error // runs/managed.sqlite, dispatch/dispatch.sqlite
 }
 func Write(ctx context.Context, w io.Writer, src Source) (Manifest, error)
-func Fresh(dir string) (bool, error) // holds none of catalog.json, crews/, crews.json, runs/, dispatch/, links/
+func Fresh(dir string) (bool, error) // holds none of catalog.json, crews/, crews.json, runs/, dispatch/, links/ (hooks/ and restore.lock aside)
+func Reserve(dir string) (release func(), err error) // restore.lock, created exclusively (below)
 func Restore(ctx context.Context, r io.ReaderAt, size int64, dir string) (Manifest, error)
 const (
 	MaxFiles    = 100_000
@@ -1007,21 +1164,60 @@ the crews, the runs' records, the ledger and Dispatch's database (each a
 `VACUUM INTO` snapshot, consistent while the server writes), Dispatch's
 attachment files, a switchyard's `links/` (hashes, never tokens) and
 `hooks/`. It leaves out, and lists in `left`: `workbench-token` and its
-lock, `runs/owner.lock`, the databases' `-wal`, `-shm` and `-journal` files
+lock, `runs/owner.lock`, `restore.lock`, the databases' `-wal`, `-shm` and `-journal` files
 (the snapshot holds what they did), `*.tmp`, `.probe-*`, Dispatch's
 `attachments/tmp/`, `tls/` (the ACME account key and the certificates; a
 new machine gets its own), `ext/` (a provider's own state), and anything
 that is not a regular file or a directory. Repositories and worktrees are
-the projects', not the data directory's, and are not in it.
+the projects', not the data directory's, and are not in it. Unlike a sync
+store's copy, the archive keeps `catalog.json` as the data directory
+holds it, saved agents' env values in full, because a restored machine
+must launch those agents as the first did: the archive is the person's
+own file, written 0600, and `conductor export` says so on stderr ("the
+archive holds your saved agents' env values: keep it as you keep the
+config"), as the README's Export and restore does.
 
-`Restore` refuses a data directory that is not `Fresh`, then checks the
-whole archive before it writes a byte: format 1, the manifest within its
+**Run records before the ledger.** A run's JSON record is written after
+its ledger transition, so the records may lag the ledger but never lead
+it; `syncRecords` (`internal/api/ledger.go`) mends a record that lags its
+ledger row or is missing, and a record ahead of the ledger is never
+mended (it skips a record whose revision is at least the row's, and
+`crew.Records.Save` refuses a lower revision). `Write` therefore copies
+the runs' records (`runs/<id>.json`) first, then snapshots the ledger,
+so a run that finishes or starts between the two is a record that lags
+or is missing beside a newer ledger, which the restored server's first
+`syncRecords` writes from the ledger; then Dispatch's snapshot, then the
+other documents and files, then the manifest.
+
+**The destination reserved.** `Fresh` is a moment's answer, so a restore
+reserves the data directory for its whole run: `Reserve` creates
+`<dir>/restore.lock` with `O_CREATE|O_EXCL` (0600, holding the restoring
+process's pid and start time) before the freshness check and removes it
+after the last rename. `conductor serve` honours it: `runServe`, once it
+has resolved the data directory and before `store.Open` or any write,
+takes the same reservation itself and lets it go only after `api.New`
+has returned, by which time the ledger holds its owner lock (on
+platforms that have one) and the start-up's writes are made. So a
+restore and a starting server exclude each other, and a running server is
+refused by the restore through `ledger.Held` and `Fresh`. A second
+restore, or a server, that finds `restore.lock` refuses with words naming
+it: a restore runs, or one was cut short, and the file to remove to
+start over. The check before the renames is repeated (`Fresh` again,
+under the reservation) so nothing the archive holds is renamed over
+anything.
+
+`Restore` takes the reservation, refuses a data directory that is not
+`Fresh`, then checks the whole archive before it writes a byte: format 1, the manifest within its
 bound, every entry listed with its size and SHA-256 and no other, every
 path relative under `data/`, made of `[A-Za-z0-9._-]` elements (no `..`,
 no backslash), no link, no duplicate, at most `MaxFiles`. It writes
 everything into `<dir>/.restore-<random>` through an `os.Root` (files 0600,
 directories 0700), syncs, then renames the entries into the data
-directory. A failure before the renames removes the staging directory and
+directory. `hooks/` is the one entry a fresh directory may already hold
+(`conductor host` writes the hook assets there, and `serve` writes them
+anew at every start): the target's `hooks/` is renamed aside into the
+staging directory first and removed with it, and the archive's takes its
+place, so the rename never meets a directory in its way. A failure before the renames removes the staging directory and
 leaves the data directory as it was; a crash during them leaves a partial
 restore, which a second `restore` refuses as server data, its words naming
 what to remove to start over. The next `conductor serve` opens what was
@@ -1045,8 +1241,8 @@ nothing is buffered whole.
 ```
 conductor export [--server URL] [--token T] [--insecure] [--out FILE]
 conductor export --data-dir DIR [--out FILE]
-conductor restore FILE [--data-dir DIR]
-conductor restore --provider [--data-dir DIR]
+conductor restore FILE [--config FILE] [--data-dir DIR]
+conductor restore --provider [--config FILE] [--data-dir DIR]
 ```
 
 `export` asks the running server (`--server`, else `CONDUCTOR_SERVER`,
@@ -1056,15 +1252,29 @@ and writes `--out` (default `conductor-export-<UTC time>.zip` in the
 current directory, 0600, never over an existing file). With `--data-dir`
 it reads the directory itself, only when no server holds its ledger's
 owner lock (refused otherwise, naming the server form). `restore` takes
-the data directory `conductor serve` would use (`CONDUCTOR_DATA_DIR`, else
-`~/.conductor`) or `--data-dir`, refuses one that holds server data, and
-installs the archive. `--provider` asks the sync store
+`--data-dir`, or else the data directory `conductor serve` would use,
+resolved the way `runServe` resolves it: `config.Load(--config)` (which
+applies `CONDUCTOR_DATA_DIR`), then `cfg.ResolveDataDir(--config)`, with
+its legacy `conductor.d` rule and its notices, so a config's `dataDir`
+is honoured. It prints the directory it chose before it writes, refuses
+one that holds server data, and installs the archive. The desktop app
+starts its server with its own `dataDir` (`<userData>/conductor` on
+Windows and macOS, `~/.local/share/conductor/data` inside WSL,
+`desktop/src/settings.ts`), which no default of the CLI can know: the
+README's Export and restore names both paths, to be given as
+`--data-dir`, with the app quit. `--provider` asks the sync store
 (`local.Fill(extensions()).Continuity`) for its copy (the free default
-answers that there is none, and nothing changes) into a
-temporary file beside the data directory, then installs it the same way:
-the one place a provider's `Restore` is called, with no server running, at
-a person's word. The usage text and the completion table gain both
-commands; the README gains "Export and restore" under Configuration.
+answers that there is none, and nothing changes) into a temporary file
+beside the data directory, giving it `RestoreRequest{Dir:
+<dataDir>/ext/<name>, Log}` (made 0700; a provider that needs a sign-in
+keeps it there), then installs it the same way, its checks included: the
+one place a provider's `Restore` is called, with no server running and
+no `Start`, at a person's word. What its archive holds is the provider's
+(CS1 defines it); the installer accepts any part of `data/` its checks
+pass, and `serve` opens such a directory as it opens a new one, creating
+what is missing (an empty ledger, an empty Dispatch). The usage text and
+the completion table gain both commands; the README gains "Export and
+restore" under Configuration.
 
 ### C7, the entitlement rule (PR-14)
 
@@ -1074,21 +1284,35 @@ allowed: only the paid providers do, outside it; a free feature has no
 entitlement to ask about." `internal/opencore` gains the rule
 `entitlements`: outside `ext/`, a reference to `ext.EntitlementSource`,
 `ext.Entitlement`, `ext.Entitlements`, `ext.RegisterEntitlements` or
-`ext/local`'s `AllowAll` is a problem, which CI's go job fails on.
+`ext/local`'s `AllowAll`, or a call of a method named `Entitled`, is a
+problem, which CI's go job fails on. A reference is not an import, so
+this rule parses each file whole (`go/parser` with no mode limit, then
+`go/ast`), unlike the rules of PR-5, which read imports and build
+constraints only: it finds the selector expressions whose package is the
+file's name for `…/conductor/ext` or `…/conductor/ext/local`, under any
+import name (a dot import of either outside `ext/` is a problem too),
+and the method calls named `Entitled`.
 
 ### C8, the four ICE sites through the media provider (PR-15)
 
 `internal/api/media.go` (new): `(*Server).iceServersFor(ctx, r
-ext.ICERequest) []proto.ICEServer`: the configured servers first, as
-today, then the media provider's through `extCall` (`ICEWait`), each
-`Valid`, at most `MaxICEServers` in all; a late or failed provider adds
-none. The four sites call it: the hosted viewer's welcome (`ws_viewer.go`,
-purpose `viewer` with the session, role and viewer), the host's
-`registered` (`ws_host.go`, `host`), the paste answerer's servers
-(`paste.go`'s `iceServers`, `paste`), and `GET /api/ice` (`paste.go`'s
-`handleICE`, `offer`), which, unauthenticated, keeps answering only the
-`stun:` and `stuns:` URLs of that list: never a `turn:` URL, a user name
-or a credential, the configured ones' or a provider's. `Room` has no
+ext.ICERequest) []proto.ICEServer`: every configured server first, as
+today and uncounted (main bounds neither `iceServers` in the config,
+`config.Validate` asking only that each entry has URLs, nor
+`CONDUCTOR_ICE_SERVERS`, which makes one server per URL, so none of them
+is ever cut), then the media provider's through `extCall` (`ICEWait`),
+each `Valid`, at most `MaxICEServers` of the provider's; a late or failed
+provider adds none. Three sites call it: the hosted viewer's welcome
+(`ws_viewer.go`, purpose `viewer` with the session, role and viewer),
+the host's `registered` (`ws_host.go`, `host`) and the paste answerer's
+servers (`paste.go`'s `iceServers`, `paste`). The fourth, `GET /api/ice`
+(`paste.go`'s `handleICE`), goes through `iceServersFor` too, as section
+2.4 asks of all four, with the request `offer`, for which the function
+never asks the provider: that route, which anyone may call, answers
+exactly what main answers, the `stun:` and `stuns:` URLs of the
+configured servers, so an unauthenticated request costs a
+provider nothing and never carries a `turn:` URL, a user name or a
+credential, the configured ones' or a provider's. `Room` has no
 caller here: the room UI is Program item CL1's (its OSS UI plan); its
 default answers no room, and the contract suite (C9) covers it.
 
@@ -1096,41 +1320,58 @@ default answers no room, and the contract suite (C9) covers it.
 
 **The route** (PR-16), `internal/api/capabilities.go` (new):
 `GET /api/capabilities`, admin: `{"providers": [{"kind", "name",
-"state"}]}`, the server's slots as `UseExtensions` and `StartExtensions`
-left them, `state` `ready` or `failed` (its `Start` failed: the slot runs
-its default); a plain build answers `{"providers": []}`. The reply is at
-most a few KB (eight kinds, at most 16 providers per list).
+"state"}]}`, one row per entry of `Providers.All` (the entitlement
+source's slot among them, by kind and name only), `state` `ready` or
+`starting` (its `Start` has not yet succeeded and is tried again: the
+slot runs its default meanwhile); a plain build answers `{"providers":
+[]}`. The reply is at most a few KB (eight kinds, at most 16 providers
+per list).
 
 **The web app** (PR-16): `web/app/composables/useCapabilities.ts`, read
 once after the first paint and kept, forgotten with the workbench token
 as the palette's caches are; `web/app/utils/capabilities.ts`, pure:
 `has(caps, kind)` and `extensionsWords(caps)` ("None: the open-source
-feature set", or "identity: cloud · notifications: push", a failed one
-"(not started)"). `AboutCard.vue` shows the row **Extensions**
+feature set", or "identity: cloud · notifications: push", one still
+starting "(starting)"). `AboutCard.vue` shows the row **Extensions**
 (`data-about-row="extensions"`). This is the rule paid UIs follow: they
 show when a capability is there, never because of a plan (open decision
 O16, below).
 
-**The contract suite** (PR-17), `ext/exttest`: a fake per interface the
-seams wire (`FakeIdentity` mapping tokens to principals, `FakeRouter`
-recording decisions and answering scripted routes, `FakeContext`
-recording touches and answering scripted blocks, `FakeSink` recording and
-optionally blocking, `FakeContinuity` recording docs and restoring a
-scripted archive, `FakeEntitlements`, `FakeMedia`), each safe for
-concurrent use; and one function per interface that checks an
-implementation against the rules this plan writes, each taking an
-`exttest.T` (the part of `*testing.T` it uses: `Helper`, `Errorf`,
-`Fatalf`), so a test can record what fails: `Identity(t, p, known,
-unknown)`, `Router(t, r, d)`, `Context(t, p, q)`, `Sink(t, s)`,
-`Continuity(t, c)`, `Entitlements(t, e)`, `Media(t, m)`, and
-`RunAll(t, ext.Providers)`. Among what they check: a valid name; every
-answer within its wait; nothing recognised for an empty token; a valid
-principal with a grant whenever `ok`; a route valid for its decision; at
-most `MaxContextBlocks` valid blocks; `Events` stable; calls from 32
+**The contract suite** (PR-17), `ext/exttest`: a fake for each of the
+eight interfaces and for `Host` (`FakeIdentity` mapping tokens to
+principals, `FakeRouter` recording decisions and answering scripted
+routes, `FakeContext` recording touches and answering scripted blocks,
+`FakeSink` recording and optionally blocking, `FakeContinuity` recording
+docs and restoring a scripted archive, `FakeEntitlements`, `FakeMedia`,
+`FakeRuntime` answering a `Where` (Runtime's whole interface in C1; C10
+adds its methods to the fake and the suite), and `FakeHost`, an
+`ext.Host` that records every `Launch`, `Submit` and `Notify` with
+scripted answers, gives a `t.TempDir()` as its `DataDir` and a logger
+into the test's log, and can be `Close`d, after which it answers every
+call `context.Canceled`), each safe for concurrent use; and one function
+per interface that checks an implementation against the rules this plan
+writes, each taking an `exttest.T` (the part of `*testing.T` it uses:
+`Helper`, `Errorf`, `Fatalf`, `TempDir`), so a test can record what
+fails: `Identity(t, p, known, unknown)`, `Router(t, r, d)`, `Context(t,
+p, q)`, `Sink(t, s)`, `Continuity(t, c)`, `Entitlements(t, e)`,
+`Media(t, m)`, `Runtime(t, r)`, `Starter(t, s)`, and `RunAll(t,
+ext.Providers)`, which runs the function of every entry of
+`Providers.All` (the entitlement source's among them: `exttest` is under
+`ext/`, where the lint allows the name) and `Starter` for every value
+that is one. Among what they check: a valid name; the contract of
+article 8, that every call answers from what the provider holds, checked
+as every call answering within `exttest.LocalWait` (250 ms, far under
+the guard's waits and far over a local answer), under a context that ends
+at it, which the premium repository runs with its hosted service
+unreachable as well as reachable; nothing recognised for an empty token;
+a valid principal with a grant whenever `ok`; a route valid for its
+decision; at most `MaxContextBlocks` valid blocks; `Events` stable; a
+valid `Where`; `Start` with a `FakeHost` returning within `LocalWait`
+while the host's calls are blocked, and taking a closed host's refusals
+without a panic once its context is cancelled; calls from 32
 goroutines at once under the race detector for what must be safe for
 concurrent use; a cancelled context answered promptly. Its package
-documentation says how the premium repository runs it in CI. The Runtime
-fake and its checks come with C10.
+documentation says how the premium repository runs it in CI.
 
 ### The lint: `internal/opencore` (PR-5)
 
@@ -1151,7 +1392,8 @@ problem it reports with file and line:
   a `goN.N`, or a test tier (`recipes`, `pebble`, `network`);
 - `ext-std`: a file under `ext/` importing anything but the standard
   library and packages under `ext/`;
-- `entitlements` (PR-14).
+- `entitlements` (PR-14), which, unlike the four above, parses each file
+  whole (C7).
 
 `TestModuleKeepsTheRules` runs `Check` on the module and wants nothing;
 `TestEachRuleCatchesItsPlant` runs it on fixtures under `testdata/`, each
@@ -1166,14 +1408,14 @@ fail on a planted import. No workflow changes.
 
 ### Docs
 
-- `docs/repository-map.md`: rows for `ext` (PR-1), `ext/local` and `app`
+- `docs/repository-map.md`: rows for `ext` and `app` (PR-1), `ext/local`
   (PR-2), `internal/opencore` (PR-5), `ext/exttest` (PR-17), and
-  "Adding things: A provider" (PR-2). The Program asks every PR of the
+  "Adding things: A provider" (PR-1). The Program asks every PR of the
   stream for the `ext` and `app` rows: they are written whole when the
   packages land, describing all eight interfaces, and a later PR edits
   them only when it changes what a package holds.
-- `docs/architecture.md`: the Packages table's rows for `ext`, `ext/local`
-  and `app` (PR-1, PR-2); a new section **Extensions** (PR-3: the registry,
+- `docs/architecture.md`: the Packages table's rows for `ext` and `app`
+  (PR-1) and `ext/local` (PR-2); a new section **Extensions** (PR-3: the registry,
   the composition root, the guard, the waits and queues; PR-4: Host and
   Start); each seam's PR adds its paragraph there, and C6's the Persistence
   section's lines on sync, export and restore.
@@ -1193,7 +1435,7 @@ fail on a planted import. No workflow changes.
   merges two such edits of separate paragraphs without a conflict, and
   conflicts on edits of adjacent lines (checked 2026-10-30 on a two-branch
   fixture), so the PRs that may run in parallel do not collide there.
-  PR-18 completes the entry with what was observed.
+  PR-17, the stream's last, completes the entry with what was observed.
 
 ## Events, orderings and invariants
 
@@ -1203,11 +1445,11 @@ fail on a planted import. No workflow changes.
 appear mid-run. The other commands (`notify`, `mcp`, `task`, `crew`, `up`,
 `crews`, `hooks`, `export`, `restore` without `--provider`) neither read
 nor start a provider: in the official app their processes link the
-providers, which register and stay inert. `UseExtensions` runs once,
-before `Handler` is served;
-`StartExtensions` once, after it and before the listeners serve; a slot
-whose provider failed to start keeps its default for the server's life.
-At shutdown the maintenance context ends, which ends every provider's
+providers, which register and stay inert. `api.New` takes the providers
+once (`WithExtensions`), before its first write and before `Handler` is
+served; `StartExtensions` runs once, after it and before the listeners
+serve; a slot whose provider has not yet started answers its default
+until a later try of its `Start` succeeds, with no restart. At shutdown the maintenance context ends, which ends every provider's
 `Start` context, and `Shutdown` waits for the queues' goroutines as for its
 own (`track`). A test never registers into the global registry outside
 `ext`'s own tests (which reset it through an `export_test.go` helper); the
@@ -1219,17 +1461,22 @@ panic never escapes; an answer out of bounds is never used; at most 16
 direct calls of one provider and kind are in flight; a queue never makes
 its producer wait. The guard keeps no state about failures beyond the
 once-a-minute log, so a provider's next call after an outage is answered as
-if none had happened: that is article 8's "resumes on its own".
+if none had happened: that is article 8's "resumes on its own". A `Start`
+that failed is tried again with backoff, its abandoned try's context
+cancelled first, so a provider down at start-up resumes the same way.
 
 **Identity.** Order: workbench token, host tokens, share links, provider.
 A token the chain knows never reaches the provider; a revoked or expired
-link token is refused as a link. A principal's subject is the actor of
-every receipt it makes; "admin" is the workbench token's alone; the
-commands' idempotency stays keyed by actor and id, so a provider's subject
-sees only its own receipts.
+link token is refused as a link. A principal's subject, as
+`user:<subject>`, is the actor of every receipt it makes, at most 53
+bytes, so Dispatch never refuses it; "admin", "merge" and
+`agent:<member>` are this repository's alone and no provider actor can
+equal one; the commands' idempotency stays keyed by actor and id, so a
+provider's subject sees only its own receipts.
 
 **Notifications.** The entry reaches, in order: the SSE clients, the
-internal sinks (the run engine), then each notification sink's queue. A
+notifier (each webhook's queue, then each notification sink's), then the
+run engine's `OnActivity`, the hub's sinks in main's order. A
 sink's notifications arrive in the order the hub handed them over; a full
 queue drops its oldest; no sink delays the hub, a session, the engine or
 another sink. A provider's notice never reaches its own sinks, which keeps
@@ -1246,13 +1493,17 @@ after the session records it; denied paths never are.
 **Decisions.** A question's life is unchanged (open, claimed by the writer
 taking an answer's keys, resolved once they are written, the first answer
 winning; no timer ends it). The router adds: a question is routed at most
-once per server (the last id routed for each session); a route's answer is
+once per server (the ids routed, kept per session, so a question set
+aside and shown again with its id is not routed twice); a route's answer is
 applied at most
 once and only through the claim, so it is refused once a person answered,
 and a person's answer is refused once the route's was taken; a route
 types only the question's own choices or a line answering it; a held turn,
 a withdrawn question and one answered in the terminal refuse a route as
-they refuse a viewer; `Resolved` comes once per routed question. A hosted
+they refuse a viewer; `Resolved` comes once per routed question, from the
+attention changes themselves, so a question withdrawn with nothing
+recorded is resolved all the same. A switchyard neither sends nor applies
+`answer_as`, so it gains no way to type into a session. A hosted
 session's answer travels in the host connection's server lane (`Tell`),
 after `registered`, and the host applies it under its own claim: two
 answers that cross (a viewer's over WebRTC and the route's) are ordered
@@ -1260,23 +1511,34 @@ there.
 
 **Sync.** Every doc is handed over after its local commit: the store's
 rename, the ledger's `COMMIT`, Dispatch's commit; a failed write hands
-nothing. A path's docs arrive in the order of its commits (a store
-serialises its writes); a gap doc precedes whatever follows a drop. The
+nothing. Each is queued under the lock that serialises its commits (the
+data directory's observer mutex shared by the store and its `Sub`s,
+`l.mu`, Dispatch's `s.mu`), so docs arrive in the order of their commits,
+and each carries a `Rev` that increases with them; a gap doc precedes
+whatever follows a drop. The start-up's own commits are among them (the
+hooks are installed before `api.New`'s first write). The
 data directory stays the truth: nothing a sync store answers is ever
 written back into it while a server runs, and `Restore` installs only into
 a directory with no server data. No schema changes: the ledger stays at
 version 5, Dispatch at its version, the data directory's layout as it is,
-plus `ext/<name>/` for a provider's own state.
+plus `ext/<name>/` for a provider's own state and `restore.lock` while a
+restore or a starting server holds it.
 
-**Export and restore.** The route snapshots the ledger, then Dispatch,
-then reads the documents and files, then writes the manifest last; a
-document written meanwhile appears as one version or the other, never
-torn (the store renames). Restore checks everything, writes everything
-into the staging directory, syncs it, then renames into place; nothing is
-written into the data directory itself before every check has passed.
+**Export and restore.** The route copies the runs' records, then
+snapshots the ledger, then Dispatch, then reads the other documents and
+files, then writes the manifest last; a document written meanwhile
+appears as one version or the other, never torn (the store renames), and
+a run's record is never ahead of its ledger, which the restored server's
+`syncRecords` mends. Restore reserves the data directory
+(`restore.lock`, which a starting server takes too), checks everything,
+writes everything into the staging directory, syncs it, checks the
+directory is still fresh, then renames into place; nothing is written
+into the data directory itself before every check has passed, and no
+server starts on it until the reservation is let go.
 
 **The protocol change.** `answer_as` is server to host only, and only to a
-host whose register says `answerAs`. Its fields are bounded as an
+host whose register says `answerAs`, which a host publishing to a
+switchyard never says. Its fields are bounded as an
 `answer`'s are, plus a display name and a subject; the host refuses
 anything outside them. Nothing else of the host connection, the viewer
 protocol or the web client's frames changes; the web app sends nothing
@@ -1324,8 +1586,11 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
 
 - `ext` (PR-1): `TestRegisterRefuses` (nil, a bad name, a second
   provider in a one-value slot, a repeated name in a list, a list past 16,
-  after `Freeze`: each panics, with the slot named);
-  `TestRegisteredOrder`; `TestFreezeOnceAndCopies`;
+  a name another slot holds with a different or an incomparable value,
+  after `Freeze`: each panics, with the slot named; the same pointer in
+  two slots is taken); `TestRegisteredOrder`; `TestFreezeOnceAndCopies`;
+  `TestAllListsEverySlot` (a provider registered only as the entitlement
+  source is in `Providers.All` and `Registered`);
   `TestRegistryConcurrent` (registration and reads from 32 goroutines
   under `-race`); `TestRecordsRoundTrip` (every record through
   `encoding/json` with `DisallowUnknownFields`); `TestValid` (a table of
@@ -1335,41 +1600,66 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   the empty route, nothing kept, `ErrNothingToRestore`, allowed, no ICE
   server, no room) from 32 goroutines; `TestFill` (every empty slot gets
   its default, a registered provider and the lists are kept as they are).
-- `app`, `cmd/conductor` (PR-2): `TestRunVersion`;
+- `app`, `cmd/conductor` (PR-1): `TestRunVersion`;
   `TestPlainBuildRegistersNothing`.
 - `internal/cli` (PR-3, PR-4, PR-13): `TestServeReadsTheRegistryOnce`,
   `TestHostClosesTheRegistry`, `TestServeStartsProviders`;
   `TestExportThroughTheServer`, `TestExportOffline` (refused while the
-  owner lock is held), `TestExportNeverOverwrites`, `TestRestoreInstalls`,
-  `TestRestoreRefusesServerData`, `TestRestoreFromProvider` (the default:
-  nothing to restore, nothing changed; a fake's archive installed).
+  owner lock is held), `TestExportNeverOverwrites`, `TestExportSaysEnvIsKept`,
+  `TestRestoreInstalls`, `TestRestoreRefusesServerData`,
+  `TestRestoreDataDirAsServe` (a config's `dataDir`, `CONDUCTOR_DATA_DIR`,
+  the legacy `conductor.d` and the default each chosen as `runServe`
+  chooses, the directory printed), `TestRestoreReplacesHooks` (a fresh
+  directory holding `conductor host`'s `hooks/`: installed, the
+  archive's `hooks/` in place), `TestServeRefusesWhileRestoring` and
+  `TestRestoreRefusesWhileServeStarts` (a restore paused before its
+  renames through a seam: a `serve` and a second restore refused, nothing
+  written; a `serve` paused inside its reservation: a restore refused),
+  `TestRestoreFromProvider` (the default: nothing to restore, nothing
+  changed; a fake's archive installed; a fake's partial archive, the
+  catalog, a crew and a finished run's record with no database, installed
+  and opened by `serve`, the crew and the run listed; the fake given its
+  `RestoreRequest.Dir`, 0700).
 - `internal/api`:
-  - PR-3: `TestUseExtensionsKeepsDefaults`; `TestExtCallWait`,
+  - PR-3: `TestNewWithoutExtensionsIsTheFreeBuild`,
+    `TestWithExtensionsKeepsDefaults`; `TestExtCallWait`,
     `TestExtCallPanic`, `TestExtCallInvalid`, `TestExtCallInFlight`;
     `TestExtQueueDropsOldest`, `TestExtQueueOrder`,
     `TestExtQueueShutdown`.
   - PR-4: `TestHostLaunch` (the same run as the route's; a managed crew;
     the note in the run's log; a switchyard refused),
     `TestHostSubmitLine` (never into a question), `TestHostSubmitAnswer`
-    (first answer wins), `TestHostDataDir`, `TestStartOncePerName`,
-    `TestStartFailureKeepsDefault` (an error, a panic, past `StartWait`).
+    (first answer wins), `TestHostDataDir`, `TestStartOncePerValue` (one
+    value in two slots started once; an entitlement-only provider
+    started), `TestStartRetriedUntilItSucceeds` (an error, a panic, past
+    `StartWait`: the default answered meanwhile, the given-up try's
+    context cancelled before the next, the provider's slots its own from
+    the call after a later try succeeds, in the same server; the backoff
+    driven through a clock seam, never slept), `TestStartQueuesHeldUntilStarted`.
   - PR-6: `TestTokenChainUnchanged` (every kind of token, by header and
     by query, on a server and a switchyard, with no provider and with the
     default: the principal main gives), `TestProviderAskedLast` (a chain
     token and a revoked link never reach it), `TestProviderPrincipal`
     (admin and host grants; a switchyard's yard), `TestProviderPrincipalInReceipts`
     (a pause, a retry and a Dispatch create made with a fake's token: the
-    ledger's command row and Dispatch's receipt and changes name the
-    subject; the workbench's still "admin"), `TestProviderHostRegistration`,
-    `TestProviderRefused` (late, failing, panicking, a subject "admin", no
-    grant: 401 within `IdentityWait`).
+    ledger's command row and Dispatch's receipt and changes name
+    `user:<subject>`; the workbench's still "admin"), `TestProviderHostRegistration`,
+    `TestProviderRefused` (late, failing, panicking, a subject past 48
+    bytes, no grant: 401 within `IdentityWait`),
+    `TestProviderSubjectsNeverCollide` (subjects "admin", "merge" and
+    "agent:x" kept as `user:admin`, `user:merge` and `user:agent:x`, apart
+    from the workbench's, the merge's and a member's receipts; a 48-byte
+    subject creates, edits and reads back a Dispatch record and a ledger
+    command).
   - PR-7: `TestWebhooksUnchanged` (every existing `webhooks_test.go` test,
     unchanged, plus a table of entries whose bodies, headers and signatures
     equal main's construction, kept in the test), `TestSinkGetsEveryAttentionEvent`
     (10 sessions, 1,000 changes, each sink's in order), `TestBlockedSinkNeverHoldsTheHub`
     (a sink that never returns: the hub, the sessions, the webhooks and the
     other sinks go on; the drops counted), `TestSinkEventsFilter`,
-    `TestProviderNoticeNotToItsOwnSinks`, `TestSinkPanicRecovered`.
+    `TestProviderNoticeNotToItsOwnSinks`, `TestSinkPanicRecovered`,
+    `TestSinksInMainsOrder` (the webhooks handed an entry before the run
+    engine, as on main).
   - PR-8: `TestContextInTaskFile`, `TestContextBounds` (a block past its
     bound refused, nine blocks cut to eight, over `MaxTaskContext` the
     later dropped with the run log's note), `TestContextLateOrFailing`
@@ -1383,23 +1673,42 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     `TestPersonAnswersBeforeTheRoute`, `TestRouteRecorded` (a status entry
     for destinations, nothing for the empty route), `TestRouteBounds`
     (late, panicking, an answer whose input is no choice: nothing typed),
-    `TestResolvedOnce` (answered, withdrawn, session ended).
+    `TestResolvedOnce` (answered, withdrawn, session ended),
+    `TestRouteOncePerQuestionSetAside` (the session's own question A set
+    aside by work, a bell's question B over it, A shown again at the
+    done, as `TestAQuestionSetAsideByWorkShowsAgainAtTheDone`: one `Route`
+    for A, one for B, `Resolved` for A once, at its answer),
+    `TestResolvedOnWithdrawalWithNoActivity` (a status question withdrawn
+    by the screen, no entry recorded, the terminal quiet after: exactly
+    one `Resolved`).
   - PR-10: `TestRoutedAnswerReachesAHostedSession` (a real host agent:
-    applied once, the host's attention says so), `TestOlderHostUnsupported`.
+    applied once, the host's attention says so), `TestOlderHostUnsupported`,
+    `TestSwitchyardNeverRoutesAHostedSession` (a switchyard server:
+    `Host.Submit` to a hosted session `ErrUnsupported`, no `answer_as`
+    sent).
   - PR-11: `TestSyncAllowlist` (catalog, crews, records, pointers and
     commits reach a fake; the token file, `links/`, `tls/`, `hooks/` and
     `ext/` never), `TestSyncAfterLocalCommit` (the fake reads the file,
     the ledger's run row and Dispatch's receipt as each doc arrives and
-    finds them committed), `TestSyncGap`, `TestSyncDefaultKeepsNothing`.
+    finds them committed), `TestSyncGap`, `TestSyncDefaultKeepsNothing`,
+    `TestSyncCatalogMasksEnv` (a saved agent's env value never in the
+    doc, every value `catalog.RedactedValue`),
+    `TestSyncStartupCommits` (a restart with an unfinished managed run
+    and a catalog to mask: the recovery transition, the rewritten record
+    and the masked catalog reach the fake, after its `Start`).
   - PR-12: `TestExportRoute` (admin only; a zip whose manifest and files
     match the data directory; a switchyard's links).
   - PR-15: `TestICEStaticUnchanged` (the welcome, `registered`, the paste
-    answerer's servers and `GET /api/ice` equal main's for STUN only and
-    for STUN with a TURN server and its credential),
+    answerer's servers and `GET /api/ice` equal main's for STUN only, for
+    STUN with a TURN server and its credential, and for nine and twenty
+    configured servers, every one kept, with no provider and with one
+    adding eight), `TestICEOfferNeverAsksTheProvider` (a provider that
+    records its calls: `GET /api/ice` makes none),
     `TestMediaServersReachViewersAndHosts`, `TestICENeverLeaksCredentials`,
     `TestMediaBounds`, `TestRoomDefault`.
   - PR-16: `TestCapabilitiesPlainBuild`, `TestCapabilitiesNamesProviders`
-    (a failed start shown), admin only.
+    (a provider still starting shown as `starting`, then `ready`; an
+    entitlement-only provider listed by kind and name), admin only.
 - `internal/crew` (PR-8): `TestTaskFileByteIdenticalWithoutContext`
   (goldens under `testdata/taskfile/` written by main's `fitTaskFile` in
   the PR's first commit, before the field exists: a work task, a review
@@ -1414,17 +1723,31 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   past its bound, exactly one of input and text, the largest message under
   `MaxHostMessage`), `TestRegisterAnswerAs`.
 - `internal/hostagent` (PR-10): `TestAnswerAsApplied`,
-  `TestAnswerAsInvalidDropped`, `TestAnswerAsNeverInTheControlLoop`.
+  `TestAnswerAsInvalidDropped`, `TestAnswerAsNeverInTheControlLoop`,
+  `TestAnswerAsQueueBounded` (a burst of text answers while the program
+  reads nothing, stopped with SIGSTOP: at most four wait, the rest
+  dropped and logged, one goroutine applying them, all ended with the
+  connection), `TestSwitchyardAnswerAsRefused` (an uplink's register
+  says no `answerAs`; a `HostAnswerAs` sent anyway types nothing).
 - `internal/signal` (PR-10): `TestHostedAnswerAs` (sent only to a host
   that said so).
 - `internal/store` (PR-11): `TestObserveAfterRename` (a failing rename:
-  no event), `TestObserveInheritedBySub`, `TestPlainFileNoBytes`.
+  no event), `TestObserveInheritedBySub`, `TestPlainFileNoBytes`,
+  `TestObserveInCommitOrder` (two writers of one document, through the
+  root and through two `Sub`s, the first held after its rename by a
+  seam while the second commits: queued in rename order, `Seq`
+  increasing; `-race -count=30`).
 - `internal/crew/ledger` (PR-11, PR-12): `TestOnCommitAfterCommit`
-  (`beforeCommit` failing: no call; called outside the lock, so the hook
-  reads the ledger), `TestOnPrune`; `TestSnapshotWhileWriting` (50
+  (`beforeCommit` failing: no call; called once per commit, before the
+  next transition commits), `TestOnCommitInOrder` (two transitions, the
+  first held after its `COMMIT` by a seam: queued in commit order),
+  `TestOnPrune`; `TestSnapshotWhileWriting` (50
   transitions during a snapshot; the copy passes `quick_check`),
   `TestSnapshotFileReadOnly`, `TestHeld`.
-- `internal/dispatch` (PR-12): `TestSnapshot`, `TestSnapshotFile`.
+- `internal/dispatch` (PR-11, PR-12): `TestOnCommitInOrder` (two
+  `Apply`s, the first held after its commit by a seam while the second
+  commits: queued in commit order, `Rev` increasing); `TestSnapshot`,
+  `TestSnapshotFile`.
 - `internal/export` (PR-12): `TestRoundTrip` (a data directory with the
   catalog, crews, records, a finished managed run, a Dispatch project with
   a ticket, a comment and an attachment: exported, restored into an empty
@@ -1432,15 +1755,22 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   same), `TestExportLeavesOut`, `TestRestoreRefuses` (not fresh, a hash or
   size that differs, an entry not listed, `..`, an absolute path, a
   backslash, a link, a duplicate, past `MaxFiles`), `TestRestoreStages`
-  (a failure before the renames leaves nothing).
+  (a failure before the renames leaves nothing), `TestExportRecordsBeforeTheLedger`
+  (through a seam between the records' copy and the ledger's snapshot,
+  a run finished and a new run made: restored and served, every managed
+  run's record equals its ledger's), `TestReserve` (exclusive; a second
+  refused with the file named; released after the renames),
+  `TestExportKeepsCatalogEnv`.
 - `internal/opencore` (PR-5, PR-14): `TestModuleKeepsTheRules`,
   `TestEachRuleCatchesItsPlant`, `TestPlatformTagsMatchTheToolchain`;
   PR-14 adds the `entitlements` fixture.
-- `ext/exttest` (PR-17): `TestFakes` (each fake as documented);
+- `ext/exttest` (PR-17): `TestFakes` (each fake as documented,
+  `FakeHost` and `FakeRuntime` among them);
   `TestSuitePassesEveryDefault` (`RunAll` over `ext/local`'s defaults);
   `TestSuitePassesEveryFake`; `TestSuiteCatchesABreach` (a provider that
   answers late, one that says ok for an empty token, one that returns
-  nine blocks: each failing check named, through a recording `exttest.T`).
+  nine blocks, a `Start` that waits on its host: each failing check
+  named, through a recording `exttest.T`).
 
 **Web** (PR-10, PR-16): `web/app/utils/capabilities.test.ts` (the words for
 none, some and a failed provider; `has`); Playwright `settings.spec.ts`'s
@@ -1526,8 +1856,8 @@ Done, so C2 to C8's PRs wait for PR-1 to PR-5, and C9's for C2 to C8's.
 
 | PR | Item | Title | Touches | Depends on | Parallel with | Size |
 |---|---|---|---|---|---|---|
-| PR-1 | C1 | ext: the registry, the eight interfaces and their records | `ext`, `docs` | none | none | ~1,450 |
-| PR-2 | C1 | ext/local, app: the free defaults and the entry point; a plain build registers nothing | `ext/local`, `app`, `cmd/conductor`, `docs` | PR-1 | none | ~650 |
+| PR-1 | C1 | ext, app: the registry, the eight interfaces and their records, the entry point; a plain build registers nothing | `ext`, `app`, `cmd/conductor`, `docs` | none | none | ~1,700 |
+| PR-2 | C1 | ext/local: the free defaults and Fill | `ext/local`, `docs` | PR-1 | none | ~450 |
 | PR-3 | C1 | cli, api: the composition root reads the registry once; every provider call guarded | `internal/cli`, `internal/api`, `docs` | PR-2 | PR-5 | ~850 |
 | PR-4 | C1 | api, cli: ext.Host and the providers' Start | `internal/api`, `internal/cli`, `docs` | PR-3 | PR-5 | ~1,100 |
 | PR-5 | C1 | opencore: the open-core rules as a lint, failing on a planted import | `internal/opencore`, `Makefile`, `docs` | PR-2 | PR-3, PR-4 | ~600 |
@@ -1541,9 +1871,8 @@ Done, so C2 to C8's PRs wait for PR-1 to PR-5, and C9's for C2 to C8's.
 | PR-13 | C6 | cli: conductor export and conductor restore | `internal/cli`, `README.md`, `docs` | PR-12 | PR-6, PR-7, PR-8, PR-9, PR-10, PR-14, PR-15 | ~650 |
 | PR-14 | C7 | opencore, contributing: no entitlement call site outside ext | `internal/opencore`, `CONTRIBUTING.md`, `docs` | PR-4, PR-5 | PR-6 to PR-13, PR-15 | ~200 |
 | PR-15 | C8 | api: the four ICE sites through the media provider; GET /api/ice keeps credentials | `internal/api`, `docs` | PR-4, PR-5 | PR-13, PR-14 | ~650 |
-| PR-16 | C9 | api, web: GET /api/capabilities and the app card's Extensions row | `internal/api`, `web/app`, `web/e2e`, `docs` | PR-6, PR-7, PR-8, PR-10, PR-13, PR-14, PR-15 | PR-17 | ~400 |
-| PR-17 | C9 | ext/exttest: a fake per interface and the contract suite | `ext/exttest`, `docs` | PR-6, PR-7, PR-8, PR-10, PR-13, PR-14, PR-15 | PR-16 | ~1,400 |
-| PR-18 | C9 | docs: the stream's features entry, with what was observed | `docs` | PR-16, PR-17 | none | ~150 |
+| PR-16 | C9 | api, web: GET /api/capabilities and the app card's Extensions row | `internal/api`, `web/app`, `web/e2e`, `docs` | PR-6, PR-7, PR-8, PR-10, PR-13, PR-14, PR-15 | none | ~400 |
+| PR-17 | C9 | ext/exttest: a fake per interface and the contract suite; the stream's features entry completed | `ext/exttest`, `docs` | PR-16 | none | ~1,550 |
 
 PR-6 to PR-12 and PR-15 share `internal/api`, so they go one after
 another; their order is free (the table's is a suggestion), each needing
@@ -1554,19 +1883,21 @@ is, how it registers, what it may do in `init` (register, nothing else),
 the guard's rules from the provider's side, the stability of the API),
 `registry.go`, `identity.go`, `decisions.go`, `context.go`, `notify.go`,
 `continuity.go`, `entitlements.go`, `media.go`, `runtime.go`, `host.go`,
-`valid.go`; the `ext` rows of `docs/repository-map.md` and of
-`docs/architecture.md`'s Packages table; the features entry's frame.
-Nothing calls `ext` yet. Tests: `ext`'s (above). Go only.
+`valid.go`; `app`, and `main` through `app.Main`;
+`TestPlainBuildRegistersNothing`, so the stream's first PR already
+carries the test that a plain build's registry is empty; the `ext` and
+`app` rows of `docs/repository-map.md` and of `docs/architecture.md`'s
+Packages table, and "Adding things: A provider"; the features entry's
+frame. Nothing calls `ext` yet; behaviour is main's: `main` does what it
+did, from `app`. Tests: `ext`'s, `app`'s and `cmd/conductor`'s (above).
+Go only.
 
-**PR-2** (`ext/local`, `app`, `cmd/conductor`; docs): the defaults and
-`Fill`; `app`;
-`main` through `app.Main`; `TestPlainBuildRegistersNothing`; the rows and
-"Adding things: A provider". Behaviour is main's: `main` does what it did,
-from `app`. Tests: `ext/local`'s, `app`'s, `cmd/conductor`'s. Go only.
+**PR-2** (`ext/local`; docs): the defaults and `Fill`; the `ext/local`
+rows. Tests: `ext/local`'s. Go only.
 
 **PR-3** (`internal/cli`, `internal/api`; docs): `extensions`,
-`local.Fill`'s call, `UseExtensions`, `extCall`, `extQueue`, the start-up
-line; no seam calls
+`local.Fill`'s call, `api.New`'s `WithExtensions`, `extCall`, `extQueue`,
+the start-up line; no seam calls
 anything yet, so every slot's default sits unused. The architecture's
 Extensions section. Tests: PR-3's (above). Go only.
 
@@ -1624,13 +1955,13 @@ only.
 route and the web app's first reader of it. Tests: PR-16's; Go and web
 checks, `make test-e2e`.
 
-**PR-17** (`ext/exttest`; `docs/repository-map.md`): the fakes and the
-suite. Tests: PR-17's. Go only.
-
-**PR-18** (`docs/features.md`): the entry completed: each item's paragraph
-with what was observed (C6's by-hand restore with its commands, machines
-and versions; the CI runs that showed the empty registry and the suite
-passing against every default). Docs only.
+**PR-17** (`ext/exttest`; `docs/repository-map.md`, `docs/features.md`):
+the fakes and the suite, and, as the stream's last PR, the features entry
+completed: each item's paragraph with what was observed (C6's by-hand
+restore with its commands, machines and versions; the CI runs that showed
+the empty registry; the suite passing against every default in this PR's
+own CI). It waits for PR-16 so that it is last. Tests: PR-17's. Go
+only.
 
 ## Owner decisions
 
@@ -1639,7 +1970,8 @@ Dated 2026-10-30. O9, O12 and O16 are open decisions of the Program
 choices. Each is a default the owner can overturn with a dated row in the
 Program's status log (its convention for a default, section 3.1); one
 overturned is rewritten here before the PRs are cut. The owner records
-the answers to O9, O12 and O16 in the status log.
+the answers to O9, O12 and O16 in the status log, and E1, which departs
+from section 2.4, as a row amending it.
 
 - **O12, the package names.** `ext` and `app` at the module root, with
   `ext/local` for the defaults and `ext/exttest` for the suite. The split
@@ -1662,14 +1994,20 @@ the answers to O9, O12 and O16 in the status log.
   asked last here, for a token the chain does not know: the answer is the
   same for every token (a chain token is a local secret no provider
   issues), and the free path then never waits on a provider, which article
-  8 asks.
+  8 asks. Section 2.4 is the specification and outranks this plan, so this
+  reversal is proposed as a status-log row amending section 2.4's identity
+  order, and C2's issue (PR-6) is not cut until the owner has recorded
+  it; if the owner keeps the Program's order instead, PR-6 asks the
+  provider first, its `ok` false falling through to the chain, and
+  `TestProviderAskedLast` becomes its mirror.
 - **E2, two grants.** `admin` (what the workbench token may do) and `host`
   (register a hosted session); a provider's principal maps onto authority
   that exists here. A narrower grant (a reviewer's) is ID1's to propose.
 - **E3, the subject in receipts.** A provider principal's commands and
-  Dispatch operations are kept under its subject; "admin" stays the
-  workbench token's actor and is refused as a subject, so two actors never
-  share receipts.
+  Dispatch operations are kept under `user:<subject>`, its subject at most
+  48 bytes, so the actor fits Dispatch's `MaxActor` (60) and never equals
+  "admin" (the workbench token's), "merge" or `agent:<member>`: two actors
+  never share receipts, and no valid subject is refused by Dispatch.
 - **E4, Runtime's slot only.** C1 declares Runtime with `Where` so the
   registry has all eight slots; its methods and default are C10's, added
   before anything implements it, which keeps this plan out of
@@ -1685,9 +2023,10 @@ the answers to O9, O12 and O16 in the status log.
   workflow change.
 - **E7, one place that asks.** `local.Fill` is the only code that asks
   whether a slot is registered (the composition root and `restore
-  --provider` call it); a provider whose `Start` fails keeps the default
-  in all its slots for the server's life, and the capabilities route says
-  so.
+  --provider` call it). A provider whose `Start` fails answers the default
+  in all its slots until a later try succeeds (backoff from 1 s to 5
+  minutes, for the server's life), so it resumes with no restart (article
+  8), and the capabilities route says `starting` meanwhile.
 - **E8, no plain line into a hosted session.** `Host.Submit` types a line
   only into a server session; a hosted session takes routed answers
   (`answer_as`) and nothing else, so the protocol gains one message, not a
@@ -1696,8 +2035,9 @@ the answers to O9, O12 and O16 in the status log.
   one of the shown question's options; arbitrary keys never travel through
   a router.
 - **E10, ICE servers added, never replaced.** The configured servers come
-  first and a provider's follow, at most eight in all; `GET /api/ice`
-  answers STUN URLs only, whoever supplied them.
+  first, all of them, as main sends them, and a provider's follow, at most
+  eight of its own; `GET /api/ice` answers the configured STUN URLs only,
+  as main does, and never asks the provider.
 - **E11, a provider's notice.** Typed `provider`, sent to every sink but
   the sender's own; a webhook cannot list it (the config's validation
   knows no such event), so webhooks behave as before.
@@ -1706,20 +2046,27 @@ the answers to O9, O12 and O16 in the status log.
   nothing, so the free build's activity is unchanged.
 - **E13, what sync is told.** The catalog, the crews, the runs' records,
   each run's pointer from the ledger and each Dispatch commit's entities;
-  never a token, a share link's hash, a certificate, the hook assets or a
-  provider's own directory. The bytes of a plain file never leave
-  `internal/store`.
+  never a token, a saved agent's env value (the catalog goes masked, as
+  `GET /api/catalog` shows it), a share link's hash, a certificate, the
+  hook assets or a provider's own directory. The bytes of a plain file
+  never leave `internal/store`. Export, the person's own file, keeps the
+  catalog whole and says so.
 - **E14, export's contents and restore's target.** The data directory
   minus its secrets, locks, temporary files and providers' state, the two
   databases snapshotted; restore only into a data directory with no server
-  data, staged and renamed. The command is `restore`, not `import`: the
+  data, reserved for the restore's whole run (`restore.lock`, which a
+  starting server honours), into the directory `serve` would resolve,
+  staged and renamed. The command is `restore`, not `import`: the
   harness already calls a result kept by a continuation "imported".
 - **E15, a provider's restore only at a person's word.** `conductor restore
   --provider`, with no server running; never at start, where it would make
-  the server wait on a service.
+  the server wait on a service. `Restore` is given its own directory (it
+  is never started there) and may return any part of `data/` the
+  installer's checks pass; what it must hold to be useful is CS1's.
 - **E16, capabilities for the admin.** The route needs the workbench token
-  (BK0 may open it to an agent later); a provider that failed to start is
-  listed as failed, so Settings never claims a feature that is not there.
+  (BK0 may open it to an agent later); a provider whose `Start` has not yet
+  succeeded is listed as `starting`, so Settings never claims a feature
+  that is not there.
 - **E17, the features entry's layout and the meaning of parallel.** One
   paragraph per PR, written in PR-1, so parallel PRs merge; parallel
   otherwise means no common package, web directory or doc file.
@@ -1733,11 +2080,13 @@ the answers to O9, O12 and O16 in the status log.
   at most 16 providers in a list, which bounds the capabilities reply and
   the hub's fan-out.
 - **E21, the waits and queues.** Identity 1 s, a route 5 s, context 5 s,
-  ICE 2 s, a start 5 s, a delivery 10 s; queues of 256 for sinks (a
+  ICE 2 s, a start 5 s, a delivery 10 s, and 250 ms for the suite's check
+  that a call answers locally; queues of 256 for sinks (a
   webhook's), 1,024 for sync docs and file touches, 256 for questions to
-  route with 16 routed at once; 16 direct calls in flight per provider and
-  kind. They bound a hang, not a normal answer, and the contract suite
-  checks providers against them.
+  route with 16 routed at once, 4 routed answers waiting on a host; 16
+  direct calls in flight per provider and kind. They bound a hang, not a
+  normal answer: a provider answers from what it holds (article 8), and
+  the contract suite checks that it does.
 
 No question is left open: each answer above lets the plan stand.
 
@@ -1775,13 +2124,14 @@ none is ticked, each is seen:
   against every default.
 
 Done for an item means its PRs merged and its observation recorded in the
-features entry (PR-18 for the last ones); the Program's status row moves to
+features entry (PR-17 for the last ones); the Program's status row moves to
 Done then, never on the table alone. Together C1 and C9 observe the two
 clauses of the R0 gate this stream owns: a plain build of this repository
 is the free binary and registers nothing, and every default passes the
 contract suite.
 
 What needs the owner: the review of this plan and its decisions (O9, O12
-and O16 among them, and their rows in the status log); cutting the
-eighteen issues; a second machine for the restore check (the Mac over
+and O16 among them, and their rows in the status log, and E1's row
+amending section 2.4's identity order, before C2's issue); cutting the
+seventeen issues; a second machine for the restore check (the Mac over
 `ssh mac`, or the LAN box); the merges.
