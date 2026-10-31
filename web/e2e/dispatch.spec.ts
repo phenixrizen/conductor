@@ -927,7 +927,9 @@ test('a new project answered with its receipt alone opens the page of the key th
 // Then its review round 2's: a comment kept below the read's window by its answer alone, shown as another person's edit and delete
 // leave it; a comment's save answered with another person's later edit, said at the next Save rather than taken as what was saved; a
 // milestone's and a label's edit typed on while its save goes, kept, and an editor opened meanwhile left open; a picker offering the
-// key typed whole and a title past the search's first page.
+// key typed whole and a title past the search's first page. Then its round 3's: a comment being edited kept, its draft with it, as
+// the read's window moves past it; a comment's answer held until the window moved past it, read again as another person left it; a
+// second Save of a milestone's or a label's edit while the first goes, which sends nothing.
 
 /** A PNG of one pixel: 67 bytes an `img` can show. */
 const PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
@@ -1091,6 +1093,82 @@ test("a comment posted here and kept below the read's window by its answer alone
   await expect(first).toHaveAttribute('data-comment-deleted', '')
   await expect(comments.locator('[data-comments-gap]')).toHaveCount(0)
   await expect(comments.locator('[data-comments-earlier]')).toHaveCount(0)
+})
+
+test("a comment being edited stays, its draft with it, as the read's window moves past it, and shows another person's edit at Save", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'The long edit')
+  const ticket = `${key}-1`
+  const one = await api.ok<{ comment: { id: string } }>('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, 'c1'), byName: 'Nate', body: 'The first' })
+  const sent: Array<{ expectedRev?: number; body: string }> = []
+  await page.route('**/api/dispatch/tickets/*/comments/*/edit', async (route) => {
+    sent.push(route.request().postDataJSON())
+    await route.continue()
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const comments = page.locator('[data-ticket-comments]')
+  const first = comments.locator('[data-comment="1"]')
+  await first.locator('[data-comment-edit]').click()
+  await first.locator('[data-comment-input]').fill('Mine, being written')
+
+  // Priya's 50 follow: the ticket's read carries #2–#51, and #1, being edited, stays with its draft.
+  for (let i = 2; i <= 51; i++) await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, `c${i}`), byName: 'Priya', body: `Reply ${i}` })
+  await expect(comments.locator('[data-comment="51"] [data-comment-body]')).toHaveText('Reply 51')
+  const read = await api.ok<{ ticket: { comments: Array<{ n: number }> } }>('GET', `/api/dispatch/tickets/${ticket}`)
+  expect(read.ticket.comments[0]!.n).toBe(2)
+  await expect(first.locator('[data-comment-input]')).toHaveValue('Mine, being written')
+  await expect(comments.locator('[data-comments-gap]')).toHaveCount(0)
+  await expect(comments.locator('[data-comments-earlier]')).toHaveCount(0)
+
+  // Priya edits #1, below the window now: it is read again, and Save says hers, the draft kept; a second Save replaces it.
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments/${one.comment.id}/edit`, { opId: opOf(key, 'c1-theirs'), byName: 'Priya', body: 'Theirs, below' })
+  await expect(first).toHaveAttribute('data-comment-rev', '2')
+  await expect(first.locator('[data-comment-input]')).toHaveValue('Mine, being written')
+  await first.locator('[data-comment-submit]').click()
+  await expect(first.locator('[data-comment-theirs-text]')).toHaveText('Theirs, below')
+  expect(sent.length).toBe(0)
+  await first.locator('[data-comment-submit]').click()
+  await expect(first.locator('[data-comment-body]')).toHaveText('Mine, being written')
+  expect(sent.map((b) => [b.expectedRev, b.body])).toEqual([[2, 'Mine, being written']])
+})
+
+test("a comment's answer held until the read's window moved past it shows it as another person's edit left it, read again", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'The slow comment')
+  const ticket = `${key}-1`
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let id = ''
+  await page.route('**/api/dispatch/tickets/*/comments', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue()
+    // #1 commits; its answer is held while Priya edits it and posts 50 more.
+    const res = await route.fetch()
+    const reply = await res.json()
+    id = reply.comment.id
+    await held
+    await route.fulfill({ response: res, json: reply })
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const comments = page.locator('[data-ticket-comments]')
+  await expect(comments.locator('[data-comments-none]')).toBeVisible()
+  await comments.locator('[data-comment-input]').fill('Mine, the first')
+  await comments.locator('[data-comment-submit]').click()
+  await expect.poll(() => id).not.toBe('')
+
+  // Priya's edit shows by the ticket's read; her 50 move its window past #1, which goes with it, the answer still held.
+  const first = comments.locator('[data-comment="1"]')
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments/${id}/edit`, { opId: opOf(key, 'c1-theirs'), byName: 'Priya', body: 'Theirs now' })
+  await expect(first.locator('[data-comment-body]')).toHaveText('Theirs now')
+  for (let i = 2; i <= 51; i++) await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, `c${i}`), byName: 'Priya', body: `Reply ${i}` })
+  await expect(comments.locator('[data-comment="51"] [data-comment-body]')).toHaveText('Reply 51')
+  await expect(first).toHaveCount(0)
+
+  // The answer, made before her edit, comes: #1 is read again, and shown as she left it.
+  release()
+  await expect(comments.locator('[data-comment-input]')).toHaveValue('')
+  await expect(first).toHaveAttribute('data-comment-rev', '2')
+  await expect(first.locator('[data-comment-body]')).toHaveText('Theirs now')
+  await expect(comments.locator('[data-comments-gap]')).toHaveCount(0)
 })
 
 test("a comment's save answered with another person's later edit says theirs at the next Save, never taking it for what was saved", async ({ page, api }) => {
@@ -1497,6 +1575,78 @@ test("a milestone's and a label's edit typed on while its save goes keeps the ne
   expect(labelEdits.map((b) => [b.expectedRev, b.name])).toEqual([
     [labelRev, 'server'],
     [labelRev + 1, 'server side'],
+  ])
+})
+
+test("a milestone's or a label's second Save while the first goes sends nothing, and what was typed back is saved after it", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key)
+  await api.ok('POST', `/api/dispatch/projects/${key}/milestones`, { opId: opOf(key, 'm1'), name: 'v1', description: 'A' })
+  await api.ok('POST', `/api/dispatch/projects/${key}/labels`, { opId: opOf(key, 'l1'), name: 'api', color: 'blue' })
+  const milestoneEdits: Array<{ expectedRev?: number; name?: string; description?: string }> = []
+  const labelEdits: Array<{ expectedRev?: number; name?: string }> = []
+  let hold: Promise<void> | null = null
+  await page.route('**/api/dispatch/projects/*/milestones/*/edit', async (route) => {
+    milestoneEdits.push(route.request().postDataJSON())
+    if (hold) await hold
+    await route.continue()
+  })
+  await page.route('**/api/dispatch/projects/*/labels/*/edit', async (route) => {
+    labelEdits.push(route.request().postDataJSON())
+    if (hold) await hold
+    await route.continue()
+  })
+  await page.goto(`/dispatch/${key}`)
+  await page.locator('[data-project-settings-open]').click()
+  const settings = page.locator('[data-project-settings]')
+
+  // v1's description A saved as B and held; typed back to A, its Save is off and Enter sends nothing.
+  const one = settings.locator('[data-project-milestone="v1"]')
+  const rev = Number(await one.getAttribute('data-milestone-rev'))
+  let release!: () => void
+  hold = new Promise<void>((resolve) => (release = resolve))
+  await one.locator('[data-milestone-edit]').click()
+  await one.locator('[data-milestone-description-input]').fill('B')
+  await one.locator('[data-milestone-save]').click()
+  await expect.poll(() => milestoneEdits.length).toBe(1)
+  await one.locator('[data-milestone-description-input]').fill('A')
+  await expect(one.locator('[data-milestone-save]')).toBeDisabled()
+  await one.locator('[data-milestone-name-input]').press('Enter')
+  await expect(one.locator('[data-milestone-description-input]')).toHaveValue('A')
+  hold = null
+  release()
+  // B committed; the editor stays with A, made against B, and its Save sends A.
+  await expect(one).toHaveAttribute('data-milestone-rev', String(rev + 1))
+  await expect(one.locator('[data-milestone-description-input]')).toHaveValue('A')
+  await one.locator('[data-milestone-save]').click()
+  await expect(one.locator('[data-milestone-description-input]')).toHaveCount(0)
+  await expect(one).toHaveAttribute('data-milestone-rev', String(rev + 2))
+  expect(milestoneEdits.map((b) => [b.expectedRev, b.description])).toEqual([
+    [rev, 'B'],
+    [rev + 1, 'A'],
+  ])
+
+  // The label renamed server and held; typed back to api, its Save is off and Enter sends nothing; then api is saved after it.
+  const label = settings.locator('[data-project-label="api"]')
+  const labelRev = Number(await label.getAttribute('data-label-rev'))
+  hold = new Promise<void>((resolve) => (release = resolve))
+  await label.locator('[data-label-rename]').click()
+  await label.locator('[data-label-rename-input]').fill('server')
+  await label.locator('[data-label-rename-save]').click()
+  await expect.poll(() => labelEdits.length).toBe(1)
+  await label.locator('[data-label-rename-input]').fill('api')
+  await expect(label.locator('[data-label-rename-save]')).toBeDisabled()
+  await label.locator('[data-label-rename-input]').press('Enter')
+  hold = null
+  release()
+  const renamed = settings.locator('[data-project-label="server"]')
+  await expect(renamed).toHaveAttribute('data-label-rev', String(labelRev + 1))
+  await expect(renamed.locator('[data-label-rename-input]')).toHaveValue('api')
+  await renamed.locator('[data-label-rename-save]').click()
+  await expect(settings.locator('[data-project-label="api"] [data-label-name]')).toBeVisible()
+  expect(labelEdits.map((b) => [b.expectedRev, b.name])).toEqual([
+    [labelRev, 'server'],
+    [labelRev + 1, 'api'],
   ])
 })
 
