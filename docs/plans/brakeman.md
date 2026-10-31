@@ -306,6 +306,8 @@ type Budget struct {
 	TurnMinutes  int `json:"turnMinutes"`  // 1 to 60; 15
 	ReadsPerTurn int `json:"readsPerTurn"` // 10 to 2,000; 300
 	TurnsPerDay  int `json:"turnsPerDay"`  // 1 to 500; 40, counted by the server's local day
+	// MinutesPerDay arrives with PR-14 (BK3); the day's charges hold
+	// minutes from PR-1 (The store).
 }
 ```
 
@@ -338,10 +340,33 @@ session in no run is outside a non-empty `Crews`, `Runs` or `Projects`
 unless `Sessions` names it; a ticket, comment or Dispatch receipt by
 `Projects`, and by `Runs` and `Crews` through the runs linked to it (a
 ticket linked to none is outside either when it is non-empty); a
-touched-index entry by its session's; an earlier brief always, its refs
-resolved again against the scope now. Evidence is narrowed by the
-visibility: check logs, terminals, sessions and the rest each by its own
-switch.
+touched-index entry by its session's; an earlier brief by its footprint,
+below. Evidence is narrowed by the visibility: check logs, terminals,
+sessions and the rest each by its own switch.
+
+**An earlier brief is derived content and carries its sources' grant.**
+Its title, summary, interpretations and drafts can repeat what its turn
+read (a ticket's text, a screen, a check log), and checking its refs again
+takes none of that back out of the prose. So each kept brief records its
+**footprint**, from the server's own records, never the agent's word: the
+scope snapshot its turn ran under (`Request.Config`) and the visibility
+classes its turn's reads actually used (from its read log: `runs`, `logs`,
+`dispatch`, `sessions`, `touched`, `terminals`; a read log that dropped
+entries counts every class its snapshot had on). A turn (and the
+`brakeman` principal's every read: `…/briefs`, a `brief:` ref, the request
+route's "last complete briefing") is given an earlier brief whole only
+when its footprint is within the turn's grant: every class it used is
+visible now, and each scope selector of its snapshot is within the
+current one (the current selector empty, or the earlier non-empty and a
+subset of it). Otherwise the brief is served as its projection: its id,
+kind, time and the refs the scope and visibility admit now, with
+`withheld: "made under a wider scope or visibility"` and none of its prose
+or items. A `brief:` ref to a withheld brief is refused (`422 bad_refs`,
+outside the scope). The admin's reads are unchanged. Coverage watermarks
+are numbers, not prose, and are filtered by the scope now. Tests (PR-4):
+`TestAnEarlierBriefUnderAWiderScopeIsWithheld` (scope narrowed between two
+turns), `TestTurningTerminalsOffWithholdsBriefsThatReadScreens` (and the
+same for check logs), `TestABriefWithinTheGrantIsGivenWhole`.
 
 **A request** (`request.go`) is one thing a person asked of Brakeman,
 kept as `brakeman/requests/br-<n>.json`:
@@ -365,10 +390,12 @@ type Request struct {
 	Config    Snapshot  `json:"config"` // visibility, scope, permissions, budget and rev as the turn began
 	Deadline  time.Time `json:"deadline,omitzero"`
 	Reads     int       `json:"reads"`
-	Brief     *Brief    `json:"brief,omitempty"`
+	// The brief, its resolutions and a pending make's input are documents
+	// of their own beside the request (below), so the request stays small.
+	HasBrief  bool      `json:"hasBrief,omitempty"` // br-<n>-brief.json and br-<n>-refs.json are kept
 	BriefOpID string    `json:"briefOpId,omitempty"`
 	BriefAt   time.Time `json:"briefAt,omitzero"`
-	Resolved  []Resolved `json:"resolved,omitempty"` // each ref of the brief as Conductor found it
+	Footprint *Footprint `json:"footprint,omitempty"` // the classes its reads used, with Config's scope (Scope.Admits)
 	Made      []Made     `json:"made,omitempty"`     // drafts made work by a person: pending op, outcome
 	Edges     []Edge     `json:"edges,omitempty"`    // draft tickets' blocks: from, to, pending or made
 	StrayRun  string     `json:"strayRun,omitempty"` // a run its launch returned after it closed, stopped then
@@ -386,9 +413,33 @@ or the note as the discussion), `propose_crew` (a ticket), `handoff` (a
 task, attempt or session), `locate` (the note as the question),
 `overlaps`, `ask` (the note, any subjects) and, from PR-14, `wake` (a
 batch, no subjects). The states and their
-transitions are in Events, orderings and invariants. A record is at most
-1 MiB (`LoadLimit`); one of a later schema is skipped, logged once and
-never rewritten.
+transitions are in Events, orderings and invariants. One of a later
+schema is skipped, logged once and never rewritten.
+
+**A request's documents and their bounds.** Every name matches
+`internal/store`'s `^[a-z0-9-]+\.json$`; each document is encoded with
+`store.Encode` (the indented form `Save` writes) and measured **before any
+write**, and a change whose document would pass its bound is refused with
+nothing written, so a document written is always one `LoadLimit` reads
+back after a restart:
+
+| Document | Holds | Bound (encoded) |
+|---|---|---|
+| `br-<n>.json` | the request above: no brief, no resolutions, no make input | 256 KiB, reserved by construction for its later updates: `Made` at most one entry per item (100) of at most 600 bytes, `Edges` at most 190 (20 draft tickets without a cycle) of at most 300, the rest at most 32 KiB; a test fills every list to its largest |
+| `br-<n>-brief.json` | the brief as kept | 256 KiB: the brief's own bound is measured on this encoding, not on the body the session sent |
+| `br-<n>-refs.json` | one resolution per distinct ref of the brief (`seen` and `now`), each snapshot's fields bounded (ref 512 bytes, url 1 KiB, state 32, rev 64, sha256 64) | 4 MiB; a brief has at most 500 distinct refs across all its items (`invalid_brief` past it), and a brief whose resolutions would still pass 4 MiB is refused `413 bound` |
+| `br-<n>-reads.json` | the turn's read log (Resolution, below) | 2 MiB; at most 5,000 entries, the oldest dropped first and the drop said |
+| `br-<n>-make-<i>.json` | a pending make's input, as the person edited it (Drafts made work) | 4 MiB; a make whose encoded input passes it is refused `413 bound` |
+
+The siblings are written before the request write that names them and
+removed after the request when it is pruned; `List` reads only
+`^br-[0-9]+\.json$`; at `Open`, siblings of a request that does not name
+them (a crash between the two writes) are removed. Tests (PR-1):
+`TestEveryDocumentFitsItsLoadLimit` (each at its largest, written,
+reopened), `TestARequestWithEveryListFullStillLoads`,
+`TestABriefWhoseRefsPassTheirBoundIsRefusedUnwritten` (100 panels of 50
+distinct refs), `TestOrphanSiblingsAreRemovedAtOpen`,
+`TestDocumentNamesAreTheStoresOwn`.
 
 **A brief** (`brief.go`), schema `brakeman.brief/1`, is what a turn hands
 back, at most 256 KiB as JSON:
@@ -417,7 +468,7 @@ Each kind's fields and rules, enforced by `Validate`:
 |---|---|---|
 | `fact/1` | `text` (1 KiB), `evidence` (1 to 10 refs) | A fact without evidence is refused. |
 | `interpretation/1` | `text` (2 KiB), `facts` (indexes of fact items, at least one) | Reads only facts of the same brief. |
-| `proposal/1` | `text` (2 KiB), `op` (an operation name the guide lists), `target` (a ref), `args` (JSON object, 4 KiB), `expectedRevision` (string, optional), `facts` | Rendered as a control the operator presses; Brakeman runs it only with a BK2 grant. |
+| `proposal/1` | `text` (2 KiB), `op` (an operation name the guide lists), `target` (a ref), `args` (JSON object, 4 KiB), `expectedRevision` (string; required, and above 0, when the guide marks the operation's route as checking a revision, `Operation.Revision`), `facts` | Rendered as a control the operator presses only for an operation whose route checks the revision; any other is text with a link to the page where the person does it. Brakeman runs it only with a BK2 grant. |
 | `outcome/1` | `text` (1 KiB), `receipt` (a `check:`, `command:` or `op:` ref) | A verified outcome names a receipt, or it is a fact or an interpretation. |
 | `decision/1` | `about` (a `question:`, `task:` or `ticket:` ref, later `plan:` and `decision:`), `happened`, `whyHuman`, `question` (500 bytes), `alternatives` (2 to 6, each `label` of 80 characters and `tradeoffs` of 1 KiB), `recommendation` (an alternative's index, or -1 for none), `uncertainty`, `blocked` (refs), `authorizes` (1 KiB), `evidence` (1 to 20 refs), `subjectRevision` | Conductor renders the controls from the live record of `about`, never from these fields. |
 | `comparison/1` | `title`, `columns` (2 to 6), `rows` (1 to 20, a label and one cell of 500 bytes per column), `evidence` | |
@@ -461,7 +512,8 @@ PR-10 adds `plan:<KEY-n>/<revision>`, `launch:<id>` and
 `candidate:<run>/<task>/<n>` for DS2's records; DR1's `decision:<id>` comes
 with PR-12.
 
-**The store** (`store.go`): `Open(*store.Store)` takes `brakeman/` under
+**The store** (`store.go`): `Open(*store.Store)` (and nothing else: it
+reaches no other store) takes `brakeman/` under
 the data directory (`store.Sub`, 0700) and its owner lock,
 `brakeman/owner.lock`: the ledger's lock (`ownerLock`, moved in PR-1 from
 `internal/crew/ledger` to `internal/store` as `store.OwnerLock`, the
@@ -478,14 +530,48 @@ own file, so a number is never reused, even after a crash between the two);
 `Get`, `List(after, limit)` newest first in pages of at most 100;
 `Update(id, func(*Request) error)` under one mutex, the request read, changed
 and written atomically; `Prune`, which keeps the newest 500 requests and
-never one that is not closed; the day's count, kept apart from the
-requests in `state.json` (`days`: the turns started on each of the last 8
-local days, bumped in the same write that makes a request `starting`), so
-pruning or cancelling requests never lowers it, and `TurnsToday(now)`
-reads it; `Open`, once it holds the lock, concluding what the last owner
-left open (`queued` stays queued; `starting` and `running` become
-`interrupted`, with why; a pending `made` or edge completed, below) before
-any route serves. The clock is a field, so the tests drive it.
+never one that is not closed; the day's charges, kept apart from the
+requests in `state.json` and keyed by request id, so pruning or
+cancelling requests never lowers them; `Open`, once it holds the lock,
+concluding what the last owner left open in Brakeman's own documents
+(`queued` stays queued; `starting` and `running` become `interrupted`,
+with why; orphan siblings removed) and returning nothing to do of any
+other store's. The clock is a field, so the tests drive it.
+
+**The day's charges, one reservation per request.** `internal/store.Save`
+replaces one document atomically and spans no two, so the charge and the
+start are not one write; they are ordered, and the charge is keyed by the
+request so a repeat adds nothing. `state.json`'s `days` holds, for each
+of the last 8 local days, a map from request id to `{reserved, settled}`
+minutes. The dequeue writes, in this order: (1) `state.json` with the
+request's id in its start day's map and its reservation (BK1: `reserved`
+is `TurnMinutes`; from PR-14, below, at most what the day's minutes have
+left); (2) the request `starting`, its deadline its start plus `reserved`.
+A crash after (1) and before (2) leaves a charged request still `queued`:
+the charge stands (conservative, never an uncounted start) and the next
+dequeue of that request finds its id already charged and writes (1)
+again as the same entry, so it is never counted twice. After a request
+closes, its entry's `settled` is written (the minutes it ran, rounded up;
+never more than `reserved`); a crash before that leaves `reserved` as the
+charge. `TurnsToday(now)` counts the ids in today's map; `MinutesToday(now)`
+sums each entry's `settled`, or its `reserved` while unsettled. A turn is
+charged wholly to the local day it started, so midnight neither splits
+nor refunds it. Tests (PR-1): `TestAChargeIsWrittenBeforeTheStart` (a
+crash seam between the two writes: one charge, the request queued, the
+next dequeue counts nothing again), `TestAChargeIsCountedOncePerRequest`,
+`TestAnUnsettledChargeCountsItsReservation` (a crash before `settled`),
+`TestAChargeBelongsToItsStartDay` (a turn across midnight).
+
+**What another store holds, the desk completes.** `internal/brakeman`
+imports no store but its own, so a pending `made` entry or edge (Drafts
+made work, below), whose completion needs Dispatch's receipts and
+relations and the crew store, is completed by the desk in `internal/api`
+(PR-4), never by `Open`: `Store.Pending()` lists them, and the desk, once
+its store holds the owner lock (at start, or later when a read-only
+server takes the lock over, the same handoff), runs `recoverMakes(ctx)`
+over Dispatch and the crew store before it serves any Brakeman route
+(`503 brakeman_recovering` until then); other servers' routes are not
+held, so the recovery is written to be safe against them (rule 5).
 
 ### `internal/api`: the operating guide (PR-2, BK0's first form)
 
@@ -508,6 +594,12 @@ type Operation struct {
 	CLI     []string       `json:"cli,omitempty"` // conductor task result …
 	Input   map[string]any `json:"input"`   // JSON Schema of the body or the tool's arguments
 	Receipt string         `json:"receipt,omitempty"` // ledger | dispatch | brakeman
+	// Revision names the precondition the route itself enforces: "run"
+	// (the task command body's expectedRevision, above 0) or "ticket"
+	// (DS1's expectedRev); "" for a route that decodes no revision (a
+	// run's stop and resume today), which a proposal never gets a
+	// button for.
+	Revision string         `json:"revision,omitempty"`
 	Bounds  map[string]int `json:"bounds,omitempty"`  // the body's and the reply's limits
 }
 func Operations() []Operation
@@ -709,9 +801,19 @@ session's exit and last line ("the agent exited before it read its
 request: is it logged in?"), so a logged-out agent is told from a turn
 that read and gave up.
 
-The slot (one turn at a time) is held from `starting` until the turn's run
-is seen to end, not until its request closes: `state.json` names the run
-draining, and the next queued request waits for it. A stop is retried
+The slot (one turn at a time) is held from `starting` until the turn's
+processes are confirmed gone, not until its request closes and not until
+its run reads as ended: `Engine.stop` sets `stoppedAt` and calls `noteEnd`
+even when a member's `Local.Stop` fails, and `Local.Stop` marks the
+session `stopped` whatever its process did, so neither the run's state,
+`OnEnd` nor the session's status proves the process exited. The slot is
+released only when both hold: the turn's `launchTurn` has returned (no
+launch outstanding that could still start a member), and every member
+session of the turn's run reports its process reaped through
+`Local.ProcessDone()` (new, PR-3c, `internal/session`: the
+`session.Process`'s own `Done()` channel, closed when the process is
+waited for). `state.json` names the run draining, and the next queued
+request waits for it. A stop is retried
 every 10 s; after six failures the desk takes no new turn (`503
 brakeman_stuck`, "the last turn's run did not stop: stop it from its run
 page") until the run ends; at the server's shutdown the run ends as every
@@ -726,7 +828,8 @@ switchyard's 403:
 | `PUT /api/brakeman/config` | `{rev, config}` → `{config}`; `409 stale_revision`; `400 invalid_config` with the field's words |
 | `POST /api/brakeman/requests` | `{opId, kind, subjects, note, since}` → `201 {request}`, `200` for the same `opId` and content, `409 op_conflict` for other content; `409 brakeman_off`, `429 queue_full` (8 waiting), `429 budget_spent` (the day's turns), `400` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | a page of requests, newest first, without their briefs' items |
-| `GET /api/brakeman/requests/{id}` | the request whole, with its brief, its resolved refs and what was made from it; at most 1 MiB |
+| `GET /api/brakeman/requests/{id}` | the request whole, with its brief and what was made from it; at most 512 KiB (its two documents' bounds) |
+| `GET /api/brakeman/requests/{id}/refs` | the brief's resolved refs (`seen` and `now`), from `br-<n>-refs.json`; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
 
 **Session routes** (`brakeman_session.go`), the Brakeman session's own
@@ -741,7 +844,7 @@ taken for the reads, so a person can inspect what Brakeman was given:
 | Route | Body and answer |
 |---|---|
 | `GET /api/sessions/{id}/brakeman/request` | `{request}`: kind, subjects as resolved, note, since, the last complete briefing's coverage, the scope and visibility it may use, the budget left; `404 not_brakeman` for another session |
-| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`; the same `opId` and brief `200`; another brief `409 brief_exists`; `422 bad_refs` naming each ref that resolves to nothing or lies outside the scope or visibility; `400 invalid_brief` with the item's index and why; `413 bound` past 256 KiB as JSON |
+| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`; the same `opId` and brief `200`; another brief `409 brief_exists`; `422 bad_refs` naming each ref that resolves to nothing or lies outside the scope or visibility; `400 invalid_brief` with the item's index and why; `413 bound` past 256 KiB as `store.Encode` writes it, or with resolutions past their 4 MiB document; nothing written on a refusal |
 
 **Resolution** (`brakeman_refs.go`): each ref of a submitted brief is
 looked up in the record it names (the ledger's reads, Dispatch's
@@ -749,9 +852,11 @@ looked up in the record it names (the ledger's reads, Dispatch's
 attention, the touched index, git through `internal/gitcli` for a
 commit, the desk's own requests) and checked against the request's scope
 and visibility. Every answer a turn reads (PR-4) is noted in the
-request's read log (`brakeman/requests/br-<n>.reads.json`: each item's
-ref, revision or state, and time; at most 5,000 entries, the oldest
-dropped and the drop said), and each ref of the brief is kept with two
+request's read log (`brakeman/requests/br-<n>-reads.json`, a name
+`internal/store` takes: each item's ref, its visibility class, revision
+or state, and time; at most 5,000 entries and 2 MiB, the oldest dropped
+and the drop said), and each ref of the brief is kept, in
+`br-<n>-refs.json`, with two
 snapshots of `{ref, url, state, rev, sha256, at}`: `seen`, what the turn
 read (from the log; `unobserved` for a ref it never read, which
 resolution then reads), and `now`, what it is as the brief is kept. A
@@ -759,8 +864,9 @@ later reader sees what Brakeman read, what was true when it wrote, and
 whether it has changed since. A `decision/1`'s `subjectRevision` and a
 proposal's `expectedRevision` must equal their target's `seen` revision
 (`422 bad_refs`, "you read revision 7"), and Conductor's controls send
-that revision, so advice from an older read is refused, never applied to
-a newer state. A ref to something deleted since is shown as such, never
+that revision to a route that checks it itself, so advice from an older
+read is refused by the backend, never applied to a newer state; an
+operation whose route checks no revision gets no control (PR-7). A ref to something deleted since is shown as such, never
 dropped.
 
 **The `brakeman` event** on `GET /api/events`: `{id, state}` after each
@@ -842,25 +948,54 @@ record (a comment's change bumps no ticket); given a time, the newest
 /api/brakeman/requests/{id}/items/{i}/make` with `{opId, by, edit}`, `edit`
 the form as the person changed it (the same shape as the draft):
 
+- **Derived operation ids.** Dispatch keys an operation by `(actor,
+  opId)` across every client, and its `OpIDPattern` and the ledger's
+  `CommandIDPattern` are both `^[A-Za-z0-9._~-]{1,32}$`, so an id the desk
+  passes on is never a client's id with a suffix. It is
+  `bk` + the first 30 hex digits of the SHA-256 of its parts joined by
+  NUL (32 characters): a make's `derive("make", request, item, opId)`, an
+  edge's `derive("edge", request, from, to)` (the same whichever end is
+  made last, and never another request's), BK2's act
+  `derive("act", request, opId)` for Dispatch, the ledger's commands and
+  DR1 alike. The request records the derived `op` beside the client's
+  `opId`. Tests (PR-4): `TestDerivedOpIDsFitTheStoresPatterns` (32-character
+  inputs), `TestTwoRequestsWithOneBriefOpIDMakeTwoRelations`,
+  `TestARepeatedMakeDerivesTheSameOp`.
 - a `draft_ticket/1` becomes a ticket through Dispatch's own operation
   (`Store.CreateTicket` under the actor `admin`, the person's `by`, the
-  person's `opId`); the request records `Made{item, pending: opId}` before
-  the store's operation and `{key, receipt}` after it; a repeat with the
-  same `opId` answers from Dispatch's receipt, and an item already made
-  answers `409 already_made` with its key. The brief's `blocks` are
-  written into the request as edges (`Edges: {from, to, pending}`) by the
-  first make, and every make then adds each pending edge whose two ends
-  are tickets now (`AddRelation`, op id `<brief opId>-e<from>-<to>`, the
-  same whichever end is made last), so A then B and B then A give the one
-  relation; an edge is marked made after Dispatch's receipt;
+  derived `op`); the desk writes the canonical input (project, title,
+  description, acceptance, priority and the display name, as the person
+  edited them) to `br-<n>-make-<i>.json` and then `Made{item, pending:
+  opId, op}` before the store's operation, and `{key, receipt}` after it
+  (recovery: rule 5 of Events, orderings and invariants); a repeat with
+  the same `opId` answers from Dispatch's receipt, or from `OpTicket` once
+  that is pruned, and an item already made answers `409 already_made`
+  with its key. The brief's `blocks` are written into the request as
+  edges (`Edges: {from, to, pending, op}`) by the first make, and every
+  make then adds each pending edge whose two ends are tickets now
+  (`AddRelation` with the edge's derived op), so A then B and B then A
+  give the one relation; an edge is marked made after Dispatch's receipt;
 - a `draft_crew/1` becomes a saved crew through the crew store's
   `CreateFrom(c, origin)` (new), as `POST /api/crews` saves one (validated
   again): the crew document gains `origin`
-  (`brakeman:<request>/<item>/<opId>`, kept by every later save of it), and
-  a create whose origin a crew holds answers that crew. The request
-  records `Made{item, pending: opId, input}` (the crew as the person edited
-  it) before the save and `{crew, rev}` after; a crew is never launched by
-  this route;
+  (`brakeman:<request>/<item>/<op>`, kept by every later save of it), and
+  a create whose origin a crew holds answers that crew. Deleting a crew
+  that carries an origin first writes its **origin tombstone**
+  (`crew-origins/<first 32 hex digits of the origin's SHA-256>.json`, a
+  `store.Sub` beside the crews, `{origin, crew, deletedAt}`) and only then
+  removes the crew's document, so whichever server deletes it, a crew
+  with an origin is never gone without its tombstone; `CreateFrom` with
+  an origin that a tombstone holds answers `deleted` and saves nothing.
+  The request records the input (`br-<n>-make-<i>.json`, the crew as the
+  person edited it) and `Made{item, pending: opId, op}` before the save
+  and `{crew, rev}` after; a crew is never launched by this route. Tests
+  (PR-4): `TestADraftCrewDeletedBeforeMadeIsNotRecreated` (two servers on
+  one data directory: the save, the second server's delete, then the
+  crash seam before `made`; recovery marks it `deleted`),
+  `TestAPendingTicketIsCompletedFromItsInput` (a crash seam before
+  Dispatch commits: recovery creates it once, with the person's edits and
+  name), `TestAPendingTicketWithAPrunedReceiptFindsItsKey`,
+  `TestARefusedPendingTicketCanBeMadeAgain`;
 - every other kind answers `400 not_a_draft`.
 
 Brakeman's own token reaches none of these: it reads the routes above and
@@ -942,12 +1077,20 @@ fact cites its own session and run (and a check receipt when
   card says who may answer ("you, the operator"; DR1 and HM1 add named
   people) and what answering authorizes, from the brief.
 - `components/BrakemanProposal.vue`: a proposal's text and its operation
-  as a button, for the operations the guide lists as the operator's that
-  the web app already sends (a run's pause, unpause, stop and resume; a
-  task's cancel, retry and accept; a ticket's edit, comment and link),
-  sent through the same client calls as their own pages, with the
-  proposal's `expectedRevision`, asked first where the page asks first
-  (Accept anyway, Cancel, Stop); any other operation is shown as text.
+  as a button only for the operations whose route itself refuses a stale
+  revision (`Operation.Revision` set): a run's pause and unpause and a
+  task's cancel, retry and accept (the task command body's
+  `expectedRevision`, which `internal/crew/commands.go` checks under the
+  run's lock), a ticket's edit, comment and link (DS1's `expectedRev`),
+  sent through the same client calls as their own pages with the
+  proposal's revision, asked first where the page asks first (Accept
+  anyway, Cancel). A run's stop and resume (`handleStopRun` and
+  `handleResumeRun` decode no body and check no revision), a crew's create
+  and launch, and any other operation are shown as text with a link to
+  the page that does them, where the person acts on the live state; a
+  client-side comparison would leave a check-then-use race, so none is
+  offered. Adding a revision check to stop or resume is not this plan's
+  (stop is a safety control that must always work).
 - `components/BrakemanDraftTicket.vue` and `BrakemanDraftCrew.vue`: the
   draft as an editable form, Create (the `make` route), and once made the
   ticket or crew it became, linked; a crew made is opened in the crew
@@ -1009,8 +1152,9 @@ their operations and BK1 is Done:
   the `brakeman` principal (PR-4) when the configuration grants it that
   operation, checks the op is in scope and its target in the state the
   operation requires, and runs its one handler under the actor
-  `brakeman`, the request's id and the op's `opId` its idempotency key
-  (`<request>-<opId>`), answering its own receipt, which the request
+  `brakeman`, its idempotency key the derived `derive("act", request,
+  opId)` (Drafts made work: 32 characters, never colliding across
+  requests), answering its own receipt, which the request
   copies. The launch goes through `ext.Host` (PR-17's
   `Host.LaunchApproved`, answered by DS2's launch function, never
   `launchSaved`, which launches a saved crew and not an approved
@@ -1056,7 +1200,21 @@ the batch (`Batch`), not its wakes as subjects: the turn reads the batch
 through its request, at most 200 wakes, the same kind and subject
 coalesced with a count, past 200 an `overflow` count with the first and
 last times; the cooldown (default 30 min, 0 to 1,440) holds the next batch;
-the budget (turns a day, minutes a day) refuses a turn and says so. A turn
+the budget (turns a day, minutes a day) refuses a turn and says so.
+Minutes are the day's charges of PR-1 (The store), whatever started the
+turn: `Budget.MinutesPerDay` (PR-14: 10 to 1,440; 240) is admitted at the
+dequeue, where the reservation is `min(TurnMinutes, MinutesPerDay -
+MinutesToday)`; under 2 minutes left closes the request `over_budget`
+("the day's minutes are spent"); otherwise the turn's deadline is its
+start plus the reservation, so a turn never runs past what the day has
+left (one minute left never buys fifteen). At the close the charge is
+settled to the minutes run; a crash before that keeps the reservation as
+the charge; a turn is charged to the day it started, so midnight neither
+splits nor refunds an in-flight charge, and the new day's allowance is
+whole. Tests: `TestATurnIsBoundedByTheDaysMinutesLeft` (5 minutes left:
+a deadline 5 minutes on), `TestTooFewMinutesLeftIsOverBudget`,
+`TestAChargeIsSettledAtTheClose`, `TestARestartKeepsAnUnsettledReservation`,
+`TestMidnightLeavesAnInFlightChargeOnItsDay`. A turn
 is BK1's turn, unchanged: a fresh run of a fresh session that rebuilds
 everything from the records. After a restart the role's state, its open
 batch and its log are read back; a batch open when the server stopped is
@@ -1083,8 +1241,8 @@ or control message changes; the one new Server-Sent Event is `brakeman`.
 | State | Meaning | Goes to |
 |---|---|---|
 | `queued` | written, waiting for the desk | `starting`, `cancelled`, `over_budget` |
-| `starting` | taken by the desk; deadline and configuration snapshot written; the launch under way | `running`, `failed`, `timed_out`, `cancelled`, `interrupted` |
-| `running` | its run and session recorded; the session may read and submit | `briefed`, `timed_out`, `ended`, `cancelled`, `interrupted` |
+| `starting` | taken by the desk; deadline and configuration snapshot written; the launch under way (the engine types the prompt asynchronously, so the member may read, submit or exit before the launch returns) | `running`, `briefed`, `ended`, `failed`, `timed_out`, `cancelled`, `interrupted` |
+| `running` | its run and session recorded; the session may read and submit | `briefed`, `timed_out`, `ended`, `failed`, `cancelled`, `interrupted` |
 | `briefed` | a brief kept | none |
 | `timed_out` | the deadline passed with no brief | none |
 | `ended` | the session ended with no brief | none |
@@ -1095,17 +1253,28 @@ or control message changes; the one new Server-Sent Event is `brakeman`.
 
 Every other transition is refused by `brakeman.Request.To` (a table test
 walks every pair). The last seven are closed: `closedAt` is set and
-nothing of the request changes again but its `made` list, its edges and
-its `strayRun`.
+nothing of the request changes again but its `made` list, its edges, its
+`strayRun`, and its `runId` and `sessionId` while they are still empty.
+A close while `starting` (a brief, the member's end, a failure, a
+deadline, a cancel) records the run and session the closing write knows
+(the submitting session and its run's id; the ended session's
+`CrewRef`), so nothing waits for the launch to return. The launch's
+return writes `running` only through `Update` on a request still
+`starting`; on a closed one it writes no state: it fills an empty `runId`
+and `sessionId`, and, when the close was a deadline, a cancel or turning
+Brakeman off, records the run as `strayRun` and stops it (a briefed or
+ended request's run is the turn's own and is stopped by rule 3 or has
+ended). Every ordering is a test (PR-3c).
 
 **What is written before what.**
 
 1. A request's number is written to `brakeman/state.json` before the
    request's file, and the file (`queued`) before the reply: a number is
    never reused and a reply never names a request that is not kept.
-2. `starting`, with its deadline, snapshot and the day's count, is written
+2. The day's charge for the request (`state.json`, keyed by its id) is
+   written first, then `starting` with its deadline and snapshot, both
    before `launchTurn`; `running`, with the run and session, after it
-   returns. A server that dies between them leaves `starting`, which the
+   returns, and only if still `starting`. A server that dies between them leaves `starting`, which the
    next start makes `interrupted`; the engine's record of the run is
    interrupted at start as every legacy run's is, and the run, known by
    its class and request, is never resumed (the `brakeman_run` refusal).
@@ -1116,13 +1285,24 @@ its `strayRun`.
    a failed stop retried (the watchdog); the record is the truth.
 4. A deadline, a cancel and turning Brakeman off write the closing state
    first and stop the run after.
-5. A draft made work: `made {item, pending: opId}` is written before
-   Dispatch's operation (or the crew's save), and `{key | crew, receipt}`
-   after it. A server that dies between them leaves the pending entry,
-   which `Open` completes before any route serves, so no person can edit or
-   delete in between: a ticket from Dispatch's receipt for that `(admin,
-   opId)`, a pending edge by its op id; a crew by the crew holding its
-   `origin`, or, with none, by saving the recorded input again under it.
+5. A draft made work: its input (`br-<n>-make-<i>.json`) and then `made
+   {item, pending: opId, op}` are written before Dispatch's operation (or
+   the crew's save), and `{key | crew, receipt}` after it. A server that
+   dies between them leaves the pending entry, which the desk's
+   `recoverMakes` completes (the store, above) before Brakeman's routes
+   serve; other servers' crew and Dispatch routes may still run, so each
+   case is decided from a durable record, never from "nobody touched it".
+   A ticket: Dispatch's receipt for `(admin, op)` done gives its key; a
+   refused receipt marks the entry `refused` with its words (the item can
+   be made again with a new `opId`); no receipt, but `OpTicket(admin, op)`
+   names a ticket (the receipt pruned), gives that key; neither, the
+   operation never ran, and `CreateTicket` runs again from the recorded
+   input with the same op id, which Dispatch answers once. A pending edge
+   the same way by its op id (`AddRelation` again from the recorded ends).
+   A crew: the crew holding its `origin` gives it; an origin tombstone
+   (the crew store, Drafts made work) says it was saved and then deleted,
+   and the entry is marked `deleted`, never saved again; neither, the
+   save never happened, and the recorded input is saved under the origin.
 
 **Invariants.**
 
@@ -1152,13 +1332,33 @@ its `strayRun`.
   each with the answer it must give.
 - The day's budget: a request is refused at creation when the turns
   started today plus those queued reach `TurnsPerDay`; a turn counts once
-  it is `starting`, in `state.json`'s `days`, kept apart from the
-  requests, so no prune or cancel lowers it; the dequeue checks the day's
-  count again and closes a request that would pass it as `over_budget`.
+  its charge is written (before `starting`), in `state.json`'s `days`,
+  keyed by its request id, kept apart from the requests, so no prune or
+  cancel lowers it and no crash counts it twice; the dequeue checks the
+  day's count (and, from PR-14, its minutes) again and closes a request
+  that would pass it as `over_budget`.
 - A question a Brakeman session asks is shown in Needs you labelled
   "Brakeman · br-n"; it reaches browser notifications, Chime and webhooks
   only when the request's kind is not `wake`, so a background turn pages
-  no one.
+  no one. The classification is the session's own, set before it can ask
+  anything: `Server.Launch` writes `crew.brakeman: {request, quiet}` into
+  the session's `CrewRef` from the `LaunchSpec` (PR-3c), at creation, so
+  every snapshot of the session that can need input already carries it;
+  `quiet` is true only for a `wake` request (PR-14), false before. The
+  browser does not take its alerts from the server's sinks:
+  `useAttention.ts`'s `react` notifies and chimes from newly-needing-input
+  snapshots, so it reads the mark itself and skips a `quiet` session's
+  notification and Chime while Needs you still lists it (PR-6, before any
+  background turn exists: `useSessions.ts`'s `SessionInfo` gains the
+  field, `utils/attention.ts` gains the pure filter `react` applies to
+  `newlyNeedingInput`'s list, and vitest `utils/attention.test.ts` holds a
+  quiet session that newly needs input counted in Needs you and not
+  notified or chimed, and a person's request's session notified); the
+  webhook sink skips it on the
+  server (PR-3c). PR-14 sets `quiet` and its Go test
+  (`TestAWakeTurnsSessionIsMarkedQuiet`); PR-15's `brakeman-role.spec.ts`
+  checks a wake turn's question raises no browser notification. The
+  sessions JSON gains the field in `docs/protocol.md` (PR-3c).
 - Nothing Brakeman submits changes a ticket's status, a run's state, a
   task's outcome, a verification or an acceptance: those stay separate
   facts with their own owners (the Program, section 1.4), and a brief only
@@ -1178,8 +1378,8 @@ being the running request's; the grant (snapshot intersected with now);
 the scope and visibility of its target; the target's state as the
 operation requires (the revision `expectedRevision` names, or the
 operation's own state check); then it runs through the operation's one
-function under the actor `brakeman` with `<request>-<opId>` as its
-idempotency key, whose receipt is written by the operation's own store
+function under the actor `brakeman` with `derive("act", request, opId)`
+as its idempotency key, whose receipt is written by the operation's own store
 (the ledger's commands, Dispatch's ops, DR1's records) and copied into the
 request after. The request's copy is
 completed from the store's receipt after a crash, as `made` is. No
@@ -1254,8 +1454,10 @@ spec); a PR touching both runs both. The named tests each PR adds:
 `TestActMustBeEmptyInThisBuild`, `TestScopeAdmits` (each selector alone and
 together, a session in no run, a ticket linked to no run, a repository
 root), `TestObserveOnlyRefusesDraftsAndProposals`.
-`request_test.go`: `TestEveryRequestTransition` (the table, every pair),
-`TestAClosedRequestOnlyGainsMade`, `TestEachKindTakesItsSubjects`.
+`request_test.go`: `TestEveryRequestTransition` (the table, every pair, `starting` to
+`briefed`, `ended` and `failed` and `running` to `failed` among them),
+`TestAClosedRequestOnlyGainsMade` (and an empty run or session id, never
+a state), `TestEachKindTakesItsSubjects`.
 `brief_test.go`: `TestBriefBounds` (each field and count at its bound and
 one past, the whole at 256 KiB), `TestAFactWithoutEvidenceIsRefused`,
 `TestAnInterpretationReadsFactsOfItsBrief`, `TestAnOutcomeNamesAReceipt`,
@@ -1275,7 +1477,8 @@ one past, the whole at 256 KiB), `TestAFactWithoutEvidenceIsRefused`,
 `TestUpdateIsAtomicUnderConcurrency` (32 goroutines),
 `TestASecondOpenIsReadOnlyUntilItHoldsTheLock` (two stores on one
 directory: the second refuses writes, interrupts nothing, and takes the
-desk once the first closes), `TestAPendingMakeIsCompletedAtOpen`.
+desk once the first closes), `TestPendingListsUnfinishedMakes` (Open
+completes nothing of another store's; the desk's recovery is PR-4's).
 `internal/store`: `TestOwnerLock` (the ledger's lock tests, moved);
 `internal/crew/ledger`'s own tests unchanged.
 
@@ -1331,8 +1534,18 @@ adapter's read-only arguments in the argv), `TestBrakemanNeverTakesYolo`
 (a crew's and the server's yolo on: no yolo argument),
 `TestTheDeadlineCoversStarting` and `TestCancelDuringLaunchStopsTheRunItReturns`
 (a gate inside the launch seam), `TestTheNextTurnWaitsForTheLastRunToEnd`,
-`TestAStopThatFailsHoldsTheSlot`, `TestAnAgentThatExitsBeforeReadingFails`,
+`TestAStopThatFailsHoldsTheSlot` (the real engine and `session.Local` over
+a `session.Process` double whose `Stop` fails and whose `Done` stays open:
+the run reads stopped, the slot stays held, the next turn waits until
+`Done` closes), `TestTheSlotWaitsForAnOutstandingLaunch`,
+`TestAnAgentThatExitsBeforeReadingFails` (from `starting` and from
+`running`), `TestASessionThatEndsDuringLaunchEnds`,
+`TestALateLaunchReturnLeavesAClosedRequest` (briefed, ended and cancelled
+while `starting`: the return writes no state, and only a cancelled one's
+run is a `strayRun`),
 `TestABriefWhileStartingIsTaken`, `TestALostBriefReplyIsAnsweredAfterBriefed`,
+`TestAProposalForARevisionCheckedOpNeedsItsRevision` (the brief route asks
+the guide's `Operation.Revision` through `Facts`),
 `TestAPersonsCrewNamedBrakemanIsNotATurn`,
 `TestBrakemanCannotReachATicket` (its run linked through a seam: `…/ticket`
 and the comment route refused), `TestABrakemanRunIsNotLinkedToATicket`,
@@ -1370,7 +1583,9 @@ twice; a crash seam between Dispatch's commit and `made`'s write),
 `ledger/ledger_test.go`: `TestLastEvent`; `dispatch/dispatch_test.go`:
 `TestChangesAfter`; `gitcli/gitcli_test.go`: `TestChangedSince`;
 `crew/store_test.go`: `TestCreateFromAnswersByOrigin`,
-`TestAnUpdateKeepsTheOrigin`.
+`TestAnUpdateKeepsTheOrigin`, `TestDeletingACrewWithAnOriginWritesItsTombstoneFirst`
+(a crash seam between the tombstone and the removal),
+`TestCreateFromATombstonedOriginSavesNothing`.
 
 **PR-5, `internal/cli`, `internal/agents`** (Go race): `cli/mcp_test.go`:
 `TestBrakemansToolsOnlyInABrakemanSession`, `TestNoCrewToolsForBrakeman`,
@@ -1408,12 +1623,17 @@ moved is refused with words; a draft of two tickets, one blocking the
 other, edited and made: both tickets exist with the relation, Make again
 makes nothing; a draft crew is saved and opens in the editor, not
 launched; the handoff copies; the palette's Brakeman rows and the run
-page's "Ask Brakeman why". `palette-rows.spec.ts` gains the new rows.
+page's "Ask Brakeman why"; a proposal to stop or resume a run is text
+with the run page's link and no button, and a proposal to pause with the
+brief's revision after the run moved is refused by the route with words.
+`palette-rows.spec.ts` gains the new rows.
 
 **PR-8** docs only; no check applies.
 
 **PR-9** (Go race): `api/guide_test.go`: `TestTheGuideListsC9sProviders`
-(with `ext/exttest`'s fakes registered), `TestAnEmptyRegistryIsKnownAndEmpty`.
+(with a package-local fake provider of `internal/api`'s own tests
+registered; `ext/exttest` arrives only with ext's PR-17, C9's contract suite, after #488),
+`TestAnEmptyRegistryIsKnownAndEmpty`.
 
 **PR-10 and PR-11**: Go race `TestPlanRefsResolve`,
 `TestObservePlansSaysWhetherTheApprovalHolds`,
@@ -1445,9 +1665,13 @@ external failure: one turn, and the turn's own run ending wakes nothing),
 `TestACrashBetweenTheRequestAndTheRoleFiresOnce`,
 `TestABatchPastTwoHundredWakesOverflows` (eleven failures, then 201),
 `TestALoggedOutAgentMakesTheRoleUnavailable` (a stub that exits at once),
-`TestAWakeTurnsQuestionNotifiesNobody`; Playwright `brakeman-role.spec.ts` (a
-task failing wakes Brakeman, one brief, the role cooling, the log; paused,
-nothing wakes it).
+`TestAWakeTurnsQuestionNotifiesNobody` (no webhook),
+`TestAWakeTurnsSessionIsMarkedQuiet` (the `CrewRef` mark in its first
+snapshot); Playwright `brakeman-role.spec.ts` (a task failing wakes
+Brakeman, one brief, the role cooling, the log; a wake turn whose stub
+asks a question is listed in Needs you and raises no browser
+notification, read off the page's `Notification` stub; paused, nothing
+wakes it).
 
 **What tests cannot cover, by hand** (Acceptance): a real agent on the
 owner's own subscription (Claude Code and Codex) doing real turns against a
@@ -1548,7 +1772,7 @@ prerequisite named in its row.
 | PR-2 | api, cli, mcp: the operating guide from the running server, and the tools listed from one table (BK0, first form) | `internal/api`, `internal/cli`, `docs/protocol.md` | none | PR-1, PR-3a | ~1,200 | before Monday |
 | PR-3a | agents: the read-only mode, the model flag and the Conductor tools rule, each checked against the CLIs | `internal/agents` | none | PR-1, PR-2 | ~400 | before Monday |
 | PR-3b | api: a brief's refs resolved against the records, the scope and what the turn read | `internal/api` | PR-1, PR-2 | PR-3a | ~700 | before Monday |
-| PR-3c | api, crew: a Brakeman turn as a read-only one-member Yardmaster run, its requests over HTTP and the brief its session submits | `internal/api`, `internal/crew`, `docs/protocol.md` | PR-3a, PR-3b | none | ~1,300 | before Monday |
+| PR-3c | api, crew, session: a Brakeman turn as a read-only one-member Yardmaster run, its requests over HTTP and the brief its session submits | `internal/api`, `internal/crew`, `internal/session`, `docs/protocol.md` | PR-3a, PR-3b | none | ~1,300 | before Monday |
 | PR-4 | api, crew, ledger, dispatch, gitcli: what Brakeman reads through the shared routes and the new ones, the status Conductor computes, the server's coverage, and a draft made work by the operator | `internal/api`, `internal/crew`, `internal/crew/ledger`, `internal/dispatch`, `internal/gitcli`, `docs/protocol.md` | PR-3c | none | ~1,500 | before Monday |
 | PR-5 | cli, agents: Brakeman's MCP tools and `conductor brakeman`, the skill's section | `internal/cli`, `internal/agents` | PR-4 | none | ~700 | before Monday |
 | PR-6 | web: Brakeman's settings, the Brakeman page, a brief as Conductor renders it, and the e2e stub's Brakeman | `web/app`, `web/e2e` | PR-4, PR-5 | none | ~1,500 | before Monday |
@@ -1594,7 +1818,8 @@ the slot, the restart, the refusals that keep a turn Brakeman's),
 `brakeman_session.go` (the request and brief routes), `Server.Launch`'s
 names for a turn, the label and notification rule for its questions, the
 `brakeman` event; `Engine.LaunchNamedWith`, the run's class and request,
-the classes' own caps, the crew store's taken id; the guide's table gains
+the classes' own caps, the crew store's taken id; `Local.ProcessDone()`
+and the session's `crew.brakeman` mark (below); the guide's table gains
 the routes with their MCP names; the protocol's Brakeman section. Go only;
 the Mac and Windows preflight rows run here (a launch changes).
 
@@ -1602,8 +1827,10 @@ the Mac and Windows preflight rows run here (a launch changes).
 `internal/dispatch`, `internal/gitcli`, `docs/protocol.md`): the
 `brakeman` principal and `s.reader` on the shared reads, the new reads
 under `/api/brakeman/` with the computed status, the read log and the
-server's coverage, the `make` route for drafts with its edges and the
-crew's origin; `Ledger.LastEvent`, `dispatch.Store.ChangesAfter`,
+server's coverage, the `make` route for drafts with its edges, the
+crew's origin and its tombstone, the derived op ids, the desk's
+`recoverMakes` over Dispatch and the crew store (with the owner lock's
+handoff), and the earlier briefs' footprints; `Ledger.LastEvent`, `dispatch.Store.ChangesAfter`,
 `gitcli.ChangedSince`, `crew.Store.CreateFrom`; the table's entries with
 `observe`'s MCP name; the protocol's rows. Go only.
 
@@ -1617,7 +1844,9 @@ session's token); it changes no file a Playwright spec runs.
 **PR-6** (`web/app`, `web/e2e`): `useBrakeman.ts`, `utils/brakeman.ts`,
 `BrakemanSettings.vue` on the Settings page, `pages/brakeman.vue`,
 `BrakemanAsk.vue`, `BrakemanBrief.vue`, `BrakemanFact.vue`, the sidebar's
-Brakeman row; `web/e2e/stub-agent.sh`'s `STUB_BRAKEMAN` mode (moved here
+Brakeman row; `useSessions.ts`'s `crew.brakeman` and `useAttention.ts`'s
+`react` skipping a `quiet` session's notification and Chime (the
+invariant on Brakeman's questions); `web/e2e/stub-agent.sh`'s `STUB_BRAKEMAN` mode (moved here
 from PR-5, since every spec runs the stub); the e2e catalog gains a Brakeman stub agent
 (`web/e2e/conductor.e2e.json`: the stub under Claude Code's adapter, so the
 configuration takes it, the MCP, read-only and model arguments it is launched with
@@ -1679,13 +1908,21 @@ acceptance's by-hand record; the README. Docs only.
 **PR-17** (`ext`, `internal/api`, `docs/plans/ext.md`), once ext's PR-4
 (#476) has merged: `ext.Host` gains `LaunchTurn(ctx, ext.TurnLaunch)` and
 `LaunchApproved(ctx, ext.ApprovedLaunch)`, with ext's own types (an agent
-id, a model, a folder, the line, the label, the request id; a ticket, a
-revision, a `By`), answered by `launchTurn` and DS2's launch function;
+id, a model, a folder, the line, the label, the request id; for an
+approved launch: a ticket, the plan revision, its `ExpectedRev`, the
+operation's `OpID` (the derived `derive("act", request, opId)`, at most 32
+characters, which DS2's launch takes as its `opId` so a retry answers the
+same launch and never starts a second run) and a `By`), answered by
+`launchTurn` and DS2's launch function;
 `LaunchApproved` answers `ErrUnsupported` until DS2's launch has merged;
 the desk is given an `ext.Host` by the composition root and launches
 through it alone. Go race: `TestTheDeskLaunchesThroughTheHost` (a
-recording `ext.Host` from `ext/exttest`), `TestHostLaunchTurnIsLaunchTurn`
-(the same run as before), `TestLaunchApprovedRefusesAnUnapprovedRevision`.
+recording `ext.Host` written in `internal/api`'s own tests: `ext/exttest`
+is ext's PR-17 and not a prerequisite here), `TestHostLaunchTurnIsLaunchTurn`
+(the same run as before), `TestLaunchApprovedRefusesAnUnapprovedRevision`,
+`TestLaunchApprovedRetryAfterALostReplyIsOneRun` (the same `OpID` through
+the Host twice: one launch, the same receipt),
+`TestLaunchApprovedCarriesItsExpectedRev` (a moved plan refused).
 Go only.
 
 **PR-18** (`internal/api`, `web/app`, `web/e2e`), once HM1 serves human
