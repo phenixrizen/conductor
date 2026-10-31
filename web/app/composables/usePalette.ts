@@ -1,5 +1,7 @@
 import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessions'
+import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import type { Action } from '~/utils/actions'
+import { DispatchOrder, through } from '~/utils/dispatchOrder'
 import { MODE_PREFIX, type PaletteMode, type PaletteRow } from '~/utils/palette'
 import type { RowPrompt } from '~/utils/sidebarActions'
 import type { TouchedSession } from '~/utils/touchedIndex'
@@ -66,6 +68,14 @@ export interface PageGroup {
 const pageGetter = shallowRef<(() => PageGroup | null) | null>(null)
 /** The Touched cache's generation: bumped as the token is forgotten, so a reply on its way is dropped (#304, whole-batch round). */
 let touchedGen = 0
+/** The Tickets cache's generation, bumped as the token is forgotten, and its ordering gate (utils/dispatchOrder.ts), one for the app. */
+let ticketsGen = 0
+const ticketsGate = new DispatchOrder()
+
+/** The open tickets the palette reads, of every project, the latest updated first: at most this many (five pages of 200). */
+export const PALETTE_TICKETS_MAX = 1000
+/** A ticket the Tickets group lists: one not done or cancelled. */
+export const OPEN_STATUSES = ['backlog', 'ready', 'in_progress', 'in_review'] as const
 
 /** How old the cached crews may be when the palette opens before they are read again. */
 const LISTS_STALE_MS = 60_000
@@ -81,7 +91,17 @@ export function usePalette() {
   const touchedAt = useState<number>('paletteTouchedAt', () => 0)
   /** A row to open on and ask (X on a session page: its Stop row), taken as the palette opens. */
   const pendingAsk = useState<string | null>('paletteAsk', () => null)
+  /**
+   * Dispatch in the palette (docs/plans/dispatch.md, "web/app"): the open tickets of every project and the projects, read after the first
+   * paint of an open palette and cached a minute as the crews are, read again on a dispatch event while it is open.
+   */
+  const tickets = useState<TicketSummary[]>('paletteTickets', () => [])
+  const projects = useState<ProjectSummary[]>('paletteProjects', () => [])
+  const ticketsAt = useState<number>('paletteTicketsAt', () => 0)
+  /** A new ticket asked for from a row (New ticket in CND): the project's key, taken by the palette, which opens the dialog. */
+  const newTicketFor = useState<string>('paletteNewTicket', () => '')
   const api = useSessions()
+  const dispatch = useDispatchApi()
   const admin = useWorkbenchToken()
 
   /** A page's group, registered in its setup and gone with it, as useShortcutsModal().registerPage does. */
@@ -153,6 +173,87 @@ export function usePalette() {
     touchedAt.value = 0
   }
 
+  /**
+   * The open tickets of every project (at most PALETTE_TICKETS_MAX, the latest updated first) and the projects not archived, read as the
+   * lists are: after the first paint, again when they are a minute old at an open, and on a dispatch event while the palette is open
+   * (CommandPalette.vue). Through an ordering gate of their own: a slow reply never replaces a newer one. A read that fails keeps what is
+   * cached.
+   */
+  let loadingTickets: Promise<void> | null = null
+  /** A forced read asked while one was on its way: that one may have been served before what asked it, so another follows it. */
+  let again = false
+  function loadTickets(force = false): Promise<void> {
+    if (!admin.hasToken.value) return Promise.resolve()
+    if (loadingTickets) {
+      if (force) again = true
+      return loadingTickets
+    }
+    if (!force && ticketsAt.value && Date.now() - ticketsAt.value < LISTS_STALE_MS) return Promise.resolve()
+    const gen = ticketsGen
+    loadingTickets = (async () => {
+      try {
+        await through(
+          ticketsGate,
+          'tickets',
+          async () => {
+            const open = new URLSearchParams(OPEN_STATUSES.map((s) => ['status', s]))
+            open.set('sort', 'updated')
+            open.set('desc', '1')
+            open.set('limit', '200')
+            const all: TicketSummary[] = []
+            let cursor = ''
+            do {
+              const page = await dispatch.tickets(`${open.toString()}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+              all.push(...(page.tickets ?? []))
+              cursor = page.next ?? ''
+            } while (cursor && all.length < PALETTE_TICKETS_MAX)
+            const p = await dispatch.projects()
+            return { tickets: all.slice(0, PALETTE_TICKETS_MAX), projects: (p.projects ?? []).filter((x) => !x.archivedAt) }
+          },
+          (r) => {
+            if (gen !== ticketsGen) return
+            tickets.value = r.tickets
+            projects.value = r.projects
+            ticketsAt.value = Date.now()
+          },
+        )
+      } catch {
+        /* the cache stands */
+      } finally {
+        loadingTickets = null
+        if (again) {
+          again = false
+          void loadTickets(true)
+        }
+      }
+    })()
+    return loadingTickets
+  }
+  /** The cache is behind the store (an event came while the palette was closed): the next open reads it again. */
+  function staleTickets() {
+    ticketsAt.value = 0
+  }
+  /** A stream started again: what the Tickets gate knew is forgotten (a store restored from a backup), and the cache is read again at the next open. */
+  function resetTickets() {
+    ticketsGate.reset()
+    ticketsAt.value = 0
+  }
+  /** A ticket an edit made from the palette answered with: shown at once, and gone from the group once it is no longer open. */
+  function patchTicket(t: TicketSummary) {
+    tickets.value = tickets.value.flatMap((x) => (x.key !== t.key || t.rev < x.rev ? [x] : (OPEN_STATUSES as readonly string[]).includes(t.status) && !t.deletedAt ? [t] : []))
+  }
+  /** The cache goes with the token, as Touched's does: another token must not see the last one's tickets, nor a reply on its way. */
+  function forgetTickets() {
+    ticketsGen++
+    tickets.value = []
+    projects.value = []
+    ticketsAt.value = 0
+  }
+  /** Asks the palette to open New ticket for a project (a row's). */
+  function askNewTicket(project: string) {
+    newTicketFor.value = project
+  }
+
   function show(mode: PaletteMode = 'search') {
     query.value = mode === 'search' ? '' : MODE_PREFIX[mode]
     open.value = true
@@ -171,5 +272,5 @@ export function usePalette() {
     open.value = true
   }
 
-  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, forgetTickets, newTicketFor, askNewTicket }
 }

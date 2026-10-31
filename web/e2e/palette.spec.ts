@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
+import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatch-helpers'
 
 // The command palette (#302): Ctrl+K opens it over the page and Escape
 // closes it; what needs you is the first row and ↓ then a digit answers it
@@ -313,4 +314,56 @@ test("the editor's own rows (#321): Save writes from the palette, Close file ask
     await expect(row('page:keys')).toContainText('Neovim')
     await page.keyboard.press('Escape')
   }
+})
+
+test("Dispatch's tickets (#409): a key typed puts its ticket first and Enter opens it; → Copy key says so; > New ticket in a project opens the dialog", async ({ page, api, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  const key = await freeProjectKey(api, 'EP')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Palette ticket one' })
+  await makeTicket(api, key, '2', { title: 'Palette ticket two' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  const palette = page.locator('[data-palette]')
+  const input = palette.locator('input[data-palette-input]')
+
+  // The key typed: its ticket first in Tickets and first of all, and Enter in the input opens its page.
+  await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible()
+  await input.fill(`${key}-1`)
+  await expect(palette.locator('[data-palette-group="tickets"] [data-palette-row]').first()).toHaveAttribute('data-palette-row', `ticket:${key}-1`)
+  await expect(palette.locator('[data-palette-list] [data-palette-row]').first()).toHaveAttribute('data-palette-row', `ticket:${key}-1`)
+  await expect(palette.locator(`[data-palette-row="ticket:${key}-1"] [data-palette-label]`)).toHaveText(`${key}-1 Palette ticket one`)
+  await input.press('Enter')
+  await expect(palette).toBeHidden()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Palette ticket one')
+
+  // A word of a title finds it too; → shows the row's actions, and Copy key says it copied.
+  await page.keyboard.press('Control+k')
+  await input.fill('palette ticket two')
+  const two = palette.locator(`[data-palette-row="ticket:${key}-2"]`)
+  await expect(two).toBeVisible()
+  await two.focus()
+  await expect(two).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  await expect(two.locator('[data-palette-actions]')).toBeVisible()
+  await two.locator('[data-palette-action="copy-key"]').click()
+  await expect(page.locator('li').filter({ hasText: `${key}-2 copied` }).last()).toBeVisible({ timeout: 15_000 })
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${key}-2`)
+
+  // > New ticket in the project: the dialog, the ticket made.
+  await page.keyboard.press('Control+k')
+  await input.fill(`> new ticket in ${key}`)
+  const row = palette.locator(`[data-palette-row="action:new-ticket:${key}"]`)
+  await expect(row).toBeVisible()
+  await row.click()
+  await expect(palette).toBeHidden()
+  const dialog = page.locator('[data-new-ticket]')
+  await expect(dialog).toBeVisible()
+  await expect(page.getByRole('dialog').filter({ has: dialog })).toContainText(`New ticket in ${key}`)
+  await page.locator('[data-new-ticket-title]').fill('Made from the palette')
+  await page.locator('[data-new-ticket-submit]').click()
+  await expect(page.locator('li').filter({ hasText: `${key}-3 made` }).last()).toBeVisible({ timeout: 15_000 })
+  expect((await storedTicket(api, `${key}-3`)).title).toBe('Made from the palette')
 })

@@ -4,6 +4,9 @@ import type { Action } from '~/utils/actions'
 import { choiceKey } from '~/utils/attention'
 import { bindDraft } from '~/utils/reply'
 import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/palette'
+import type { TicketSummary } from '~/composables/useDispatch'
+import { PICK_WORDS, pickEdit, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
+import { DispatchOrder } from '~/utils/dispatchOrder'
 
 /**
  * The command palette (#302): one keystroke from any page opens it over
@@ -58,7 +61,47 @@ const rows = usePaletteRows({
   },
   close: () => palette.close(),
   now: () => now.value,
+  pickTicket: (field, t) => void openTicketPick(field, t),
 })
+
+// Dispatch from the palette (docs/plans/dispatch.md, "web/app"): a ticket row's Set status… and Set priority… open a picker here, once
+// the palette has closed, one operation on the ticket; New ticket in <project> (a `>` row, a Dispatch page's) opens the dialog here.
+const ticketGate = new DispatchOrder()
+const ticketOps = useDispatchOps(ticketGate)
+const ticketPick = ref<{ field: PickField; tickets: TicketSummary[] }>({ field: 'status', tickets: [] })
+const ticketPickOpen = ref(false)
+async function openTicketPick(field: PickField, t: TicketSummary) {
+  palette.close()
+  await nextTick()
+  ticketPick.value = { field, tickets: [t] }
+  ticketPickOpen.value = true
+}
+function ticketPicked(value: string | number, adds: boolean) {
+  const { field, tickets } = ticketPick.value
+  void ticketOps.editTickets(tickets, (t) => pickEdit(field, t, value, adds), {
+    apply: (t) => palette.patchTicket(ticketSummaryOf(t)),
+    done: (keys) => `${PICK_WORDS[field].title} of ${keys.join(', ')} set`,
+  })
+}
+const newTicketOpen = ref(false)
+const newTicketProject = ref('')
+watch(
+  () => palette.newTicketFor.value,
+  async (key) => {
+    if (!key) return
+    palette.newTicketFor.value = ''
+    palette.close()
+    await nextTick()
+    newTicketProject.value = key
+    newTicketOpen.value = true
+  },
+)
+const toast = useToast()
+/** A ticket made from the palette's dialog, by its key and title (its reply's ticket's, else its receipt's key and the title sent). */
+function ticketMade(t: { key: string; title: string }) {
+  toast.add({ title: `${t.key} made`, description: t.title, icon: 'i-lucide-ticket', color: 'success', actions: [{ label: 'Open', icon: 'i-lucide-arrow-right', onClick: () => void router.push(ticketPath(t.key)) }] })
+  palette.staleTickets()
+}
 
 const result = computed(() => rows.groupsFor(palette.query.value))
 const groups = computed(() => result.value.groups)
@@ -127,6 +170,7 @@ watch(
       input.value?.inputRef?.focus()
       void palette.loadLists()
       void palette.loadTouched()
+      void palette.loadTickets()
       void rows.loadIntegrations()
       // Opened on a row to ask (X on a session page): the row takes the focus and asks.
       const key = palette.pendingAsk.value
@@ -147,8 +191,25 @@ const events = useEvents()
 const admin = useWorkbenchToken()
 watch(
   () => admin.token.value,
-  () => palette.forgetTouched(),
+  () => {
+    palette.forgetTouched()
+    palette.forgetTickets()
+  },
 )
+// The Tickets cache is read again on a dispatch event while the palette is open (gathered, DispatchLive's window), and is due again at
+// the next open when one came while it was closed; a snapshot forgets what its gate knew.
+const stopTickets = dispatchLive().subscribe({
+  later: () => true,
+  read: () => {
+    if (!palette.open.value) {
+      palette.staleTickets()
+      return Promise.resolve()
+    }
+    return palette.loadTickets(true)
+  },
+  reset: () => palette.resetTickets(),
+})
+onBeforeUnmount(stopTickets)
 let touchedTimer: number | undefined
 const stopTouched = events.onEvent((e) => {
   if (e.type !== 'file' || !palette.open.value) return
@@ -512,4 +573,6 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
   <ShareLinksModal v-if="shareTarget && 'runId' in shareTarget && shareTarget.runId" v-model:open="shareOpen" :run-id="shareTarget.runId" :session-name="shareTarget.sessionName" :role="shareRole" />
   <ShareLinksModal v-else-if="shareTarget && 'sessionId' in shareTarget && shareTarget.sessionId" v-model:open="shareOpen" :session-id="shareTarget.sessionId" :session-name="shareTarget.sessionName" :role="shareRole" />
   <NameDialog v-model:open="nameOpen" />
+  <DispatchPicker v-model:open="ticketPickOpen" :field="ticketPick.field" :tickets="ticketPick.tickets" :agents="palette.catalog.value" @pick="ticketPicked" />
+  <DispatchNewTicket v-if="newTicketProject" v-model:open="newTicketOpen" :project="newTicketProject" :gate="ticketGate" @created="ticketMade" />
 </template>
