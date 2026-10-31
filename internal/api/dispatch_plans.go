@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os/exec"
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/pty"
 )
 
 // A ticket's plan revisions over HTTP (Program item DS2,
@@ -57,6 +60,9 @@ const (
 	// planManifestFile is the file-form project manifest's name, relative
 	// to the crew's working directory (internal/crew's manifestFile).
 	planManifestFile = "conductor.manifest.json"
+	// maxPlanFactsCached bounds how many revisions' facts the server keeps
+	// (planFactsCache): ten tickets' lists at their bound.
+	maxPlanFactsCached = 10 * dispatch.MaxPlans
 )
 
 // The bodies of the revisions' writes: the operation and the fields its
@@ -100,10 +106,18 @@ type planReply struct {
 	Body           json.RawMessage `json:"body,omitempty"`
 }
 
-// planFacts is what the routes read of a revision's body: its crew's yolo
-// choice, its tasks' checks and its manifest's verify steps, the file
-// form's verify steps, and its agents as they resolved.
+// planFacts is what the routes take of a revision's body: its crew's yolo
+// choice, its agents as they resolved, and how many checks it expects
+// (its tasks' checks and its manifest's verify steps, the crew's own or
+// the file form's). A body never changes, so neither do its facts.
 type planFacts struct {
+	Yolo   *bool
+	Agents []dispatch.PlanAgent
+	Checks int
+}
+
+// planBodyFacts is the part of a revision's body its facts are read from.
+type planBodyFacts struct {
 	Crew struct {
 		Yolo  *bool `json:"yolo"`
 		Tasks []struct {
@@ -121,38 +135,91 @@ type planFacts struct {
 	} `json:"manifestFile"`
 }
 
-// readPlanFacts reads a revision's body.
+// readPlanFacts reads a revision's facts from its body: the checks it
+// expects are each task's checks and the manifest's verify steps, the
+// crew's own or the file form's.
 func readPlanFacts(body json.RawMessage) (planFacts, error) {
-	var f planFacts
-	if err := json.Unmarshal(body, &f); err != nil {
+	var b planBodyFacts
+	if err := json.Unmarshal(body, &b); err != nil {
 		return planFacts{}, fmt.Errorf("a plan revision's body: %w", err)
 	}
+	f := planFacts{Yolo: b.Crew.Yolo, Agents: b.Agents}
+	for _, t := range b.Crew.Tasks {
+		f.Checks += len(t.Checks)
+	}
+	if b.Crew.Manifest != nil {
+		f.Checks += len(b.Crew.Manifest.Verify)
+	}
+	if b.ManifestFile != nil {
+		f.Checks += len(b.ManifestFile.Manifest.Verify)
+	}
 	return f, nil
-}
-
-// expectedChecks counts the checks a revision expects: each task's checks
-// and the manifest's verify steps, the crew's own or the file form's.
-func (f planFacts) expectedChecks() int {
-	n := 0
-	for _, t := range f.Crew.Tasks {
-		n += len(t.Checks)
-	}
-	if f.Crew.Manifest != nil {
-		n += len(f.Crew.Manifest.Verify)
-	}
-	if f.ManifestFile != nil {
-		n += len(f.ManifestFile.Manifest.Verify)
-	}
-	return n
 }
 
 // yolo is the yolo choice the revision fixed, the server's default for a
 // body that holds none (none is made so).
 func (f planFacts) yolo(def bool) bool {
-	if f.Crew.Yolo != nil {
-		return *f.Crew.Yolo
+	if f.Yolo != nil {
+		return *f.Yolo
 	}
 	return def
+}
+
+// planFactsCache keeps revisions' facts by their bodies' digests, at most
+// maxPlanFactsCached of them, the oldest kept dropped first: a list of a
+// ticket's revisions reads and decodes a body (up to dispatch.MaxPlanBody
+// each, on the store's one connection) only for a revision whose facts it
+// has not kept, so the ticket page's reads on every plan event cost the
+// summaries alone. A digest is the SHA-256 of a body's bytes, so a fact
+// kept never goes stale; what the facts are compared with (the catalog,
+// the saved crews) is read again on every request. Its zero value is
+// ready; it is safe to use from many goroutines.
+type planFactsCache struct {
+	mu    sync.Mutex
+	facts map[string]planFacts
+	order []string // the digests kept, oldest first
+	loads int      // bodies read and decoded, for the tests
+}
+
+// get is the facts of the body whose digest is digest, read with load and
+// kept when they are not.
+func (c *planFactsCache) get(digest string, load func() (json.RawMessage, error)) (planFacts, error) {
+	c.mu.Lock()
+	f, ok := c.facts[digest]
+	c.mu.Unlock()
+	if ok {
+		return f, nil
+	}
+	body, err := load()
+	if err != nil {
+		return planFacts{}, err
+	}
+	f, err = readPlanFacts(body)
+	if err != nil {
+		return planFacts{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.loads++
+	if c.facts == nil {
+		c.facts = map[string]planFacts{}
+	}
+	if _, ok := c.facts[digest]; !ok {
+		if len(c.order) >= maxPlanFactsCached {
+			delete(c.facts, c.order[0])
+			c.order = slices.Delete(c.order, 0, 1)
+		}
+		c.facts[digest] = f
+		c.order = append(c.order, digest)
+	}
+	return f, nil
+}
+
+// loaded is how many bodies the cache has read and decoded.
+func (c *planFactsCache) loaded() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loads
 }
 
 // agentSelection is an agent's selection as a session launched from the
@@ -162,8 +229,9 @@ func (f planFacts) yolo(def bool) bool {
 // session at launch, its yolo recipe's arguments when yolo is on and the
 // agent has a recipe (else none), and the names of the environment the
 // entry gives the session, its env with the yolo recipe's overlaid when
-// that applies, with the SHA-256 of those names and values together ("" for
-// none), never a value. SHA256 is the SHA-256 of all of it as encoded: the
+// that applies and the server's variables its envPassthrough names as the
+// launch passes them through (entryPassthrough), with the SHA-256 of those
+// names and values together ("" for none), never a value. SHA256 is the SHA-256 of all of it as encoded: the
 // selection's identity, which a revision records, its approval and its
 // launch compare, and every attempt of a run launched from it is checked
 // against. It is the one function for the proposal, the approval, the
@@ -184,6 +252,12 @@ func agentSelection(a catalog.Agent, yolo bool) dispatch.PlanAgent {
 		}
 		maps.Copy(env, a.Yolo.Env)
 	}
+	for k, v := range entryPassthrough(a, env) {
+		if env == nil {
+			env = map[string]string{}
+		}
+		env[k] = v
+	}
 	if len(env) > 0 {
 		p.EnvNames = slices.Sorted(maps.Keys(env))
 		pairs := make([][2]string, 0, len(env))
@@ -201,6 +275,33 @@ func agentSelection(a catalog.Agent, yolo bool) dispatch.PlanAgent {
 		EnvSHA256 string   `json:"envSha256"`
 	}{p.ID, p.Command, p.StartArgs, p.YoloArgs, p.EnvNames, p.EnvSHA256})
 	return p
+}
+
+// entryPassthrough is the server's variables the entry's envPassthrough
+// names as a session launched from it gets them (createLocalSession, through
+// pty.BuildEnv): each one the server's environment has, never a blocked or
+// a CONDUCTOR_ name, and none the entry's own env (set, with the yolo
+// recipe's) sets, since that value wins. A name the entry adds to the list,
+// or a value of the server's that changes, changes the selection.
+func entryPassthrough(a catalog.Agent, set map[string]string) map[string]string {
+	if len(a.EnvPassthrough) == 0 {
+		return nil
+	}
+	got := map[string]string{}
+	for _, kv := range pty.BuildEnv(pty.ParentEnv(), a.EnvPassthrough, nil, nil) {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			got[k] = v
+		}
+	}
+	out := map[string]string{}
+	for _, k := range a.EnvPassthrough {
+		if v, ok := got[k]; ok {
+			if _, own := set[k]; !own {
+				out[k] = v
+			}
+		}
+	}
+	return out
 }
 
 // sha256Of is the SHA-256, in hex, of v as JSON with HTML escaping off.
@@ -252,8 +353,9 @@ func agentsChange(cat catalog.Catalog, f planFacts, def bool) string {
 }
 
 // planReplies makes the routes' replies of revisions read from the store:
-// each one's body read for its facts (and kept on the reply when withBody
-// is set), the saved crews read once each and the catalog once for all.
+// each one's facts from the server's planFacts (its body read only when
+// they are not kept there), the saved crews read once each and the
+// catalog once for all.
 type planReplies struct {
 	s     *Server
 	ds    *dispatch.Store
@@ -288,20 +390,28 @@ func (pr *planReplies) crewChanged(id string, updated time.Time) bool {
 	return !ok || !now.Equal(updated)
 }
 
-// of is the reply of the revision v.
-func (pr *planReplies) of(v dispatch.PlanView, withBody bool) (planReply, error) {
-	f, err := readPlanFacts(v.Body)
+// of is the reply of the revision whose summary is p: its body, when
+// body is nil and its facts are not kept, read by its id; the body kept
+// on the reply when withBody is set (body then the revision's).
+func (pr *planReplies) of(ctx context.Context, p dispatch.PlanSummary, body json.RawMessage, withBody bool) (planReply, error) {
+	f, err := pr.s.planFacts.get(p.Digest, func() (json.RawMessage, error) {
+		if body != nil {
+			return body, nil
+		}
+		v, err := pr.ds.Plan(ctx, p.ID)
+		return v.Body, err
+	})
 	if err != nil {
 		return planReply{}, err
 	}
 	out := planReply{
-		PlanSummary:    v.PlanSummary,
-		CrewChanged:    pr.crewChanged(v.CrewID, v.CrewUpdatedAt),
+		PlanSummary:    p,
+		CrewChanged:    pr.crewChanged(p.CrewID, p.CrewUpdatedAt),
 		AgentsChanged:  agentsChange(pr.cat, f, pr.s.cfg.Yolo) != "",
-		ExpectedChecks: f.expectedChecks(),
+		ExpectedChecks: f.Checks,
 	}
 	if withBody {
-		out.Body = v.Body
+		out.Body = body
 	}
 	return out, nil
 }
@@ -312,7 +422,7 @@ func (pr *planReplies) byID(ctx context.Context, id string, withBody bool) (plan
 	if err != nil {
 		return planReply{}, err
 	}
-	return pr.of(v, withBody)
+	return pr.of(ctx, v.PlanSummary, v.Body, withBody)
 }
 
 // planAfter is what a revision's operation answers beside its receipt:
@@ -335,7 +445,8 @@ func (s *Server) planAfter(ctx context.Context, ds *dispatch.Store, id string) f
 // stale with its words and remedy for an approved one whose approval no
 // longer holds, crewChanged, agentsChanged and expectedChecks; never a
 // body; at most dispatch.MaxPlans of them, under MaxPlansReply; 404
-// not_found; 400 invalid_request for any parameter.
+// not_found; 400 invalid_request for any parameter. A revision's body is
+// read only when its facts are not kept (planFactsCache).
 func (s *Server) handleDispatchPlans(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
@@ -354,15 +465,9 @@ func (s *Server) handleDispatchPlans(w http.ResponseWriter, r *http.Request) {
 	pr := s.planReplies(ds)
 	out := make([]planReply, 0, len(summaries))
 	for _, p := range summaries {
-		v, err := ds.Plan(ctx, p.ID)
-		if err != nil {
-			s.dispatchError(w, "plan revision", err)
-			return
-		}
 		// The list's summary, read in one transaction with the others: its
 		// number and its staleness as the list saw them.
-		v.PlanSummary = p
-		reply, err := pr.of(v, false)
+		reply, err := pr.of(ctx, p, nil, false)
 		if err != nil {
 			s.dispatchError(w, "plan revision", err)
 			return
@@ -504,8 +609,11 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 		}
 		return s.gitFailed(w, "the working directory's repository", err)
 	}
-	base, words := planBase(ctx, cwd, req.Base)
-	if words != "" {
+	base, words, err := planBase(ctx, cwd, req.Base)
+	switch {
+	case err != nil:
+		return s.gitFailed(w, "the base", err)
+	case words != "":
 		return fail(http.StatusConflict, dispatch.RefusalInvalid, "%s", words)
 	}
 	prefix, err := gitcli.Run(ctx, cwd, "rev-parse", "--show-prefix")
@@ -518,8 +626,11 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 	}
 	refs := make([]dispatch.PlanReference, 0, len(req.References))
 	for _, rr := range req.References {
-		ref, words := planReference(ctx, cwd, base, prefix, rr)
-		if words != "" {
+		ref, words, err := planReference(ctx, cwd, base, prefix, rr)
+		switch {
+		case err != nil:
+			return s.gitFailed(w, "a reference at the base", err)
+		case words != "":
 			return fail(http.StatusConflict, dispatch.RefusalInvalid, "%s", words)
 		}
 		refs = append(refs, ref)
@@ -580,21 +691,40 @@ func encodeRaw(v any) json.RawMessage {
 // full commit id of the repository cwd is in: git rev-parse --verify
 // <ref>^{commit}. A ref is at most maxPlanBase bytes with no space or
 // control character and never begins with '-', so git never reads it as
-// an option. The words say why it names no commit; "" when it does.
-func planBase(ctx context.Context, cwd, ref string) (string, string) {
+// an option. The words say why it names no commit; "" when it does. The
+// error is git's own failure (gitUnresolved), never the request's.
+func planBase(ctx context.Context, cwd, ref string) (string, string, error) {
 	ref = cmp.Or(ref, "HEAD")
 	switch {
 	case len(ref) > maxPlanBase:
-		return "", fmt.Sprintf("the base is more than %d bytes", maxPlanBase)
+		return "", fmt.Sprintf("the base is more than %d bytes", maxPlanBase), nil
 	case strings.HasPrefix(ref, "-") || strings.ContainsFunc(ref, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
-		return "", fmt.Sprintf("the base %q is not a branch, a tag or a commit", ref)
+		return "", fmt.Sprintf("the base %q is not a branch, a tag or a commit", ref), nil
 	}
 	out, err := gitcli.Run(ctx, cwd, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil && !gitUnresolved(err) {
+		return "", "", err
+	}
 	commit := strings.TrimSuffix(out, "\n")
 	if err != nil || !isFullCommit(commit) {
-		return "", fmt.Sprintf("the base %q names no commit of the crew's working directory", ref)
+		return "", fmt.Sprintf("the base %q names no commit of the crew's working directory", ref), nil
 	}
-	return commit, ""
+	return commit, "", nil
+}
+
+// gitUnresolved reports whether err is git's answer that what it was asked
+// for is not there: git ran to its end and exited 1 or 128 with nothing on
+// its standard error (git rev-parse --verify --quiet of a name that
+// resolves to nothing, HEAD@{n} past the log included; git cat-file -e of
+// an object the repository has not), which gitcli.Run hands back as git's
+// exit status itself (gitError wraps it only when git said nothing).
+// Anything else is git's own failure: a context that ended (the request's
+// deadline), a git that could not start or was killed, an object it
+// could not read ("error: unable to open loose object"), a repository it
+// refuses.
+func gitUnresolved(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && (exit.ExitCode() == 1 || exit.ExitCode() == 128)
 }
 
 // isFullCommit reports whether s is a full object id, SHA-1 or SHA-256,
@@ -618,36 +748,53 @@ func isFullCommit(s string) bool {
 // <base>:<prefix><path>, the directory itself for ".") and its kind (git
 // cat-file -t), a file or a directory: a path the base has not, a
 // submodule and anything else are refused. The words say why; "" when it
-// is taken.
-func planReference(ctx context.Context, cwd, base, prefix string, rr dispatch.PlanReferenceRequest) (dispatch.PlanReference, string) {
+// is taken. The error is git's own failure (gitUnresolved): an object the
+// base names that git cannot read is one, a submodule's commit the
+// repository has not (git cat-file -e) is the request's.
+func planReference(ctx context.Context, cwd, base, prefix string, rr dispatch.PlanReferenceRequest) (dispatch.PlanReference, string, error) {
 	p := rr.Path
 	switch {
 	case p == "":
-		return dispatch.PlanReference{}, "a reference names no path"
+		return dispatch.PlanReference{}, "a reference names no path", nil
 	case strings.ContainsRune(p, '\\') || strings.ContainsFunc(p, unicode.IsControl):
-		return dispatch.PlanReference{}, fmt.Sprintf("the reference %q is not a slash-separated path", cut(p, 200))
+		return dispatch.PlanReference{}, fmt.Sprintf("the reference %q is not a slash-separated path", cut(p, 200)), nil
 	case path.IsAbs(p):
-		return dispatch.PlanReference{}, fmt.Sprintf("the reference %q is absolute: a reference is relative to the crew's working directory", cut(p, 200))
+		return dispatch.PlanReference{}, fmt.Sprintf("the reference %q is absolute: a reference is relative to the crew's working directory", cut(p, 200)), nil
 	}
 	p = path.Clean(p)
 	if p == ".." || strings.HasPrefix(p, "../") {
-		return dispatch.PlanReference{}, fmt.Sprintf("the reference %q leaves the crew's working directory", cut(rr.Path, 200))
+		return dispatch.PlanReference{}, fmt.Sprintf("the reference %q leaves the crew's working directory", cut(rr.Path, 200)), nil
 	}
 	spec := base + ":" + prefix + p
 	if p == "." {
 		spec = base + ":" + prefix
 	}
 	out, err := gitcli.Run(ctx, cwd, "rev-parse", "--verify", "--quiet", spec)
+	if err != nil && !gitUnresolved(err) {
+		return dispatch.PlanReference{}, "", err
+	}
 	object := strings.TrimSuffix(out, "\n")
 	if err != nil || !isFullCommit(object) {
-		return dispatch.PlanReference{}, fmt.Sprintf("the reference %s is not at the base %s", cut(p, 200), base[:12])
+		return dispatch.PlanReference{}, fmt.Sprintf("the reference %s is not at the base %s", cut(p, 200), base[:12]), nil
 	}
+	notKind := fmt.Sprintf("the reference %s at the base %s is neither a file nor a directory", cut(p, 200), base[:12])
 	kind, err := gitcli.Run(ctx, cwd, "cat-file", "-t", object)
-	kind = strings.TrimSuffix(kind, "\n")
-	if err != nil || (kind != dispatch.ObjectBlob && kind != dispatch.ObjectTree) {
-		return dispatch.PlanReference{}, fmt.Sprintf("the reference %s at the base %s is neither a file nor a directory", cut(p, 200), base[:12])
+	if err != nil {
+		// cat-file -t fails alike for an object the repository has not and
+		// for one it cannot read; -e tells them apart.
+		switch _, eerr := gitcli.Run(ctx, cwd, "cat-file", "-e", object); {
+		case eerr != nil && gitUnresolved(eerr):
+			return dispatch.PlanReference{}, notKind, nil
+		case eerr != nil:
+			return dispatch.PlanReference{}, "", eerr
+		}
+		return dispatch.PlanReference{}, "", err
 	}
-	return dispatch.PlanReference{Path: p, Start: rr.Start, End: rr.End, Note: rr.Note, Object: object, Kind: kind}, ""
+	kind = strings.TrimSuffix(kind, "\n")
+	if kind != dispatch.ObjectBlob && kind != dispatch.ObjectTree {
+		return dispatch.PlanReference{}, notKind, nil
+	}
+	return dispatch.PlanReference{Path: p, Start: rr.Start, End: rr.End, Note: rr.Note, Object: object, Kind: kind}, "", nil
 }
 
 // handleDispatchApprovePlan approves a plan revision (plan.approve), the
@@ -682,7 +829,7 @@ func (s *Server) handleDispatchApprovePlan(w http.ResponseWriter, r *http.Reques
 		s.dispatchError(w, "plan revision", err)
 		return
 	default:
-		f, err := readPlanFacts(v.Body)
+		f, err := s.planFacts.get(v.Digest, func() (json.RawMessage, error) { return v.Body, nil })
 		if err != nil {
 			s.dispatchError(w, "plan revision", err)
 			return

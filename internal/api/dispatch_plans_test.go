@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -778,4 +780,188 @@ func TestDispatchPlanApproveAndWithdraw(t *testing.T) {
 	if out["receipt"].(map[string]any)["repeat"] != true {
 		t.Fatalf("the resend: %v", out)
 	}
+}
+
+// The server's variables an agent's envPassthrough names are part of its
+// selection as a launch passes them through: a name added to the list,
+// or a value of the server's that changes, makes agentsChanged and the
+// approval's stale_plan, and the body holds the names, never a value. A
+// name the server's environment lacks passes nothing; one the entry's
+// own env sets is the entry's value.
+func TestProposeSnapshotsTheAgentsPassedThrough(t *testing.T) {
+	p := newPlanTest(t, nil)
+	t.Setenv("PLAN_TEST_MODEL", "passed-model-value")
+	t.Setenv("PLAN_TEST_OWN", "server-own-value")
+	agent := func(passthrough ...string) map[string]any {
+		return map[string]any{"id": "pass", "name": "pass", "command": []string{"/bin/cat"},
+			"env": map[string]string{"PLAN_TEST_OWN": "entry-own-value"}, "envPassthrough": passthrough}
+	}
+	p.save(agent())
+	saved := p.saveCrew(t, teamCrew("Team", "pass"))
+	before := p.proposed(t, saved.ID, nil)
+	if v := p.plansOf(t, "CND-1")[before]; v["agentsChanged"] != false {
+		t.Fatalf("before the edit: %v", v)
+	}
+	p.save(agent("PLAN_TEST_MODEL", "PLAN_TEST_OWN", "PLAN_TEST_UNSET"))
+	if v := p.plansOf(t, "CND-1")[before]; v["agentsChanged"] != true {
+		t.Fatalf("a name passed through added: %v", v)
+	}
+	out := p.expect(t, "POST", "/api/dispatch/plans/"+before+"/approve", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalStalePlan)
+	if msg := out["error"].(map[string]any)["message"].(string); msg != "the agent pass's environment changed since revision 1 was made: revise it" {
+		t.Fatalf("the approval's words: %q", msg)
+	}
+	after := p.proposed(t, saved.ID, nil)
+	raw, body, _ := p.planBodyOf(t, after)
+	pairs := `[["PLAN_TEST_MODEL","passed-model-value"],["PLAN_TEST_OWN","entry-own-value"]]`
+	sum := sha256.Sum256([]byte(pairs))
+	if a := body.Agents[0]; !slices.Equal(a.EnvNames, []string{"PLAN_TEST_MODEL", "PLAN_TEST_OWN"}) || a.EnvSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("the agent passed through: %+v", a)
+	}
+	for _, value := range []string{"passed-model-value", "server-own-value", "entry-own-value"} {
+		if bytes.Contains(raw, []byte(value)) {
+			t.Fatalf("the body holds the environment's value %q", value)
+		}
+	}
+	if v := p.plansOf(t, "CND-1")[after]; v["agentsChanged"] != false {
+		t.Fatalf("the new revision: %v", v)
+	}
+	// The server's value changed: the selection with it; the entry's own
+	// value of a name it also passes through is no change.
+	t.Setenv("PLAN_TEST_OWN", "server-other-value")
+	if v := p.plansOf(t, "CND-1")[after]; v["agentsChanged"] != false {
+		t.Fatalf("the server's value of a name the entry sets changed: %v", v)
+	}
+	t.Setenv("PLAN_TEST_MODEL", "another-model-value")
+	if v := p.plansOf(t, "CND-1")[after]; v["agentsChanged"] != true {
+		t.Fatalf("the server's value passed through changed: %v", v)
+	}
+	p.expect(t, "POST", "/api/dispatch/plans/"+after+"/approve", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalStalePlan)
+}
+
+// A ticket's list reads each revision's body once: its facts are kept by
+// the body's digest, so a list again, and a revision's own read, read no
+// body (counted, never timed), and the facts read are the body's.
+func TestThePlansListReadsEachBodyOnce(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	done := doneOf(t)
+	ds, ctx := e.srv.dispatch, context.Background()
+	done(ds.CreateProject(ctx, adminOp(""), dispatch.NewProject{Key: "BIG", Name: "Big"}))
+	done(ds.CreateTicket(ctx, adminOp(""), dispatch.NewTicket{Project: "BIG", Title: "Big", Acceptance: "it holds"}))
+	var ids []string
+	for i := range dispatch.MaxPlans {
+		checks := make([]any, i%3)
+		for j := range checks {
+			checks[j] = map[string]any{"id": fmt.Sprintf("c%d", j), "argv": []string{"true"}}
+		}
+		crewJSON, _ := json.Marshal(map[string]any{"id": "c1", "name": fmt.Sprintf("Crew %d", i), "tasks": []any{map[string]any{"id": "build", "checks": checks}}})
+		rc := done(ds.ProposePlan(ctx, adminOp(""), "BIG-1", dispatch.PlanRequest{Crew: "c1"}, dispatch.PlanBody{Base: strings.Repeat("ab", 20), Crew: crewJSON}))
+		ids = append(ids, rc.ID)
+	}
+	list := func() {
+		t.Helper()
+		plans := listOf(t, e.expect(t, "GET", "/api/dispatch/tickets/BIG-1/plans", nil, http.StatusOK, ""), "plans")
+		if len(plans) != dispatch.MaxPlans {
+			t.Fatalf("%d revisions", len(plans))
+		}
+		for _, v := range plans {
+			if n := int(v["n"].(float64)); v["expectedChecks"] != float64((n-1)%3) {
+				t.Fatalf("revision %d expects %v checks", n, v["expectedChecks"])
+			}
+		}
+	}
+	list()
+	if n := e.srv.planFacts.loaded(); n != dispatch.MaxPlans {
+		t.Fatalf("the first list read %d bodies, not %d", n, dispatch.MaxPlans)
+	}
+	list()
+	if plan := entityOf(t, e.expect(t, "GET", "/api/dispatch/plans/"+ids[0], nil, http.StatusOK, ""), "plan"); plan["body"] == nil {
+		t.Fatalf("a revision's own read has no body: %v", plan)
+	}
+	if n := e.srv.planFacts.loaded(); n != dispatch.MaxPlans {
+		t.Fatalf("a list again and a revision's read read %d bodies in all, not %d", n, dispatch.MaxPlans)
+	}
+}
+
+// The facts kept are bounded: past maxPlanFactsCached the oldest is
+// dropped, and read again when it is asked for.
+func TestThePlanFactsKeptAreBounded(t *testing.T) {
+	t.Parallel()
+	var c planFactsCache
+	body := json.RawMessage(`{"crew":{"tasks":[{"checks":[{}]}]}}`)
+	load := func() (json.RawMessage, error) { return body, nil }
+	for i := range maxPlanFactsCached + 1 {
+		if f, err := c.get(fmt.Sprint(i), load); err != nil || f.Checks != 1 {
+			t.Fatalf("%d: %+v %v", i, f, err)
+		}
+	}
+	if len(c.facts) != maxPlanFactsCached || len(c.order) != maxPlanFactsCached {
+		t.Fatalf("%d facts kept, %d in order, not %d", len(c.facts), len(c.order), maxPlanFactsCached)
+	}
+	c.get(fmt.Sprint(maxPlanFactsCached), load)
+	if c.loaded() != maxPlanFactsCached+1 {
+		t.Fatalf("the newest was read again: %d reads", c.loaded())
+	}
+	c.get("0", load)
+	if c.loaded() != maxPlanFactsCached+2 {
+		t.Fatalf("the oldest was not dropped: %d reads", c.loaded())
+	}
+}
+
+// A failure of git itself while the base or a reference is resolved is
+// 500 git_failed, never the request's 409 invalid: an object git cannot
+// read, a context that ended. A name that resolves to nothing, a reflog
+// entry past the log and a submodule's commit the repository has not are
+// still the request's.
+func TestProposeAnswersGitsOwnFailure(t *testing.T) {
+	p := newPlanTest(t, nil)
+	saved := p.saveCrew(t, teamCrew("Team", "cat"))
+	ctx := context.Background()
+	for _, base := range []string{"nope", "HEAD@{99}", "HEAD~9"} {
+		if _, words, err := planBase(ctx, p.repo, base); err != nil || words == "" {
+			t.Fatalf("the base %q: %q %v", base, words, err)
+		}
+	}
+	// A submodule whose commit the repository has not.
+	gitIn(t, p.repo, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("1", 40)+",sm")
+	gitIn(t, p.repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "a submodule")
+	out := p.propose(t, "CND-1", map[string]any{"crew": saved.ID, "references": []any{map[string]any{"path": "sm"}}}, http.StatusConflict, dispatch.RefusalInvalid)
+	if msg := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "is neither a file nor a directory") {
+		t.Fatalf("the submodule: %q", msg)
+	}
+	// A context that ended.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, words, err := planBase(cancelled, p.repo, "HEAD"); !errors.Is(err, context.Canceled) || words != "" {
+		t.Fatalf("the base with the context ended: %q %v", words, err)
+	}
+	head := gitIn(t, p.repo, "rev-parse", "HEAD")
+	if _, words, err := planReference(cancelled, p.repo, head, "", dispatch.PlanReferenceRequest{Path: "README"}); !errors.Is(err, context.Canceled) || words != "" {
+		t.Fatalf("the reference with the context ended: %q %v", words, err)
+	}
+	// Objects git cannot read: a file's blob, then the base's commit.
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	unreadable := func(object string) {
+		t.Helper()
+		f := filepath.Join(p.repo, ".git", "objects", object[:2], object[2:])
+		if err := os.Chmod(f, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(f, 0o444) })
+	}
+	secret := commitFile(t, p.repo, "secret.txt", "a blob git cannot read\n")
+	unreadable(gitIn(t, p.repo, "rev-parse", secret+":secret.txt"))
+	failed := func(body map[string]any, what string) {
+		t.Helper()
+		out := p.propose(t, "CND-1", body, http.StatusInternalServerError, "git_failed")
+		if msg := out["error"].(map[string]any)["message"].(string); msg != "could not read "+what+" with git" || out["receipt"] != nil {
+			t.Fatalf("git's failure reading %s: %v", what, out)
+		}
+	}
+	failed(map[string]any{"crew": saved.ID, "references": []any{map[string]any{"path": "secret.txt"}}}, "a reference at the base")
+	commitFile(t, p.repo, "later.txt", "later\n")
+	unreadable(secret)
+	failed(map[string]any{"crew": saved.ID, "base": secret}, "the base")
 }

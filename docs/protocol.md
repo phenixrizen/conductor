@@ -2784,8 +2784,12 @@ agent its members name, as the catalog resolved it: the command, the
 session recipe's start arguments (`{id}` unexpanded) when it names the
 session at launch, the yolo recipe's arguments when yolo is on, the
 names of the environment the entry gives the session (the yolo recipe's
-overlaid when it applies) with `envSha256` the SHA-256 of names and
-values together (`""` for none), never a value, and `sha256` the
+overlaid when it applies, and the server's variables its `envPassthrough`
+names as a launch passes them through: one the server has, never a blocked
+or `CONDUCTOR_` name, the entry's own value winning) with `envSha256` the
+SHA-256 of names and values together (`""` for none), never a value, so a
+name added to `envPassthrough` or a server value of one that changes is
+`agentsChanged`, and `sha256` the
 selection's identity, the SHA-256 of the rest; `manifestFile` `{path, blob, manifest}`; each reference
 `{path, start?, end?, note?, object, kind}`; each comment `{id, sha256}`,
 the SHA-256 of its body when the revision was made. A body is at most 2
