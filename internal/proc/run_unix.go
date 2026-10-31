@@ -18,23 +18,46 @@ import (
 type lifecycle struct {
 	mu     sync.Mutex
 	reaped bool
-	// output is the output's end of file (launched.eof), which the end's
-	// judgement reads (judge) and the first kill sent before it notes
-	// (signal).
+	// output is the output's end of file (launched.eof), and pipe the read
+	// end of the output's pipe, which the end's judgement reads (judge,
+	// held) and the first kill sent before it notes (signal).
 	output <-chan struct{}
+	pipe   *os.File
 	// empty says a listing of the group found none of it left, the
 	// process's own exit aside; killed says a SIGKILL has been sent before
 	// the judgement, and killedHolder that the first, sent once the process
-	// had exited, took a member of the group while the output was open;
-	// judged that the judgement is made, after which no kill is noted.
+	// had exited, took a member of the group while a process held the
+	// output (held); judged that the judgement is made, after which no
+	// kill is noted.
 	empty, killed, killedHolder, judged bool
 	// looks counts the looks at the group (members, still), for looking.
 	looks int
 }
 
 // newLifecycle is the lifecycle of a command whose output's end of file
-// closes output (launched.eof).
-func newLifecycle(output <-chan struct{}) *lifecycle { return &lifecycle{output: output} }
+// closes output (launched.eof), read from the pipe's read end pipe.
+func newLifecycle(output <-chan struct{}, pipe *os.File) *lifecycle {
+	return &lifecycle{output: output, pipe: pipe}
+}
+
+// held says whether a process holds the output at this moment: its end of
+// file not read yet, and the pipe not hung up (writersGone). The end's
+// goroutine can be late to the end of file on a loaded machine, so an end
+// not read is no proof of a writer: a child that redirected its output,
+// left in the group, holds none of it.
+func (g *lifecycle) held() bool {
+	if !outputOpen(g.output) {
+		return false
+	}
+	gone, known := writersGone(g.pipe)
+	return !known || !gone
+}
+
+// killScanned, when set, is called in noteKill once the group is listed
+// for a kill, with the lock held: the tests' way to have the output close
+// during that listing, which is slow on a loaded machine. Set it before
+// the process starts.
+var killScanned func(g *lifecycle)
 
 // looking, when set, is called before each look at the group, outside the
 // lifecycle's lock: n numbers the looks from 1, and listing says it is a
@@ -64,8 +87,9 @@ func (g *lifecycle) look(listing bool) (fail bool) {
 // that took a member holding the output (killedHolder) says so, though
 // the member is gone from a later listing and the output closed with it;
 // none of the group left (empty), nothing of it holds the output, however
-// late its end is read; else the output open at this moment is held. No
-// kill is noted after it.
+// late its end is read; else the output is held when a process holds it at
+// this moment (held), not when its end is only read late. No kill is noted
+// after it.
 func (g *lifecycle) judge() (held bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -76,31 +100,36 @@ func (g *lifecycle) judge() (held bool) {
 	case g.empty:
 		return false
 	}
-	return outputOpen(g.output)
+	return g.held()
 }
 
 // noteKill notes the first SIGKILL sent before the judgement (judge),
 // with the lock held and before it is sent: whether it takes a member of
 // the group that holds the output. It does when the process has exited
 // (one that runs holds the output itself, and the wait after its exit
-// reads what it left), the output is open, and the group, listed now, has
-// a member, or cannot be listed; a listing that finds none is noted as
-// one of the end's (empty), and a group already found empty has none to
-// take.
+// reads what it left), a process holds the output (held), and the group,
+// listed now, has a member, or cannot be listed; a listing that finds none
+// is noted as one of the end's (empty), and a group already found empty
+// has none to take. The output is read again after the listing, which is
+// slow on a loaded machine: a holder that finished during it, a member
+// that redirected its output left, is no holder the kill takes.
 func (g *lifecycle) noteKill(pid int) {
 	if g.judged || g.killed {
 		return
 	}
 	g.killed = true
-	if !outputOpen(g.output) || g.empty || !exited(pid) {
+	if !g.held() || g.empty || !exited(pid) {
 		return
 	}
 	pids, err := groupMembers(pid, pid)
+	if killScanned != nil {
+		killScanned(g)
+	}
 	if err == nil && len(pids) == 0 {
 		g.empty = true
 		return
 	}
-	g.killedHolder = true
+	g.killedHolder = g.held()
 }
 
 // signalled, when set, is told each signal signal sends, once it is sent:

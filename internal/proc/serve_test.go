@@ -438,12 +438,19 @@ func leftGroup(pgid int, pids ...int) bool {
 // (Run, and a service that exits on its own): with none of it left, the
 // output's end is only read late, as it can be on a loaded machine, and
 // nothing was killed that held it. A child left in the group that holds
-// the output is still found, and goes with the group (Killed).
+// the output is still found, and goes with the group (Killed). One left
+// that redirected its output goes with the group too, but held none of it
+// (Codex's review of #511, round 3): the output's end read late is no
+// writer.
 func TestAnOutputReadLateIsHeldOnlyByWhatIsLeftInTheGroup(t *testing.T) {
 	for _, tc := range []struct {
 		name, script string
-		holds        bool
-	}{{"none of the group left", "echo hi; exit 0", false}, {"a child holding the output", "sleep 30 & echo $!; exit 0", true}} {
+		child, holds bool
+	}{
+		{"none of the group left", "echo hi; exit 0", false, false},
+		{"a child holding the output", "sleep 30 & echo $!; exit 0", true, true},
+		{"a child that redirected its output", "sleep 30 >/dev/null 2>&1 & echo $!; exit 0", true, false},
+	} {
 		t.Run("a run, "+tc.name, func(t *testing.T) {
 			held, late := lateOutput(t)
 			res := sh(t, time.Minute, tc.script)
@@ -453,7 +460,7 @@ func TestAnOutputReadLateIsHeldOnlyByWhatIsLeftInTheGroup(t *testing.T) {
 			if held() != tc.holds || res.Killed != tc.holds || res.Exit != 0 || res.Err != "" || res.TimedOut {
 				t.Fatalf("held %v: %+v", held(), res)
 			}
-			if tc.holds {
+			if tc.child {
 				if pid := pidIn(t, res.Head); !gone(t, pid, 3*time.Second) {
 					t.Fatalf("the sleep %d outlived the run", pid)
 				}
@@ -640,10 +647,14 @@ func TestAKillBesideTheWaitAtAnExitIsReadAsItWasSent(t *testing.T) {
 				var svcp atomic.Pointer[Service]
 				var listed, taken, closed atomic.Bool
 				stops := make(chan error, 1)
+				// Serve's end runs before Serve returns: the look waits
+				// until the service and its group are published.
+				published := make(chan struct{})
 				lookAt(t, func(n int, listing bool) bool {
 					if n != 1 || !listing {
 						return false
 					}
+					<-published
 					listed.Store(true)
 					if by == "a stop" {
 						go func() { stops <- svcp.Load().Stop(stopped) }()
@@ -663,6 +674,7 @@ func TestAKillBesideTheWaitAtAnExitIsReadAsItWasSent(t *testing.T) {
 				t.Cleanup(func() { svc.Stop(stopped) })
 				pgid.Store(int64(svc.Result().Process.PID))
 				svcp.Store(svc)
+				close(published)
 				select {
 				case <-svc.Done():
 				case <-time.After(30 * time.Second):
@@ -746,6 +758,68 @@ func TestAKillOnceTheGroupIsGoneTakesNothing(t *testing.T) {
 	}
 	if res := svc.Result(); held() || res.Signal != "terminated" || res.Exit != -1 || res.Killed || res.Err != "" {
 		t.Fatalf("held %v: %+v", held(), res)
+	}
+}
+
+// A kill's own listing of the group is slow on a loaded machine (Codex's
+// review of #511, round 3): the child that held the output can finish
+// during it, the output closed, while a child that redirected its output
+// is still in the group, so the listing finds a member. The kill took no
+// holder, so the result is not Killed. The context is ended at the end's
+// listing, once holdGrace has passed with the holder running; the kill's
+// listing (killScanned) lets the holder finish and waits for the output's
+// end; the end's listing waits until the kill is sent.
+func TestAKillWhoseListingOutlastsTheHolderTakesNoHolder(t *testing.T) {
+	var killed atomic.Bool
+	watchSignals(t, func(x sent) {
+		if x.s == sigKill && !x.alone {
+			killed.Store(true)
+		}
+	})
+	dir := t.TempDir()
+	var scanned, closed, listed, sawKill atomic.Bool
+	killScanned = func(g *lifecycle) {
+		if !scanned.CompareAndSwap(false, true) {
+			return
+		}
+		os.WriteFile(filepath.Join(dir, "go"), nil, 0o644)
+		select {
+		case <-g.output:
+			closed.Store(true)
+		case <-time.After(10 * time.Second):
+		}
+	}
+	t.Cleanup(func() { killScanned = nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lookAt(t, func(n int, listing bool) bool {
+		if n != 1 || !listing {
+			return false
+		}
+		listed.Store(true)
+		cancel()
+		deadline := time.Now().Add(10 * time.Second)
+		for !killed.Load() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		sawKill.Store(killed.Load())
+		return false
+	})
+	script := `sleep 30 >/dev/null 2>&1 & echo $!; sh -c 'while [ ! -e go ]; do sleep 0.01; done; echo done > done' & exit 0`
+	res := Run(ctx, Spec{Argv: []string{"sh", "-c", script}, Dir: dir, Timeout: time.Minute})
+	if !listed.Load() || !scanned.Load() || !closed.Load() || !sawKill.Load() {
+		t.Fatalf("listed %v, the kill's listing made %v, the output closed during it %v, the kill sent before the end's listing %v", listed.Load(), scanned.Load(), closed.Load(), sawKill.Load())
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "done")); err != nil || string(b) != "done\n" {
+		t.Fatalf("the holder was killed before it finished: %q %v", b, err)
+	}
+	// exec reports a command its context's end cancelled, which exited 0
+	// all the same, with the context's error.
+	if res.Exit != 0 || res.Signal != "" || res.Killed || !res.Canceled || res.Err != "context canceled" {
+		t.Fatalf("%+v", res)
+	}
+	if pid := pidIn(t, res.Head); !gone(t, pid, 3*time.Second) {
+		t.Fatalf("the redirected sleep %d outlived the run", pid)
 	}
 }
 

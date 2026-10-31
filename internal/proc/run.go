@@ -261,7 +261,7 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 	// the group, so that every kill sent before the end's judgement is
 	// noted with what it took (lifecycle.judge).
 	eof := make(chan struct{})
-	g := newLifecycle(eof)
+	g := newLifecycle(eof, r)
 	attr(cmd, g)
 
 	started := time.Now()
@@ -396,7 +396,10 @@ func (l *launched) end(ctx context.Context) Result {
 // the output's end is read late (the goroutine that reads it can be, on a
 // loaded machine) or a process that left the group holds it, which end
 // gives WaitDelay and leaves alone; and the output is read again after
-// the listing, which is slow on a loaded machine. Each answer is the
+// the listing, which is slow on a loaded machine, as held by a process
+// only while its pipe has a writer (lifecycle.held): a member left that
+// redirected its output holds none of it, though the output's end is read
+// late. Each answer is the
 // lifecycle's judgement (judge), which reads a kill sent beside this wait
 // (the command's Cancel at the context's end, or a stop's) as it was
 // sent: a child holding the output that it took went with the group,
