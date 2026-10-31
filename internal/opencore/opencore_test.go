@@ -265,6 +265,58 @@ func TestGoModQuotedTokens(t *testing.T) {
 	}
 }
 
+// TestGoModDirectoryPaths: the right of a replace is a directory by the go
+// command's rule (modfile.IsDirectoryPath), which reads every platform's
+// syntax on every platform: a drive prefix (on Linux the go command joins
+// C:/../testdata/helper to the root and builds the module there), a rooted
+// backslash path and the dot forms with either slash are directories in
+// go.mod and go.work alike, wherever the lint runs. A module path with a
+// colon later in it is not.
+func TestGoModDirectoryPaths(t *testing.T) {
+	dirs := []string{
+		"C:/../testdata/helper", `c:\testdata\helper`, "Z:", `\testdata\helper`, `\\server\share`,
+		"/src/helper", ".", "..", "./helper", "../helper", `.\helper`, `..\helper`,
+	}
+	var directives string
+	var want []string
+	for i, d := range dirs {
+		directives += fmt.Sprintf("replace example.com/h%d => %q\n", i, d)
+		want = append(want, fmt.Sprintf("replace example.com/h%d with the directory %s", i, d))
+	}
+	directives += "replace example.com/m => example.com/x:y v1.0.0\nreplace example.com/n => 1:/x v1.0.0\n"
+	for _, name := range []string{"go.mod", "go.work"} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{"go.mod": "module " + Module + "\n", "x.go": "package x\n"}
+			head := "go 1.26.0\n"
+			if name == "go.mod" {
+				head = "module " + Module + "\n" + head
+			}
+			files[name] = head + directives
+			dir := t.TempDir()
+			writeFiles(t, dir, files)
+			problems, err := Check(dir)
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			var got []string
+			for _, p := range problems {
+				if p.Rule != RuleGoMod || p.File != name {
+					t.Errorf("problem %s, want rule %s in %s", p, RuleGoMod, name)
+				}
+				got = append(got, p.Detail[:strings.Index(p.Detail, ",")])
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("problems =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+	for _, p := range []string{"example.com/x", "1:/x", "C", "c/x", "_:/x"} {
+		if localPath(p) {
+			t.Errorf("localPath(%q) = true, want false (a module path)", p)
+		}
+	}
+}
+
 // TestExtStdKnowsADotlessModule: an import under ext/ with no dot in its
 // first element is the standard library's only when no module go.mod or
 // go.work requires or replaces holds it; helper, replaced by another

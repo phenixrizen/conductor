@@ -501,11 +501,17 @@ func modTokens(line string) ([]string, error) {
 }
 
 // localPath reports whether a replacement is a directory rather than a
-// module path, as the go command tells them apart: a path beginning with
-// ./ or ../ (or .\ and ..\), "." or "..", or an absolute path.
+// module path, by the go command's own rule (modfile.IsDirectoryPath),
+// which reads every platform's syntax on every platform because a go.mod
+// moves between systems: "." or "..", a path beginning with ./ or ../ (or
+// .\ and ..\), a rooted path (/ or \), or a drive prefix (C:). On Linux
+// the go command joins C:/../x to the module's root and builds it, so the
+// test is not filepath.IsAbs, which is this machine's syntax only.
 func localPath(p string) bool {
-	return p == "." || p == ".." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") ||
-		strings.HasPrefix(p, `.\`) || strings.HasPrefix(p, `..\`) || filepath.IsAbs(p) || strings.HasPrefix(p, "/")
+	return p == "." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, `.\`) ||
+		p == ".." || strings.HasPrefix(p, "../") || strings.HasPrefix(p, `..\`) ||
+		strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) ||
+		len(p) >= 2 && ('A' <= p[0] && p[0] <= 'Z' || 'a' <= p[0] && p[0] <= 'z') && p[1] == ':'
 }
 
 // unquote takes the quotes off a go.mod token written as a Go string, and
