@@ -153,6 +153,13 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
+- A starting value is not a result. A threshold the starting state
+  already meets (cols above 60 on a session born 80 x 24) passes before
+  anything happened, and a settle that compares a read with one made a
+  moment before settles at once. Wait for the step that makes the value
+  (the window attached: the session counts it as a viewer) and compare
+  with what the actor itself computed (the page's drawn grid), on two
+  reads an interval apart.
 - A run's log is not its ledger, and neither is the rest of the engine's
   view. The engine makes a change (its log line, a task's state, an
   attempt's) inside the change and commits its rows and events after it,
@@ -164,6 +171,9 @@ add its rule here.
   inside its lock and records the change's entry after it (`recordOwn`),
   so a state seen showing says nothing of its entry. Wait for the entry
   before reading or counting the activity log (`logged`, `lastEntryIs`).
+  A message sent from inside a step is not the step done: the session
+  sends a viewer its welcome inside `AttachWith`, before the host's peer
+  holds the subscription (`awaitSub` in `internal/hostagent` waits for it).
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
