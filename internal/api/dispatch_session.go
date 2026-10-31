@@ -156,6 +156,13 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	writeDispatch(w, http.StatusOK, out)
 }
 
+// beforeSessionComment, when set, runs once a session's comment has been
+// read and its run found, before the store's operation: a seam for a
+// test, which sets it outside the package's parallel tests, to hold a
+// request there while another with the same opId commits and the run's
+// link moves.
+var beforeSessionComment atomic.Pointer[func()]
+
 // handleSessionTicketComment comments on the ticket the session's run is
 // linked to (comment.add): body {opId, body}, the body Markdown of 1 to
 // 16 KiB; the author agent:<member>, the session's member, and the
@@ -165,12 +172,13 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 // answers; 404 no_ticket; 400 invalid_request for a body that is not
 // {opId, body} or an opId that is not one, 413 bound past 64 KiB; the
 // store's refusals as the admin's route answers them (409 invalid, bound
-// or archived; 404 not_found for a ticket deleted after it was found).
-// The ticket is found, then commented on, in two transactions: a link
-// removed between them leaves the comment on the ticket the run was
-// linked to a moment before, as a comment sent a moment earlier would
-// have been. A resend of an operation goes where the operation went
-// (sessionCommentTarget), not where the run's link is now.
+// or archived). The ticket is found inside the comment's own transaction
+// (dispatch.Store.AddRunComment), after the operation's receipt is looked
+// up: a resend, or a request that overlaps the one it repeats, answers
+// that operation's receipt whatever the run's link has done since (a
+// repeat on the ticket it went to, or op_conflict for other content, a
+// refusal's as well), and a new operation goes to the ticket that holds
+// the run when it commits.
 func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
 	if !ok {
@@ -199,52 +207,13 @@ func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	op := dispatch.Op{Actor: agentActor(member), ID: body.OpID}
-	key, ok := s.sessionCommentTarget(ctx, w, ds, run, op)
-	if !ok {
+	if f := beforeSessionComment.Load(); f != nil {
+		(*f)()
+	}
+	rc, key, err := ds.AddRunComment(ctx, dispatch.Op{Actor: agentActor(member), ID: body.OpID}, run, body.Body)
+	if errors.Is(err, dispatch.ErrNoRunTicket) {
+		noTicket(w, run)
 		return
 	}
-	rc, err := ds.AddComment(ctx, op, key, body.Body)
 	s.writeOp(w, "comment", rc, err, true, "comment", commentAfter(ctx, ds, key, ""))
-}
-
-// sessionCommentTarget is the key of the ticket a session's comment goes
-// to. An operation id the member used before keeps the target it had: a
-// comment that committed is resent to the ticket it went to (OpTicket,
-// from the changes log), wherever the run's link is now and whether that
-// ticket is live, so the store answers its receipt, or op_conflict for
-// other content, and never a comment on the run's next ticket or
-// no_ticket; an operation refused before, which names no ticket, answers
-// its refusal again, as the store answers a repeat, the route having
-// answered. A new operation goes to the live ticket the run is linked to.
-// ok is false when the route has answered.
-func (s *Server) sessionCommentTarget(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, run string, op dispatch.Op) (key string, ok bool) {
-	key, found, err := ds.OpTicket(ctx, op.Actor, op.ID)
-	if err != nil {
-		s.dispatchError(w, "ticket", err)
-		return "", false
-	}
-	if found {
-		return key, true
-	}
-	rc, found, err := ds.Receipt(ctx, op.Actor, op.ID)
-	if err != nil {
-		s.dispatchError(w, "ticket", err)
-		return "", false
-	}
-	if found && rc.Status != dispatch.StatusDone {
-		rc.Repeat = true
-		s.writeOp(w, "comment", rc, nil, true, "comment", nil)
-		return "", false
-	}
-	tk, found, err := ds.RunTicket(ctx, run)
-	if err != nil {
-		s.dispatchError(w, "ticket", err)
-		return "", false
-	}
-	if !found || !tk.DeletedAt.IsZero() {
-		noTicket(w, run)
-		return "", false
-	}
-	return tk.Key, true
 }

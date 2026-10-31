@@ -2792,7 +2792,9 @@ func TestDispatchSessionTicketIsReadWhereItsLinkIs(t *testing.T) {
 // removed, and after the first ticket's delete, the same opId and body
 // answer the receipt, a repeat, with nothing written to either ticket,
 // and other content under it op_conflict. A refused comment's resend
-// answers its refusal again, though the run's ticket changed since.
+// answers its refusal again, though the run's ticket changed since, and
+// its opId with another body op_conflict, before the link moved and
+// after.
 func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 	t.Parallel()
 	e := dispatchEnv(t)
@@ -2811,6 +2813,7 @@ func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 		t.Fatalf("the first comment: %v", c)
 	}
 	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": ""}, http.StatusConflict, "invalid")
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": "now with words"}, http.StatusConflict, "op_conflict")
 	comments := func(key string) int {
 		t.Helper()
 		cs, err := ds.Comments(ctx, key, 0, dispatch.MaxCommentPage)
@@ -2832,6 +2835,7 @@ func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 		if out := e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": ""}, http.StatusConflict, "invalid"); entityOf(t, out, "receipt")["repeat"] != true {
 			t.Fatalf("%s: the refusal's resend: %v", when, out)
 		}
+		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": "now with words"}, http.StatusConflict, "op_conflict")
 		if na, nb := comments(a), comments(b); na != 1 || nb != 0 {
 			t.Fatalf("%s: %d comments on A and %d on B", when, na, nb)
 		}
@@ -2843,6 +2847,124 @@ func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 	resend("the link removed")
 	done(ds.DeleteTicket(ctx, adminOp(""), a))
 	resend("A deleted")
+}
+
+// A comment and its resend that overlap, the resend sent before the
+// comment commits, answer as one operation whatever the run's link does
+// in between: the resend held after its run is found, the comment
+// committed on A, the link moved to B (or removed), the resend answers
+// the comment's receipt, a repeat with the comment on A, and nothing is
+// written to B; another body under the id meanwhile answers op_conflict,
+// never no_ticket or a comment on B. Not parallel:
+// the seam is the package's.
+func TestDispatchSessionCommentOverlappingItsResend(t *testing.T) {
+	e := dispatchEnv(t)
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Overlapping")
+	comment := "/api/sessions/" + sid + "/ticket/comments"
+	e.newDispatchProject(t, "OVL", nil)
+	a := e.newDispatchTicket(t, "OVL", "A", nil)["key"].(string)
+	b := e.newDispatchTicket(t, "OVL", "B", nil)["key"].(string)
+	t.Cleanup(func() { beforeSessionComment.Store(nil) })
+	comments := func(key string) int {
+		t.Helper()
+		cs, err := ds.Comments(ctx, key, 0, dispatch.MaxCommentPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	// post sends a comment from a goroutine of its own, the test's
+	// helpers being the test goroutine's: its status and reply, or the
+	// error that kept it from one.
+	type reply struct {
+		status int
+		out    map[string]any
+		err    error
+	}
+	post := func(body map[string]any) <-chan reply {
+		ch := make(chan reply, 1)
+		go func() {
+			var r reply
+			defer func() { ch <- r }()
+			raw, err := json.Marshal(body)
+			if err != nil {
+				r.err = err
+				return
+			}
+			req, err := http.NewRequest("POST", e.http.URL+comment, bytes.NewReader(raw))
+			if err != nil {
+				r.err = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+tok)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := e.client.Do(req)
+			if err != nil {
+				r.err = err
+				return
+			}
+			defer resp.Body.Close()
+			r.status = resp.StatusCode
+			r.err = json.NewDecoder(resp.Body).Decode(&r.out)
+		}()
+		return ch
+	}
+	for i, then := range []string{"moved to B", "removed"} {
+		link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+		op, body := opID(), fmt.Sprintf("overlapping %d", i)
+		// The seam holds the first request to reach it, the resend, until
+		// released, and lets the rest by.
+		var calls atomic.Int32
+		arrived, release := make(chan struct{}), make(chan struct{})
+		f := func() {
+			if calls.Add(1) == 1 {
+				close(arrived)
+				<-release
+			}
+		}
+		beforeSessionComment.Store(&f)
+		resend := post(map[string]any{"opId": op, "body": body})
+		<-arrived
+		if c := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": body}, http.StatusCreated, ""), "comment"); c["body"] != body {
+			t.Fatalf("%s: the comment: %v", then, c)
+		}
+		done(ds.RemoveLink(ctx, adminOp(""), a, link))
+		if then == "moved to B" {
+			done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+		}
+		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "other"}, http.StatusConflict, "op_conflict")
+		close(release)
+		r := <-resend
+		if r.err != nil || r.status != http.StatusOK {
+			t.Fatalf("%s: the resend: %d %v %v", then, r.status, r.out, r.err)
+		}
+		if rc, _ := r.out["receipt"].(map[string]any); rc["status"] != "done" || rc["repeat"] != true {
+			t.Fatalf("%s: the resend's receipt: %v", then, r.out)
+		}
+		if c, _ := r.out["comment"].(map[string]any); c["body"] != body {
+			t.Fatalf("%s: the resend's comment: %v", then, r.out)
+		}
+		beforeSessionComment.Store(nil)
+		if na, nb := comments(a), comments(b); na != i+1 || nb != 0 {
+			t.Fatalf("%s: %d comments on A and %d on B", then, na, nb)
+		}
+		if then == "moved to B" {
+			// Back to A for the next round: B's link removed.
+			tk, err := ds.Ticket(ctx, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range tk.Links {
+				if l.Kind == dispatch.LinkRun {
+					done(ds.RemoveLink(ctx, adminOp(""), b, l.ID))
+				}
+			}
+		}
+	}
 }
 
 // sessionReadOfTheLargest reads the largest ticket through its session's

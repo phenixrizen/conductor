@@ -2645,16 +2645,18 @@ which `conductor task ticket` and the MCP tools `ticket_read` and
 `ticket_comment` call. A deleted ticket's link holds no run, and with no
 live ticket both answer `404 no_ticket`. The comment is a `comment.add`
 of the actor `agent:<member>`, its receipts kept under that actor, apart
-from the admin's (`GET /api/dispatch/ops/{opId}` reads none of them): the
-same `opId` sent again answers its receipt, sent to the ticket the
-comment went to wherever the run's link is now and whether that ticket
-is live, so a resend after the link moved or the ticket's delete answers
-the receipt (or `op_conflict` for other content), never a comment on
-another ticket or `404 no_ticket`. An agent reads its ticket and
-comments on it, nothing more: no route of its creates, edits, links or
-closes a ticket. The ticket is found and then commented on in two
-transactions, so a link removed between them leaves the comment on the
-ticket the run was linked to a moment before.
+from the admin's (`GET /api/dispatch/ops/{opId}` reads none of them).
+The ticket is found inside the comment's own transaction, after its
+receipt is looked up, and the operation's content is the run and the
+body, never the ticket: the same `opId` sent again, or sent while the
+first is still in flight, answers that operation's receipt wherever the
+run's link is now and whether its ticket is live, a repeat naming the
+comment on the ticket it went to, or `op_conflict` for another body (a
+refused comment's too), never a comment on another ticket or `404
+no_ticket`; a new `opId` goes to the ticket that holds the run when it
+commits, and with none answers `404 no_ticket` with nothing kept. An
+agent reads its ticket and comments on it, nothing more: no route of
+its creates, edits, links or closes a ticket.
 
 **The `dispatch` event.** After each commit the server sends one
 `dispatch` event per entity the commit changed on `GET /api/events`, the

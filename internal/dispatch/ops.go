@@ -708,9 +708,10 @@ func (s *Store) Receipt(ctx context.Context, actor, id string) (rc Receipt, foun
 // OpTicket is the key of the ticket the actor's operation with the id
 // changed, read from the changes log, the ticket its first row (n 0)
 // names: the log keeps it after the receipt is pruned and after the
-// ticket is deleted, so a resend can be sent where the operation went.
-// found is false for an operation that changed no ticket: never given, a
-// refusal (which writes no row), or one of a project's or the store's.
+// ticket is deleted, so a resend can name where the operation went
+// (AddRunComment). found is false for an operation that changed no
+// ticket: never given, a refusal (which writes no row), or one of a
+// project's or the store's.
 func (s *Store) OpTicket(ctx context.Context, actor, id string) (key string, found bool, err error) {
 	db, err := s.conn()
 	if err != nil {
