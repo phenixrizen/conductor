@@ -177,14 +177,16 @@ version, as DS1 set the shape (`dispatch.go`, `prepare`):
 | `plans` | `id` PK (16 hex), `ticket_id` FK, `based_on` (a revision of the same ticket, or `''`), `crew_id` (the saved crew it was taken from), `crew_name`, `crew_updated_at` (that crew's `updatedAt` then), `base` (the input revision, a full commit id), `body` (JSON, at most 2 MiB as stored: below), `digest` (the body's SHA-256), `bytes`, `state` (`proposed`, `approved`, `superseded`, `withdrawn`), `approved_at`, `approved_by` (the operator's display name), `approved_note` (at most 1,000 characters of Markdown: the rationale), `approved_rev` (the ticket's `rev` the approval was made at), `approved_intent` (the ticket's intent digest then), `withdrawn_at`, `withdrawn_by`, `created_at`, `created_by`, `rev`; at most 100 per ticket, whatever their state |
 | `launches` | `id` PK, `ticket_id`, `plan_id`, `run_id` (minted here: the crew's id, `-`, 8 hex characters from `crypto/rand`, the engine's shape, `crew.ValidRunID`), `label` (the run's own name, at most 60 characters), `ticket_rev`, `intent`, `criteria` (the acceptance criteria's SHA-256, as an acceptance records it), `package` (JSON, at most 512 KiB as stored), `package_sha256`, `state` (`pending`, `started`, `failed`), `why` (at most 2,000 characters), `agents` (JSON, at most 4 KiB: each member's agent and the version its identity probe reported at the start), `created_at`, `created_by`, `started_at`, `rev`; at most 200 per ticket |
 | `launch_files` | `launch_id`, `sha256`; PK of the two: the attachments a launch's package names, which the sweep keeps |
-| `links` | two columns added, both `''` on every version 1 row: `candidate` (a delivery link's alone: `<run>/<task>/<n>@<commit>`, at most 200 bytes, the ledger's own `<run>/<task>/<n>` reference with the commit) and `verified` (that candidate's verification receipt when the link was added, JSON, at most 4 KiB) |
+| `links` | two columns added, both `''` on every version 1 row: `candidate` (a delivery link's alone: `<run>/<task>/<n>@<commit>`, at most 200 bytes, the ledger's own `<run>/<task>/<n>` reference with the commit) and `verified` (that candidate's verification receipt when the link was added, JSON, at most 8 KiB: 16 receipts with their `where` at its 32 bytes) |
 
 Indexes: `plans(ticket_id, created_at)`, `launches(ticket_id,
 created_at)`, `launches(plan_id)`, `launches(state)`, `launches(run_id)`,
 `launch_files(sha256)`. No new unique index: a launch's run id is unique
 by a rule checked on a local write (no other launch names it) and by the
-ledger, which refuses a second run of an id (below), since a unique index
-could refuse a replicated row, which DS1's schema never lets an index do.
+ledger, where a planned run's row is made by an insert that refuses an id
+the ledger has (`Tx.CreateRun`, below; `PutRun` upserts, so it is never a
+planned run's first write), since a unique index could refuse a
+replicated row, which DS1's schema never lets an index do.
 The `changes` log gains two entities, `plan` and `launch`, each with its
 `rev`, their rows naming their ticket and project as a comment's do; a
 plan's or a launch's rows never bump the ticket's `rev`, so proposing,
@@ -201,11 +203,22 @@ comparison, never a guess.
 - `crew`: the saved crew as the crew store keeps it (`internal/crew`'s
   JSON, which Dispatch keeps as it is and never decodes beyond the fields
   it shows: `id`, `name`, `members` with `agentId` and `args`, `tasks`
-  with `needs` and `checks`, `manifest`, `cwd`), with its working
+  with `member` and `kind` (the assignment: which member does the task,
+  and whether it is work or a review), `needs` and `checks`, `manifest`,
+  `cwd`), with its working
   directory set to the project's folder when the project names one, and
   `yolo` set to the choice the launch will make (the crew's, else the
   server's default when the revision was made), so the approval covers
   it;
+- `agents`: one entry per agent the crew's members name (at most 12, the
+  crew's member bound), the catalog entry as it resolved when the
+  revision was made: `{id, command, envNames, envSha256}`, the command as
+  the catalog gives it (where a model is often chosen: `aider --model
+  sonnet`), the names of its `env`, and the SHA-256 of its names and
+  values together, never a value; with the members' `args` this is the
+  agent and model selection the approval covers, however the entry makes
+  it, and a launch resolves each again and refuses `stale_plan` when one
+  differs (Launching, step 1);
 - `manifestFile`: `{path, blob}`, for a crew whose project manifest is
   the file form, the file's blob at the base: what the checks of the
   manifest's `verify` phase will be, exactly;
@@ -216,9 +229,14 @@ comparison, never a guess.
   names at the base (`kind` `blob` or `tree`), checked when the revision
   is made;
 - `attachments`: at most 8 attachment ids of the ticket, at most 16 MiB
-  in all, their names distinct (each becomes a file name in the attempt);
-- `comments`: at most 20 comment ids of the ticket, at most 64 KiB of
-  body in all;
+  in all; a display name need not be a file name on every system (DS1
+  allows `Spec.png` beside `spec.png`, and `CON`): each is written in the
+  attempt under a name the package derives (The package, below);
+- `comments`: at most 20 of `{id, sha256}`, comment ids of the ticket
+  with the SHA-256 of each body, which the store sets from the comment's
+  row in the proposal's transaction, at most 64 KiB of body in all, so the
+  approval covers the words handed over and an edit of one after it is
+  seen (`stale_plan` at a launch);
 - `constraints`: Markdown, at most 8 KiB;
 - `decisions`: at most 10 of `{id, question, kind, before}`: the decisions
   a person will make, an id of the task-id shape, a question of at most
@@ -244,8 +262,8 @@ added, `stale_plan`):
   by its receipt whatever the saved crew or `HEAD` became since. The
   ticket live (`not_found`), its project not archived (`archived`);
   `based_on` a revision of the ticket (`not_found`); the attachments and
-  comments named live and the ticket's (`not_found`), within their bounds
-  (`bound`) and the attachments' names distinct (`invalid`); every
+  comments named live and the ticket's (`not_found`), within their
+  bounds (`bound`), each comment's digest set from its row; every
   decision's `before` a task of the crew (`invalid`); at most 100
   revisions (`bound`). One `plans` row in state `proposed` and one change
   row (`entity: plan`, `op: create`), whose value is the revision's
@@ -279,8 +297,10 @@ added, `stale_plan`):
   approve it first", "superseded by revision 4", "withdrawn"); the
   approval holding, its intent the ticket's now (`stale_plan`: "the
   description changed since revision 3 was approved: approve it again or
-  revise it"); every attachment and comment it names still live
-  (`stale_plan`, naming the first gone); at most 200 launches (`bound`).
+  revise it"); every attachment and comment it names still live and
+  each comment's body the one approved, its SHA-256 the revision's
+  (`stale_plan`, naming the first gone or edited: "comment 4 was edited
+  since revision 3 was approved"); at most 200 launches (`bound`).
   Then the package is built from the rows (below), at most 512 KiB
   (`bound`, naming its largest part), hashed; the run id is minted; the
   `launches` row is written in state `pending`, one `launch_files` row
@@ -308,9 +328,18 @@ inside the launch's transaction, so it is one state of the ticket:
   and statuses), every reference read as live or not as DS1 reads it;
 - `plan`: `{id, n, digest, basedOn, approvedAt, approvedBy, note, crew:
   {id, name, updatedAt}, base, yolo}`;
-- `references`, `attachments` (`{id, name, size, sha256, contentType}`),
-  `comments` (`{id, n, author, by, at, body}`), `constraints`,
-  `decisions`, as the revision names them, read now;
+- `references`, `attachments` (`{id, name, file, size, sha256,
+  contentType}`), `comments` (`{id, n, author, by, at, body, sha256}`),
+  `constraints`, `decisions`, as the revision names them, read now;
+  an attachment's `file` is the name it is written under in the attempt,
+  derived here and never the display name: `NN-<portable>`, `NN` its
+  place in the revision (`01` to `08`) and `<portable>` the name with
+  every byte outside `[A-Za-z0-9._-]` made `_`, cut to 64 bytes, its
+  leading and trailing dots trimmed (`_` when nothing is left), so the
+  eight are distinct whatever a file system folds (case, Unicode
+  normalization), ASCII, and never a name Windows reserves (`CON`,
+  `aux.txt`: none begins with two digits and a dash) or one ending in a
+  dot;
 - `launch`: `{id, run, label, at, by}`.
 
 The crew is not in it: the run keeps the crew as launched in the ledger
@@ -387,10 +416,18 @@ Crew, label string, p Planned) (*Run, func(), error)`, beside
 
 - the run id is the one Dispatch minted: `ErrInvalid` unless
   `ValidRunID` with the crew's id before its last dash; `ErrRunExists`
-  when the engine holds a run of that id or the ledger has a row of it
-  (`Ledger.Load`), checked under the engine's lock as `add` keeps the
-  run, so a second launch of one id, in this process or after a restart,
-  never makes a second run;
+  when the engine holds a run of that id (under the engine's lock, as
+  `add` keeps the run: a second in this process) or when the run's first
+  ledger transaction finds a row of it. That transaction writes the row
+  with `Tx.CreateRun` (new in the ledger: an `INSERT` with no `ON
+  CONFLICT`, a primary-key conflict answered `ErrRunExists`, which the
+  engine's `LedgerTx` interface gains), never
+  `PutRun`, which upserts (`transition.go`): `transact` lets go of
+  `e.mu` before its ledger I/O (`task.go`), so a check outside the
+  statement would be check-then-act, and the insert is the check and the
+  write at once, under the ledger's write lock, whatever another process,
+  server or restart did. Refused, the engine drops the run before any
+  attempt, and the row there is untouched;
 - the base is the revision's (`prepare(ctx, c, p.Base)`, the path a
   continuation already takes), never `HEAD` read again;
 - the package is decoded into the engine's own reading of it
@@ -417,9 +454,13 @@ and the plan revision that launched it, with the approval's note; owner,
 priority, status, labels, milestone, parent and blockers; the
 description; the acceptance criteria; the constraints; the decisions a
 person makes; the references with their objects at the base; the
-attachments' files; the comments handed over), `package.json` (the
-package's bytes as launched) and each attachment as `attachments/<name>`,
-copied from Dispatch's store through `UsePackageFiles(func(ctx, launch,
+attachments, each display name beside the file it was written as; the
+comments handed over), `package.json` (the
+package's bytes as launched) and each attachment as `attachments/<file>`,
+the package's derived name, which the engine checks again
+(`^[0-9]{2}-[A-Za-z0-9._-]{1,64}$`, not ending in a dot, distinct)
+before it opens anything, copied from Dispatch's store through
+`UsePackageFiles(func(ctx, launch,
 sha256 string) (io.ReadCloser, error))`, which the API gives the engine at
 start, hashed and counted as it is copied; all through the attempt's
 `os.Root` at its working directory, a file there already refused as the
@@ -440,7 +481,18 @@ decide (`task_blocked`, or a comment on the ticket).
 
 **A failed check reaches the next attempt** (`verify.go`, `taskfile.go`,
 `task.go`, `continue.go`). `verify` keeps the failing receipt on the
-attempt (the row it wrote, without its log). The next attempt's
+attempt (the row it wrote, without its log) with the tracked paths the
+check changed, which the checks row does not hold: they are in the
+`check.finished` event the same ledger transaction commits with the row
+(`verify.go`, `ev("check.finished", …)` with `more` putting the row),
+whose payload gains `k`. After a restart, and for a continuation, they
+are read back from that durable event, never from memory:
+`Ledger.CheckChanged(ctx, run, task, n, id, k)` (new in the ledger, and
+on the engine's `Ledger` interface) reads the run's `events` row of kind
+`check.finished` whose payload names the task, attempt, check and `k`,
+or for an event written before `k` was added the latest of that task,
+attempt and check; a `verify` step's are read from the finished event
+EN1's verify steps write (#397), which names the same four. The next attempt's
 `task.json` `previous.check` holds `{phase, id, k, argv, subject, exit,
 signal, timedOut, stable, changed, tail, logSha256, logBytes, log}`: the
 check or `verify` step, the candidate it failed (the commit, which is
@@ -472,22 +524,24 @@ as the task routes are (`requireAdmin`).
 
 | Route | Body and reply |
 |---|---|
-| `GET /api/dispatch/tickets/{key}/plans` | `{plans}`: every revision's summary, newest first, with `n`, `state`, the approval (`approvedAt`, `approvedBy`, `note`, `rev`), `stale` and its words, `crewChanged` (the saved crew's `updatedAt` later than the snapshot's, or the crew gone) and the expected checks' count; never a body |
+| `GET /api/dispatch/tickets/{key}/plans` | `{plans}`, under `MaxPlansReply` (below): every revision's summary, newest first, with `n`, `state`, the approval (`approvedAt`, `approvedBy`, `note`, `rev`), `stale` and its words, `crewChanged` (the saved crew's `updatedAt` later than the snapshot's, or the crew gone), `agentsChanged` and the expected checks' count; never a body |
 | `POST /api/dispatch/tickets/{key}/plans` | `{opId, crew, base?, basedOn?, references?, attachments?, comments?, constraints?, decisions?, note?, byName?}` (192 KiB, a ticket's body bound) → `201 {receipt, plan}`; `404 not_found` for a crew, a revision, an attachment or a comment that is not there; `409 invalid` with the words for a crew without tasks, one that is not launchable, a working directory that is no repository, a base that names no commit, a reference whose path is not at the base; the store's refusals as DS1 answers them |
-| `GET /api/dispatch/plans/{id}` | `{plan}`: the summary and the body |
+| `GET /api/dispatch/plans/{id}` | `{plan}`: the summary and the body, under `MaxPlanReply` |
 | `POST /api/dispatch/plans/{id}/approve` | `{opId, expectedRev?, ticketRev?, note?, byName?}` → `{receipt, plan}` |
 | `POST /api/dispatch/plans/{id}/withdraw` | `{opId, expectedRev?, byName?}` → `{receipt, plan}` |
 | `POST /api/dispatch/tickets/{key}/launch` | `{opId, plan, expectedRev?, label?, byName?}` (4 KiB) → `201 {receipt, launch, run}`; `409 launch_failed {error, receipt, launch}` when the run could not be started (the launch kept, failed, with why); `409 stale_plan`, `409 managed_off`, `503 ledger_unavailable`; the same `opId` again answers the same, never a second run |
-| `GET /api/dispatch/launches/{id}` | `{launch}`: the summary and the package |
-| `GET /api/dispatch/tickets/{key}/runs` | `{entries}`: the ticket's runs (below) |
-| `GET /api/runs/{run}/candidates` | `{run, managed, base, candidates, more}`: a run's candidates with their receipts (below) |
+| `GET /api/dispatch/launches/{id}` | `{launch}`: the summary and the package, under `MaxLaunchReply` (below) |
+| `GET /api/dispatch/tickets/{key}/runs[?before=CURSOR]` | `{entries, next?}`: a page of the ticket's launches, runs and continuations (below) |
+| `GET /api/runs/{run}/candidates[?after=TASK]` | `{run, managed, base, candidates, next?}`: a page of a run's candidates with their receipts (below) |
 | `GET /api/sessions/{id}/ticket` | DS1's (PR-12), the reply gaining `launch` (below) |
 | `POST /api/dispatch/tickets/{key}/links` | DS1's, a delivery link taking `candidate` (PR-9) |
 
-**Proposing** (`dispatch_plans.go`). The receipt is looked up first
-(`Store.Receipt`), so a resend is answered from it, whatever the crew or
-`HEAD` became since; then the saved crew (`s.crews.Get`), refused unless
-it has tasks, is `Launchable` and its members' agents are in the catalog
+**Proposing** (`dispatch_plans.go`). The operation is replayed first
+(`Store.Replay`, below, with the request as its content), so a resend is
+answered from its receipt whatever the crew or `HEAD` became since, and
+an id used before with another request is `op_conflict`; then the
+saved crew (`s.crews.Get`), refused unless it has tasks, is `Launchable`
+and its members' agents are in the catalog
 (`CheckAgents`); its working directory, the project's folder when the
 project names one, else the crew's own, through `resolveCwd`, and a
 repository (`crew.CheckRepo`); the base, `base` as given or `HEAD`, made a
@@ -499,17 +553,41 @@ and `git cat-file -t`) to its object and kind; a file-form project
 manifest's blob at the base; the yolo choice, the crew's, else the
 server's default now, fixed in the body. Then the store's `ProposePlan`
 with the request as the fingerprint and the body built. `crewChanged` on
-a read compares each revision's `crew_updated_at` with the saved crew's.
+a read compares each revision's `crew_updated_at` with the saved crew's,
+and `agentsChanged` each body's `agents` with the catalog now.
+
+**Replaying an operation** (`internal/dispatch`, `ops.go`, PR-2):
+`Store.Replay(ctx, op, intent, args) (rc Receipt, found bool, err
+error)` answers a resend before the API does any work of its own, as
+`Apply` would answer it and no weaker: a retained receipt is returned
+only when the id's intent and fingerprint are the request's
+(`op_conflict` otherwise, no row, as `Apply`); a receipt pruned
+(`maxReceipts`) is found through the operation's create change row
+(actor, op id, `n` 0), whose `entity` and `entity_id` name the revision
+or the launch it made, so the resend is answered done with that id and
+the route reads the record by it; neither found means a new operation.
+`Store.Receipt` stays the plain read it is; the two routes use `Replay`.
 
 **Launching** (`dispatch_launch.go`), in this order:
 
-1. the receipt is looked up first (`Store.Receipt`): an `opId` that made a
-   launch already goes to step 3 with that launch, and one the store
-   refused is answered as DS1 answers a refusal; for a new one,
-   `crews.managed` must be on and the ledger the server's and writable,
-   as a crew launch checks (`409 managed_off`, `503 ledger_unavailable`),
-   before anything is kept, so a launch that cannot run leaves no pending
-   row;
+1. the operation is replayed first (`Store.Replay`, above): an `opId`
+   that made a launch already goes to step 3 with that launch, whether
+   its receipt is kept or pruned; one used with another plan or label is
+   `op_conflict`; one the store refused is answered as DS1 answers a
+   refusal. A launch started or failed is answered as it stands on any
+   server. Anything that may advance a launch, a new one or the replay of
+   a pending one alike, needs this server to own the ledger and to have
+   finished taking it over: `crews.managed` on, the ledger the server's
+   and writable, as a crew launch checks, and `launchReady` set
+   (Reconcile, below) (`409 managed_off`, `503 ledger_unavailable`). A
+   new one refused here leaves no pending row; a pending one replayed
+   here is answered as it stands, pending, with `503
+   ledger_unavailable`, and is never recorded failed: only the ledger's
+   owner settles a launch, since the server that committed it may still
+   be starting its run. Then, for a new one, the revision's `agents` are
+   resolved against the catalog again (`409 stale_plan` naming the agent
+   and what changed: its command, or its environment), before anything
+   is kept;
 2. the store's `Launch`: the pending launch, its package and its run id,
    committed (a repeat of the `opId` finds the same launch);
 3. one launch at a time per launch id in this process
@@ -517,8 +595,13 @@ a read compares each revision's `crew_updated_at` with the saved crew's.
    launch waits for the first, at most the launch's own bound
    (`runTimeout`), then answers from the launch's state;
 4. a launch `started` or `failed` already is answered as it stands (`201`,
-   or `409 launch_failed`); a pending one whose run the ledger has is
-   recorded started (step 6) without launching; else the run is launched:
+   or `409 launch_failed`); a pending one whose run id the ledger has
+   is adopted only when that row is this launch's (`runRowIsLaunch`: the
+   row's `ticket` the launch's ticket and the SHA-256 of its `package`
+   the launch's `package_sha256`), then recorded started (step 6) without
+   launching; a row of the id that is not the launch's records it failed
+   ("the run id is another run's"), that row untouched; else the run is
+   launched:
    the revision's crew from its body, its working directory through
    `resolveCwd`, its members' agents checked as a crew launch checks them
    (`checkLaunch`: installed, identified), and `s.runs.LaunchPlanned`
@@ -526,59 +609,114 @@ a read compares each revision's `crew_updated_at` with the saved crew's.
    `runContext`, as `handleLaunchCrew` launches (a client that goes away
    does not stop it);
 5. refused anywhere in step 4: the ledger is read for the run id, and a
-   row there means the run exists (an error after its first transaction
-   is the run's to show), so the launch is recorded started; with none,
-   `FailedLaunch` with the words, and `409 launch_failed`;
+   row there that is the launch's (`runRowIsLaunch`) means the run exists
+   (an error after its first transaction is the run's to show), so the
+   launch is recorded started; with none, or with another run's row
+   (`ErrRunExists` from `LaunchPlanned`), `FailedLaunch` with the words,
+   and `409 launch_failed`;
 6. started: `StartedLaunch` with each member's agent and the version its
    identity probe reported (`identityFor`), and `201 {receipt, launch,
    run}`.
 
-`reconcileLaunches`, once the ledger is the server's (in `New` when the
-owner lock was taken at open, else from `ledger.OnOwned`), records every
-pending launch whose run the ledger has as started and every other as
-failed ("the server stopped before the run started"); while there is no
-ledger, launches stay pending, and the page says the server cannot tell
-yet. `New` also gives the engine `UsePackageFiles` (Dispatch's
+**Reconcile.** `reconcileLaunches` runs once the ledger is the
+server's, after the ledger's recovery: in `New` right after
+`recoverLedger` when the owner lock was taken at open, else inside the
+one callback `openLedger` gives `Ledger.OnOwned`, which holds a single
+function (`ledger.go`) and is already `recoverLedger`'s
+(`api/ledger.go`): `openLedger` gains a parameter, `afterRecover
+func()`, which that callback (and the open path) runs after
+`recoverLedger`, and `New` passes the reconcile, so neither replaces the
+other. It records every pending launch whose run the ledger has and is
+the launch's (`runRowIsLaunch`) as started and every other as failed
+("the server stopped before the run started", or "the run id is another
+run's"). Launch admission waits for it: `launchReady`, an
+`atomic.Bool`, is set by `afterRecover` once recovery and the reconcile
+have both finished, and until then step 1 answers `503
+ledger_unavailable` ("the server is taking over the ledger"), so no
+launch is committed, or replayed, while the reconcile could read it
+before its `run.created`: `awaitLock` makes the ledger writable and lets
+go of its mutex before it calls `OnOwned` (`ledger.go`), and a request
+let through in that gap would be marked failed while it ran. While there
+is no ledger, launches stay pending, and the page says the server cannot
+tell yet. `New` also gives the engine `UsePackageFiles` (Dispatch's
 `OpenLaunchFile`) and the store `SetRunTicket` (a run's `Ticket` from the
 engine, else from its record).
 
 **A ticket's runs** (`dispatch_evidence.go`). `GET
-/api/dispatch/tickets/{key}/runs` answers `{entries}`: each launch, newest
-first, as `{launch, runs, changed}`, its runs the launched one and its
-continuations (following `resumedBy`, oldest first, at most 20 with the
-rest counted) and `changed` its `ChangedSince` (`{fields, comments,
-rev}`); then each run DS1 linked by hand, as `{link, runs}`, with its
-continuations. A run's summary is `{id, label, state, outcome, paused,
+/api/dispatch/tickets/{key}/runs[?before=CURSOR]` answers `{entries,
+next}`, a page of at most 10 entries, newest first, and every launch, run
+and continuation the ticket has is on some page: there is no cap and no
+count in place of an entry. The entries are of three kinds, ordered
+together by their time (a launch's `created_at`, a continuation's start,
+a hand link's add) and then id: a launch, `{launch, run?, changed}`
+(`run` absent while it is pending or when it failed; `changed` its
+`ChangedSince`, `{fields, comments, rev}`); a continuation, `{run,
+launch?, link?, continues}` (the launch or the hand link its chain
+began from, and the run it continues, found by following `resumedBy`
+from the chain's first run in the ledger and the run records); and a run
+DS1 linked by hand, `{link, run}`. `next` is an opaque cursor (the
+page's last time and id) when there is more, else absent; the order is
+computed from the launches, the links and the ledger's `continued_by`
+rows, which are small, and only the page's entries are summarized. A
+run's summary is `{id, label, state, outcome, paused,
 startedAt, stoppedAt, record, resumedFrom, resumedBy, ticket, tasks,
 questions, blockers}`: `tasks` its tasks counted by state, `questions`
 how many of its members' sessions wait on a person, `blockers` at most 20
 of `{task, reason, by, at}`; from the engine, else the run's record, as
-`GET /api/runs/{run}` answers. At most 200 runs in all (the newest
-launches first, `more` counting the rest); the largest reply, every text
-at its bound and escaped worst, measured under `MaxTicketRunsReply`, 1
-MiB.
+`GET /api/runs/{run}` answers. A blocker's reason in this reply is cut to 200
+characters (the run page has it whole), a launch's `why` is its 2,000.
+The largest page, ten entries with every text at its bound and escaped
+worst (a launch's `why`, its `agents` and label, twenty blockers),
+measured whole as encoded under `MaxTicketRunsReply`, 1 MiB.
 
-**A run's candidates** (`candidates.go`). `GET /api/runs/{run}/candidates`
-reads the ledger, so a run the engine let go, or one a server before this
-one ran, still answers; a run the ledger has not is `404`, a legacy run
-`{managed: false, candidates: []}`. Per task, the attempts that submitted
-something, newest first, at most 6 a task (`more`, per task, counts the
-rest, which `GET /api/runs/{run}/tasks/{task}` reads): `{task, kind,
+**Two reads' bounds.** `GET /api/dispatch/launches/{id}` answers the
+summary and the package as the bytes it is kept as (at most 512 KiB):
+the largest, a package at its bound with the summary's texts (`why`,
+`agents`, the label) at their escaped worst, is measured whole under
+`MaxLaunchReply`, 1 MiB. `GET /api/dispatch/tickets/{key}/plans` answers
+at most 100 summaries (the revisions' bound), with no body: the largest,
+every summary's texts (the approval's note, the stale words, the crew's
+name, the approver and author) at their escaped worst, is measured under
+`MaxPlansReply`, 1 MiB. Both are exported beside `MaxPlanReply`, and the
+CLI's limit takes them (PR-13).
+
+**A run's candidates** (`candidates.go`). `GET
+/api/runs/{run}/candidates[?after=TASK]` reads the ledger, so a run the
+engine let go, or one a server before this one ran, still answers. A run
+the ledger has not is looked for as `GET /api/runs/{run}` looks (the
+engine, then the run records): a legacy run found there answers
+`{managed: false, candidates: []}`, and only a run found nowhere is `404`.
+A page holds at most 8 tasks, in the crew's task order, `next` the last
+one's id when more follow, so every task is on some page. Per task, the
+attempts that submitted something, newest first, at most 6 a task
+(`more`, per task, counts the rest, which `GET /api/runs/{run}/tasks/{task}`
+reads): `{task, kind,
 attempt, commit, start, state, stage, standing, withdrawn, acceptedAnyway,
 verdict, findings, receipts}`. `commit` is a work attempt's result,
 `standing` that it is the task's result now (the task row's
 `result_attempt`), `withdrawn` that a withdrawal took it back,
 `acceptedAnyway` `{actor, at, command}` from the run's commands
 (`intent: accept`, done, naming it), `verdict` and `findings` (counts by
-severity) a review's; `receipts` are the attempt's rows of phase `check`
-and `verify` whose `subject` is the commit, each `{phase, id, k, state,
+severity) a review's, whose text (at most 50 findings, each its path,
+line and message) the page reads when a review's candidate is opened
+from the existing task route, `GET /api/runs/{run}/tasks/{task}`, which
+answers each attempt's result with its findings whole: the candidates
+reply carries counts only, so its bound does not hold fifty messages a
+review; `receipts` are the attempt's rows of phase `check`
+and `verify` whose `subject` is the commit, each `{phase, id, k, where, state,
 exit, signal, timedOut, killed, stable, error, startedAt, finishedAt,
-logSha256, logBytes, logDropped}`, its log the existing step log route's
+logSha256, logBytes, logDropped}`, `error` cut to 120 characters (the
+task route has it whole), its log the existing step log route's
 (with `X-Conductor-Log-SHA256`). No pid and no process group: a receipt
-says what ran against which commit and how it ended, never how the
-process was made, and gains `where` when C10 adds it. The largest reply
-(128 tasks, 6 attempts each, 16 receipts each, every text at its bound)
-is measured under `MaxCandidatesReply`, 4 MiB.
+says what ran against which commit, where, and how it ended, never how
+the process was made. `where` is the runtime the check ran in: the
+checks row's `where` (`CheckRow.Where`) once C10's ledger version has
+landed, and until then `native`, which is what every row is until item
+F; whichever of C10's ledger PR and PR-8 merges second wires the column
+through. The largest page (8 tasks, 6 attempts each, 16 receipts each,
+every text at its bound and escaped worst: 768 receipts of about 1,100
+bytes, under 900 KB with the candidates' own fields) is encoded whole and
+measured under `MaxCandidatesReply`, 1 MiB.
 
 **The attempt's ticket** (`dispatch_session.go`, DS1's PR-12). The
 session's run's `Ticket` comes first: the ticket its package names, by
@@ -595,7 +733,10 @@ links by hand and its continuations), reads the attempt from the ledger
 (a work attempt whose result is the commit named: `409 invalid`
 otherwise) and its receipts as the candidates route reads them, and hands
 the store the receipt `{at, passed, attempt, receipts: [{phase, id, k,
-exit, stable, logSha256}]}`, `passed` when the attempt succeeded and
+where, exit, stable, logSha256}]}` (`where` as the candidates route reads
+it, so a delivery's recorded receipt tells native checks from a guest's
+once item F lands; a receipt recorded is immutable, so it is recorded
+now), `passed` when the attempt succeeded and
 every receipt finished with exit 0 and stable, and false for a candidate
 with no check at all.
 
@@ -618,10 +759,13 @@ mints its op id and asks once more on a lost reply, as DS1's commands do,
 and the reads go through DS1's `maxDispatchReply`, which PR-12 derives
 from the API's exported reply bounds and which takes this item's too:
 `MaxPlanReply`, 3 MiB (a revision's body is at most 2 MiB as stored and
-is answered as the bytes it is), and `MaxTicketRunsReply`, 1 MiB, leave
-it at 4 MiB; the CLI reads no candidates. `conductor task ticket` (DS1's
+is answered as the bytes it is), `MaxLaunchReply`, `MaxPlansReply` and
+`MaxTicketRunsReply`, 1 MiB each, leave it at 4 MiB; `runs` follows a
+page's `next` until there is none; the CLI reads no candidates.
+`conductor task ticket` (DS1's
 PR-12) prints the launch part: the revision the run was launched at, the
-plan revision, and what changed since. The MCP tool `ticket_read` says the same in its text ("As
+plan revision, and what changed since. The MCP tool `ticket_read` says
+the same in its text ("As
 launched: CND-12 at revision 7, plan revision 3, in .conductor/ticket.md.
 Now at revision 9: the description changed; 2 comments since. Your run
 follows the ticket as launched."); `ticket_comment` is unchanged. No new
@@ -652,7 +796,9 @@ that matters is told to a person, never acted on alone. The usage in
   reviewed; a failed check, then the attempt that started at the failed
   result), "changed since" in words, the blockers and questions of a run.
 - `components/DispatchPlan.vue` (the section: the approved revision in
-  full, members with agents and arguments, tasks with needs and checks,
+  full, members with agents and arguments and each agent's command as
+  resolved, tasks with their assignee (the member) and kind, needs and
+  checks,
   the yolo choice said plainly, the base, the references, what the
   package hands over, the required decisions; the other revisions folded
   below, newest first; Propose, Revise, Approve, Withdraw),
@@ -664,16 +810,21 @@ that matters is told to a person, never acted on alone. The usage in
   (the note, the rationale), `DispatchLaunch.vue` (asks first: the
   revision, the commit, the yolo choice, the label; then the run's link,
   or the failure's words).
-- `components/DispatchRuns.vue` (DS1's PR-11) lists `ticketRuns`: each
-  launch with its state, its run and continuations, each run's state and
+- `components/DispatchRuns.vue` (DS1's PR-11) lists `ticketRuns` page by
+  page (Show older follows `next`, so every launch and continuation is
+  reachable; a continuation on a later page than its launch names it):
+  each launch with its state, its run and continuations, each run's state and
   task counts with `RunTasks.vue` as DS1 embeds it, its blockers, its
   questions with Open on the member's session, and
   `DispatchChangedSince.vue` (the banner, the history rows between the
   launch and now in DS1's history words, Revise and Launch a follow-up);
   `DispatchCandidates.vue` (per run: each task's candidates, newest
-  first, commit with Copy, receipts as chips, a review's verdict and
-  findings, "accepted anyway"), `DispatchReceipt.vue` (a receipt in
-  full: argv, the commit, exit, duration, `stable`, and the log, fetched
+  first, a page of tasks at a time with More tasks following `next`,
+  commit with Copy, receipts as chips with where they ran, a review's
+  verdict and its findings counted, their text read from the task route
+  when the review is opened, "accepted anyway"), `DispatchReceipt.vue` (a
+  receipt in full: argv, the commit, where it ran, exit, duration,
+  `stable`, and the log, fetched
   with the token from the step log route, its `X-Conductor-Log-SHA256`
   compared with the receipt's and shown), `DispatchRepairs.vue`.
 - `components/DispatchDecisions.vue` (approvals with their notes,
@@ -731,10 +882,15 @@ supersedes the others in its own transaction; a merge may bring two
 (below). An approval holds while its `approved_intent` is the ticket's
 intent digest: an edit of the title, the description or the criteria
 makes it stale, which the page says and which refuses a launch, until the
-operator approves again; an edit of anything else (status, priority,
-labels, owner, comments) leaves it holding: the approval covers what is
-asked and how it is accepted, and a launch's package takes the rest as
-it stands at the launch.
+operator approves again; an edit of a comment the revision hands over
+makes it stale too (its body no longer the SHA-256 the revision
+recorded), since the approval covers the words the agents are given; an
+edit of anything else (status, priority, labels, owner, a comment added,
+a comment not handed over edited) leaves it holding: the approval covers
+what is asked, how it is accepted and what is handed over, and a
+launch's package takes the rest as it stands at the launch. A launch is
+refused as well while an agent of the revision resolves otherwise than
+the body's `agents` recorded (Launching, step 1).
 
 **A launch.** `pending` → `started` or `failed`; nothing else. In order,
 each step durable before the next begins:
@@ -756,10 +912,18 @@ itself is what the ledger's recovery makes of a run its owner left open
 (interrupted, continued by a person as any managed run is). A resend
 while the first launch is in flight waits for it in this process; a
 second server on the same data directory cannot launch at all, its ledger
-being read-only without the owner lock, so step 1 refuses there. No
-launch makes two runs: the run id is fixed by the first commit, the
-ledger keeps one row per id, and the engine refuses an id it holds or the
-ledger has.
+being read-only without the owner lock, so step 1 refuses there, and it
+cannot settle a launch either: Dispatch lets two servers write, the
+ledger lets one own it, and a replay on the one that does not own it
+answers the launch pending, never failed, so a launch the owner is still
+starting is not marked failed under it. Nor can a server that has just
+taken the lock: it admits no launch until its recovery and reconcile
+have finished (`launchReady`). No launch makes two runs, and none adopts
+another's: the run id is fixed by the first commit, the ledger's first
+write of a planned run is an insert that refuses an id it has
+(`Tx.CreateRun`), the engine refuses an id it holds, and a launch is
+recorded started on a ledger row only when that row's ticket and
+package digest are the launch's.
 
 **The package and an active run.** The package is built once, in the
 launch's transaction, and never written again: its digest is recorded in
@@ -874,7 +1038,8 @@ tested in `api/events_test.go` and the routes' tests.
   is, and the crew editor changes crews.
 - Search over revisions and launches; notifications, webhooks or the
   Roundhouse on a launch; an artifact store or provenance classes for
-  receipts (C10's `where`, item F's classes); line-level authorship.
+  receipts (item F's classes; C10 defines `where`, which this item only
+  carries and shows); line-level authorship.
 
 ## Tests per surface
 
@@ -906,8 +1071,12 @@ ledger's rows, and find their tickets by key and their runs by id.
   one past it); `TestRevisionNumbersArePlaces`; `TestApproveSupersedes`;
   `TestApprovalIsTheOperators` (an agent's actor refused);
   `TestApprovalGoesStaleWithTheIntent` (the title, the description and
-  the criteria each make it stale; status, labels, owner and comments do
-  not); `TestApproveAgain`; `TestWithdraw`.
+  the criteria each make it stale; status, labels, owner, a comment added
+  and a comment not handed over edited do not);
+  `TestApprovalGoesStaleWithAHandedOverComment` (a selected comment
+  edited after the approval: `stale` with its words, the launch
+  `stale_plan` naming it, approved again it launches with the new body);
+  `TestApproveAgain`; `TestWithdraw`.
 - `launches_test.go`: `TestLaunchMakesAPendingLaunch` (the run id's
   shape, the package's parts, the pins); `TestLaunchRefusals` (a closed
   ticket, an archived project, a revision proposed, superseded or
@@ -915,18 +1084,28 @@ ledger's rows, and find their tickets by key and their runs by id.
   200th launch, a stale expected revision: each with nothing kept but
   its failed receipt); `TestLaunchStartedOrFailedOnce` (a repeat, a
   conflict, from another state); `TestChangedSince`;
-  `TestPendingLaunches`.
+  `TestPendingLaunches`; `ops_test.go`'s `TestReplayChecksTheContent`
+  (the same id with another plan or label: `op_conflict`, nothing
+  written) and `TestReplayAfterPruningFindsTheLaunch` (receipts pruned
+  past `maxReceipts`: a resend answered done with the launch's id, and
+  the same for a revision's proposal).
 - `package_test.go`: `TestPackageAtItsWorst` (every part at its bound,
   every text at its escaped worst, under `MaxPackage`);
   `TestThePackageIsTheTicketsRev` (an edit committed before the launch
-  and one after: the package holds the first's state and its rev).
+  and one after: the package holds the first's state and its rev);
+  `TestPackageFileNames` (`Spec.png` beside `spec.png`, an NFC and an NFD
+  spelling of one name, `CON`, `aux.txt`, a name ending in a dot or a
+  space, one of 200 bytes, one of only `/`-free punctuation: each a
+  distinct, portable `NN-` name).
 - `sweep_test.go`: `TestSweepKeepsALaunchsFiles` (an attachment removed
   after a launch named it survives a sweep; one removed and never
   launched does not); `OpenLaunchFile` opening only a hash its launch
   names.
 - `links_test.go`: `TestDecisionLinksAreReserved` (refused locally, kept
   by a merge); `TestALaunchedRunIsNoHandLink` (`run_linked` naming the
-  ticket it was launched from); PR-9's candidate and receipt shapes.
+  ticket it was launched from); PR-9's candidate and receipt shapes,
+  `TestDeliveryReceiptKeepsWhere`
+  (each receipt's `where` kept, the receipt at its 8 KiB bound).
 - `acceptance_test.go` (PR-9): `TestClosePolicyVerified` (met by a
   passed receipt; unmet by a failed one, by a delivery without a
   candidate, each with its words).
@@ -938,20 +1117,28 @@ ledger's rows, and find their tickets by key and their runs by id.
 (a version 5 database with runs, attempts and checks brought to the next
 version: every row kept, `ticket` and `package` empty; one of the next
 version opening read-only under the version before);
-`TestPutRunBoundsThePackage`.
+`TestPutRunBoundsThePackage`; `TestCreateRunRefusesAnIDItHas` (a row
+of the id there: `ErrRunExists`, the row byte for byte as it was).
 
 **Go, `internal/crew`** (PR-3, PR-4, PR-5):
 
 - `planned_test.go`: `TestLaunchPlannedStartsAtTheBase` (`HEAD` moved
   after the revision: the run's base is the revision's);
   `TestARequestedRunIDIsTakenOnce` (an id held, one the ledger has, one
-  of the wrong shape); `TestThePackageIsCheckedAgainstItsDigest`;
+  of the wrong shape, and a row of the id written by another ledger
+  handle after the engine's own check and before its first transaction:
+  `ErrRunExists`, no attempt, that row untouched);
+  `TestThePackageIsCheckedAgainstItsDigest`;
   `TestRunTicketOnTheRunAndItsRecord`; `TestAContinuationCarriesThePackage`
   (its row and its first attempt's files are the source's).
 - `package_test.go`: `TestTicketMarkdown` (each part; an empty part left
   out); `TestTheAttemptGetsThePackageFiles` (`ticket.md`, `package.json`
   byte for byte, the attachments with their hashes, a review's attempt
-  too, a file there already refused); `TestAPackageFileThatDoesNotMatchPausesUncounted`
+  too, a file there already refused);
+  `TestTheAttemptWritesTheDerivedNames` (the files are written under the
+  package's `file`, never its display name; a `file` not of the derived
+  shape refused before anything is opened);
+  `TestAPackageFileThatDoesNotMatchPausesUncounted`
   (a short read, a wrong hash, the opener's error: the attempt failed at
   `package`, uncounted, the run paused with why; unpaused, the next
   attempt gets the files); `TestARetryGetsTheLaunchTimePackage`.
@@ -960,7 +1147,9 @@ version opening read-only under the version before);
   `TestAFailedCheckReachesTheNextAttempt` (`previous.check` with the
   receipt's identity, tail and hash, the log file byte for byte the
   ledger's as `sqlLedger` reads it, a dropped log said so, the cut
-  order),
+  order, and `previous.check.changed` for a check that changes tracked
+  files, read back from its `check.finished` event after the server is
+  restarted and the run continued, not from memory),
   `TestAFailedVerifyStepReachesTheNextAttempt` and
   `TestAContinuationsFirstAttemptGetsTheFailedCheck`.
 
@@ -974,7 +1163,11 @@ version opening read-only under the version before);
   `TestProposeFixesTheYoloChoice`; `TestProposeRefusals` (a crew without
   tasks, one not launchable, an agent not in the catalog, no
   repository); `TestProposeResentFromItsReceipt` (the crew deleted
-  between); the approve and withdraw routes; the largest body's read
+  between; the same `opId` with another request `op_conflict`);
+  `TestProposeSnapshotsTheAgents` (the command and env names recorded,
+  no env value in the body; `agentsChanged` after a catalog edit); the
+  plans list's largest reply, 100 summaries at their worst, under
+  `MaxPlansReply`; the approve and withdraw routes; the largest body's read
   under `MaxPlanReply`; auth and the switchyard's `403`.
 - `dispatch_launch_test.go`: `TestLaunchFromATicket` (`201`; the run's
   package digest the launch's; the run's `ticket`; the launch started
@@ -984,7 +1177,29 @@ version opening read-only under the version before);
   the launch failed with why, a resend the same); `TestLaunchGates`
   (managed runs off, no ledger, a read-only ledger: no pending row);
   `TestReconcileLaunches` (pending with the run in the ledger: started;
-  without: failed; no ledger: still pending);
+  without: failed; with another run's row of the id: failed, the row
+  untouched; no ledger: still pending);
+  `TestReconcileRunsAfterRecoveryInTheOneCallback` (a ledger whose lock
+  is taken late: `recoverLedger` and then the reconcile both run, once,
+  in that order, from the single `OnOwned` callback);
+  `TestNoLaunchWhileTheLedgerIsTakenOver` (the lock taken late, the
+  reconcile held at a seam: a new launch is `503 ledger_unavailable`
+  with no pending row; released, the launch is `201` and stays started);
+  `TestAReplayOnTheServerWithoutTheLedger` (two servers on one data
+  directory: A commits a pending launch and is held before
+  `LaunchPlanned`; the same `opId` sent to B answers it pending with
+  `503`, and records nothing; A released, the run starts and the launch
+  is started); `TestLaunchAdoptsOnlyItsOwnRun` (a run of the requested
+  id already in the ledger with another package: the launch failed with
+  its words, that run untouched); `TestLaunchRefusedWhenAnAgentChanged`
+  (the catalog entry's command or env edited after the approval: `409
+  stale_plan` naming it, no pending row);
+  `TestLaunchAttachmentsReachEveryAttempt` (through `New`'s own wiring,
+  `OpenLaunchFile` given the engine as `UsePackageFiles`: an attempt gets
+  the attachment byte for byte under its derived name; the attachment
+  then removed from the ticket and the sweep run; a later attempt, a
+  retry, gets it still); the launch read's largest reply under
+  `MaxLaunchReply`;
   `TestEditingTheTicketNeverRewritesAnActiveRun` (the acceptance
   boundary's second half: a launched run paused, the ticket's title,
   description and criteria edited and a comment added, the run unpaused:
@@ -994,12 +1209,21 @@ version opening read-only under the version before);
   revision is approved again).
 - `dispatch_evidence_test.go`: `TestTicketRunsLaunchesAndLinks` (a launch
   and its continuation after a restart, a run linked by hand, the counts,
-  blockers and questions, the reply's bound);
+  blockers and questions, the page's bound);
+  `TestTicketRunsPageThroughEverything`
+  (a launch with 21 continuations and more than 200 launches and hand
+  links: following `next` reaches every launch, run and continuation once,
+  the newest continuation included);
   `TestCandidatesAreBoundToTheirCommits` (a check failing at attempt 1
   and passing at 2: each attempt's receipts its own commit's; a review's
   verdict and counts; Accept anyway and a withdrawal marked; 6 a task
-  and `more`; a legacy run; a run the engine let go, from the ledger; the
-  reply's bound); `TestSessionTicketFollowsThePackage` (a continuation's
+  and `more`; a run the
+  engine let go, from the ledger; the largest page encoded whole under
+  `MaxCandidatesReply`; more than 8 tasks paged by `next`);
+  `TestCandidatesOfALegacyRun` (a real unmanaged crew launch, not in the
+  ledger: `{managed: false, candidates: []}`; an id found nowhere `404`);
+  `TestCandidatesCarryWhere` (each receipt's `where`, `native`);
+  `TestSessionTicketFollowsThePackage` (a continuation's
   session finds it; a deleted ticket; a run linked by hand still found by
   its link; `launch.changed`).
 - `dispatch_test.go` (PR-9): `TestDeliveryLinkNamesACandidate` (passed,
@@ -1020,20 +1244,27 @@ delivery's candidate, `verified`'s words) and
 `composables/useDispatchLive.test.ts` additions (the `plan` and `launch`
 entities, the runs' `run` events). Playwright:
 
-- `dispatch-plan.spec.ts` (PR-10): a managed crew of stub workers, a
-  ticket with an attachment; r1 proposed (its base shown as a commit) and
-  approved with a note; Launch: the run under Runs and on its page,
-  "Launched from"; the candidate's committed file holds the ticket's
-  first line, which the stub read from `.conductor/ticket.md`; a second
-  browser sees the approval and the launch with no reload; the title
-  edited: Launch offered no more, with "approve again"; approved again,
-  launched again: a second run. `palette-rows.spec.ts` gains the ticket
-  page's rows.
-- `dispatch-evidence.spec.ts` (PR-11): a crew whose check fails on its
+- `dispatch-plan.spec.ts` (PR-10), only what PR-10 and the PRs before
+  it build: a managed crew of stub workers, a ticket with an attachment;
+  r1 proposed (its base shown as a commit, each task's assignee shown)
+  and approved with a note; Launch: the dialog answers with the launch
+  started and its run's link (from PR-7's launch route and `GET
+  /api/dispatch/launches/{id}`), and the link opens the run page that
+  `main` already has; a second browser sees the approval and the launch
+  with no reload; the title edited: Launch offered no more, with "approve
+  again"; approved again, launched again: a second launch with another
+  run id. `palette-rows.spec.ts` gains the ticket page's rows.
+- `dispatch-evidence.spec.ts` (PR-11), which takes the assertions that
+  need PR-8's routes and PR-11's pages: a ticket launched as in
+  `dispatch-plan.spec.ts`, the run under Runs and its page's header
+  "Launched from CND-n · plan r1", the candidate's committed file
+  holding the ticket's first line, which the stub read from
+  `.conductor/ticket.md`; a crew whose check fails on its
   first run (a script, as `tasks.spec.ts` makes one) and whose review
   asks for changes once (the stub's): attempt 1's candidate with its
-  failed receipt, attempt 2 at that result passing, the review's finding
-  and the repair; a receipt's log opened, its shown hash the route's
+  failed receipt and where it ran, attempt 2 at that result passing, the
+  review's finding counted and, opened, its message read from the task
+  route, and the repair; a receipt's log opened, its shown hash the route's
   header; the run paused, the description edited, the run unpaused: the
   banner names the description and the next candidate's file still holds
   the launch-time line; the phone width one column.
@@ -1081,10 +1312,16 @@ what each showed.
    touched; nothing here differs by platform or depends on a provider.
 7. Evidence rows gain `where` in C10: honoured; this item adds no
    evidence row to the ledger and its views assume no native process: a
-   receipt is shown by what ran, against which commit, and how it ended,
-   never by pid or process group, and the candidates route carries
-   `where` once C10 adds it; the delivery's recorded receipt names the
-   checks by id, exit, `stable` and log hash.
+   receipt is shown by what ran, where, against which commit, and how it
+   ended, never by pid or process group. Each receipt carries `where` in
+   the candidates route (PR-8: the checks row's once C10's ledger version
+   is there, `native` before it, the only value until F),
+   `DispatchReceipt.vue` and the candidates' chips show it (PR-11), and
+   the delivery's recorded receipt keeps it per receipt with the id,
+   exit, `stable` and log hash (PR-9), since a recorded receipt never
+   changes and must already tell a guest's checks from native ones when
+   F lands; `TestCandidatesCarryWhere`, `TestDeliveryReceiptKeepsWhere`
+   and `dispatch-evidence.spec.ts` test it.
 8. `hostagent` is a launch site as much as `api`: not touched; a managed
    run, and so a launch from a ticket, runs on the server today, and the
    package reaches an attempt as files in its worktree, which is where an
@@ -1120,7 +1357,12 @@ routes, the route list and `docs/protocol.md`), PR-10 for DS1's PR-9 to
 PR-11 (#409 to #411: the palette's Tickets group, the ticket page's
 comments and attachments, `DispatchRuns.vue`, the close policy and the
 delivery form), PR-13 for #412 (`conductor dispatch`), PR-14 for DS1's
-PR-13 (#413: its features entry and README section). Sizes are estimates
+PR-13 (#413: its features entry and README section), and PR-5 for EN1's
+PR-5 (#397, verify and cleanup): `main` refuses a manifest's `verify`
+steps (`Manifest.runnable`, `manifest.go`) and `verify.go` runs only a
+task's checks, so `TestAFailedVerifyStepReachesTheNextAttempt` can pass
+only once #397 runs them; both change `internal/crew`'s `verify.go`, so
+PR-5 is cut from `main` after #397 merges, never beside it. Sizes are estimates
 of the first push's changed lines with tests; DS1's store and route PRs,
 estimated at 1,000 to 1,500, merged at 2,000 to 5,300 after their review
 rounds (#415, #420, #423, #425, #427, #430, #439), and these will grow the
@@ -1132,7 +1374,7 @@ same way, which is why none is planned larger.
 | PR-2 | dispatch: launches, the package, the pinned attachments, what changed since, the reserved decision kind | `internal/dispatch` | PR-1 | PR-3, PR-4, PR-5, PR-6 | ~1,400 |
 | PR-3 | ledger, crew: a run launched from a plan revision at its base, under its minted id, with its package, which continuations carry | `internal/crew`, `internal/crew/ledger`, `docs/repository-map.md` | none | PR-1, PR-2, PR-6 | ~1,000 |
 | PR-4 | crew: the package's files in every attempt, and a package that cannot be read pauses the run, uncounted | `internal/crew` | PR-3 | PR-1, PR-2, PR-6 | ~1,000 |
-| PR-5 | crew: a failed check's receipt and its whole log reach the next attempt | `internal/crew`, `docs/protocol.md` | PR-4 | PR-1, PR-2 | ~800 |
+| PR-5 | crew: a failed check's receipt and its whole log reach the next attempt | `internal/crew`, `internal/crew/ledger`, `docs/protocol.md` | PR-4, EN1's PR-5 (#397) | PR-1, PR-2 | ~800 |
 | PR-6 | api: plan revisions over HTTP | `internal/api`, `docs/protocol.md` | PR-1 | PR-2, PR-3, PR-4 | ~1,200 |
 | PR-7 | api: a launch from a ticket, its reconcile at start, and the attempt's files from Dispatch's store | `internal/api`, `docs/protocol.md`, `docs/architecture.md` | PR-2, PR-5, PR-6 | none | ~1,400 |
 | PR-8 | api: a ticket's runs, a run's candidates with their receipts, and the attempt's ticket as launched | `internal/api`, `docs/protocol.md` | PR-7 | PR-10 | ~1,300 |
@@ -1146,8 +1388,10 @@ same way, which is why none is planned larger.
 **PR-1** (`internal/dispatch`): schema version 2 whole (the three tables,
 the two link columns, the indexes) and `migrations[1]`; `model.go`'s
 bounds and types for revisions (launches' types land with PR-2);
-`plans.go`'s `ProposePlan`, `ApprovePlan`, `WithdrawPlan`, `Plans`, `Plan`
-and `IntentDigest`; the entities `plan` and `launch` with their `rev`;
+`plans.go`'s `ProposePlan` (each handed-over comment's digest set from
+its row), `ApprovePlan`, `WithdrawPlan`, `Plans`, `Plan` and
+`IntentDigest`, a stale approval for an edited handed-over comment; the
+entities `plan` and `launch` with their `rev`;
 `rules.go`'s classes for every new field; `TicketView`'s `approved` and
 `launchCount` (0 until PR-2). Tests: `schema_test.go`, `plans_test.go`,
 `rules_test.go`, `model_test.go`. Go only.
@@ -1157,13 +1401,17 @@ the run id's mint and the pending row, `StartedLaunch`, `FailedLaunch`,
 `Launches`, `LaunchByID`, `PendingLaunches` and `ChangedSince`;
 `package.go`'s `Package`, its build and its bound; `sweep.go` keeping the
 pins, and `OpenLaunchFile`; `links.go`'s reserved `decision` kind and
-`SetRunTicket`. Tests: `launches_test.go`, `package_test.go`,
-`sweep_test.go`, `links_test.go`. Go only; the Mac and Windows preflight
+`SetRunTicket`; the attachments' derived file names; the comments'
+digests checked at a launch; `ops.go`'s `Store.Replay`. Tests:
+`launches_test.go`, `package_test.go`, `sweep_test.go`, `links_test.go`,
+`ops_test.go`. Go only; the Mac and Windows preflight
 rows run here.
 
 **PR-3** (`internal/crew/ledger`, `internal/crew`, the repository map):
-the ledger's next version (`runs.ticket`, `runs.package`, `MaxPackage`);
-`planned.go`'s `Planned` and `LaunchPlanned` (the requested id, the base,
+the ledger's next version (`runs.ticket`, `runs.package`, `MaxPackage`)
+and `Tx.CreateRun`, the insert-only first write, on the engine's
+`LedgerTx` too; `planned.go`'s `Planned` and `LaunchPlanned` (the
+requested id, refused by that insert when the ledger has it, the base,
 the digest); `package.go`'s reading of a package and its header;
 `Run.Ticket`; `ContinueRun` carrying the package; `run.created`'s
 payload; the repository map's ledger row. No route calls it yet; the
@@ -1176,8 +1424,10 @@ and the copy with its hash and size; `writeTaskFiles`' package files;
 uncounted, pausing the run. Tests: `package_test.go`, `taskfile_test.go`.
 Go only; the Mac and Windows preflight rows run here.
 
-**PR-5** (`internal/crew`, `docs/protocol.md`): the failing receipt kept
-on the attempt; `previous.check` and the log file; the engine's
+**PR-5** (`internal/crew`, `internal/crew/ledger`, `docs/protocol.md`),
+after EN1's PR-5 (#397): the failing receipt kept on the attempt with its
+changed paths; `k` in `check.finished`'s payload and the ledger's
+`CheckChanged`; `previous.check` and the log file; the engine's
 `Ledger.CheckLog` and `Loaded.FailedChecks`, which `sqlLedger` reads with
 the ledger's existing `Check` and `Checks`; the cut order; the Crew runs
 section's paragraph on the task files. It changes every managed run's
@@ -1185,30 +1435,38 @@ next attempt, launched from a ticket or not. Tests: `taskfile_test.go`'s
 three, the log read through `sqlLedger`. Go only.
 
 **PR-6** (`internal/api`, `docs/protocol.md`): `dispatch_plans.go`, its
-four routes and the proposing checks (the receipt first, the crew, its
+four routes and the proposing checks (the replay first, the crew, the
+agents as resolved (`agents`, `agentsChanged`), its
 directory, the base, the references, the manifest's file, the yolo
 choice), `crewChanged`; the route list; `events.go`'s comment; the
 protocol's rows and its "Plan revisions" paragraph. Tests:
 `dispatch_plans_test.go`, `events_test.go`. Go only.
 
 **PR-7** (`internal/api`, `docs/protocol.md`, `docs/architecture.md`):
-`dispatch_launch.go` (the route in its order, `launchesInFlight`,
-`reconcileLaunches`, `GET /api/dispatch/launches/{id}`); the wiring in
+`dispatch_launch.go` (the route in its order, the replay and the
+ledger's ownership before any launch advances, the agents resolved
+again, `runRowIsLaunch`, `launchReady`, `launchesInFlight`,
+`reconcileLaunches`, `GET /api/dispatch/launches/{id}` under
+`MaxLaunchReply`); the wiring in
 `New` (`UsePackageFiles`, `SetRunTicket`, the reconcile once the ledger
-is the server's); the protocol's "Launches" paragraph, the package's
+is the server's, run after `recoverLedger` through `openLedger`'s new
+`afterRecover`, inside the one `OnOwned` callback when the lock comes
+late); the protocol's "Launches" paragraph, the package's
 shape and the attempt's files in its Crew runs section; the
 architecture's Dispatch section. Tests: `dispatch_launch_test.go`, with
 `TestEditingTheTicketNeverRewritesAnActiveRun`. Go only.
 
 **PR-8** (`internal/api`, `docs/protocol.md`): `dispatch_evidence.go`
-(`GET /api/dispatch/tickets/{key}/runs`), `candidates.go` (`GET
-/api/runs/{run}/candidates`), the session route's package-first lookup
-and `launch` part; the protocol's rows. Tests:
+(`GET /api/dispatch/tickets/{key}/runs`, paged), `candidates.go` (`GET
+/api/runs/{run}/candidates`, paged by task, each receipt's `where`, a
+legacy run resolved as the run route resolves it), the session route's
+package-first lookup and `launch` part; the protocol's rows. Tests:
 `dispatch_evidence_test.go`. Go only.
 
 **PR-9** (`internal/dispatch`, `internal/api`, `docs/protocol.md`): a
-delivery's `candidate` and `verified`, their shapes in the store and the
-API's read of the receipt; the close policy's `verified`; the protocol's
+delivery's `candidate` and `verified` (each receipt's `where` in it),
+their shapes in the store and the API's read of the receipt; the close
+policy's `verified`; the protocol's
 rows for the link and the policy. Tests: `links_test.go`,
 `acceptance_test.go`, `dispatch_test.go`. Go only.
 
@@ -1223,8 +1481,10 @@ and the `palette-rows.spec.ts` additions. UI only.
 **PR-11** (`web/app`, `web/e2e`): `ticketRuns` and `runCandidates`;
 `utils/dispatchEvidence.ts`; `DispatchRuns.vue` extended,
 `DispatchChangedSince.vue`, `DispatchCandidates.vue`,
-`DispatchReceipt.vue`, `DispatchRepairs.vue`; the run page's "Launched
-from"; the phone's width. Tests: vitest `dispatchEvidence.test.ts`;
+`DispatchReceipt.vue`, `DispatchRepairs.vue`; Show older and More
+tasks following the pages' `next`; where each receipt ran; a review's
+findings read from the task route; the run page's "Launched from"; the
+phone's width. Tests: vitest `dispatchEvidence.test.ts`;
 Playwright `dispatch-evidence.spec.ts`. UI only; the Mac and Windows
 preflight rows run here.
 
@@ -1274,8 +1534,10 @@ taken.
    is addressed by its id, so replication renumbers no stored row.
 5. **The approval is the operator's, against the ticket's intent.**
    Decision D4's single approver; it records the digest of the title,
-   the description and the criteria, and a launch needs that unchanged;
-   other edits leave it holding; approving again is one action. Chosen
+   the description and the criteria, and a launch needs that unchanged,
+   with each handed-over comment's body and each agent as resolved
+   (`agents`) as the revision recorded them; other edits leave it
+   holding; approving again is one action. Chosen
    over staling on every edit, which would block a launch for a priority
    change, and over never staling, which would launch against an
    approval of other criteria.
