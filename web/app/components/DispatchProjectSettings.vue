@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import type { DispatchLabel, DispatchMilestone, LabelColor, LabelReply, MilestoneEdit, MilestoneReply, ProjectRead } from '~/composables/useDispatch'
+import type { CloseRequirement, DispatchLabel, DispatchMilestone, LabelColor, LabelReply, MilestoneEdit, MilestoneReply, ProjectRead, ProjectReply } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
-import { LABEL_COLOR_CHOICES, labelDot } from '~/utils/dispatch'
+import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, samePolicy } from '~/utils/dispatch'
 
 /**
- * A project's labels and milestones (docs/plans/dispatch.md, PR-10), managed from its page: a label made, renamed, recoloured with one
+ * A project's settings, from its page. Its close policy (PR-11): what a ticket needs before it is done, the owner's acceptance and a
+ * delivery link, either, both or neither (`verified` is not offered: DS2 defines it), saved as one operation on the project's revision;
+ * every ticket page of the project reads its close card again on the project's event, so the card follows the policy with no reload.
+ * Its labels and milestones (docs/plans/dispatch.md, PR-10), managed from its page: a label made, renamed, recoloured with one
  * of the twelve names the UI maps to the brand's scales (never a value of the client's own) and deleted; a milestone made, renamed,
  * given a target date and a description, closed and opened again, and deleted. Each change is one operation on the revision shown
  * (useDispatchOps); a delete leaves every ticket that had the label or the milestone, which the open pages of those tickets see by the
@@ -29,6 +32,50 @@ async function done<R>(p: Promise<R | null>): Promise<boolean> {
   const r = await p
   if (r) emit('changed')
   return !!r
+}
+
+// ---------------------------------------------------------------------------
+// The close policy
+
+/** The policy as ticked, until it is saved; it follows the project's while it holds what the project held when it was last ticked from. */
+const policy = ref<CloseRequirement[]>([...props.read.project.closeRequires])
+const policyBase = ref<CloseRequirement[]>([...props.read.project.closeRequires])
+watch(
+  () => props.read.project.closeRequires,
+  (now) => {
+    // Another person's policy, or this one saved: shown, unless something else is ticked here and not saved.
+    if (samePolicy(policy.value, policyBase.value)) policy.value = [...now]
+    policyBase.value = [...now]
+  },
+)
+watch(open, (o) => {
+  if (o) {
+    policy.value = [...props.read.project.closeRequires]
+    policyBase.value = [...props.read.project.closeRequires]
+  }
+})
+const policyChanged = computed(() => !samePolicy(policy.value, props.read.project.closeRequires))
+const policySaving = ref(false)
+function tick(r: CloseRequirement, on: boolean | 'indeterminate') {
+  policy.value = closeRequiresOf(on === true ? [...policy.value, r] : policy.value.filter((x) => x !== r))
+}
+async function savePolicy() {
+  if (!policyChanged.value || props.archived || policySaving.value) return
+  const closeRequires = closeRequiresOf(policy.value)
+  policySaving.value = true
+  try {
+    await done(
+      ops.run<ProjectReply>((op) => api.editProject(props.project, { ...op, closeRequires }), {
+        thing: `project:${props.project}`,
+        what: props.project,
+        expectedRev: props.read.project.rev,
+        rev: (r) => r.project?.rev,
+        done: `${props.project}'s close policy saved`,
+      }),
+    )
+  } finally {
+    policySaving.value = false
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,9 +164,31 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
 </script>
 
 <template>
-  <USlideover v-model:open="open" :title="`${project}: labels and milestones`" description="What its tickets are labelled with, and the milestones they are planned for." :ui="{ content: 'max-w-lg' }">
+  <USlideover v-model:open="open" :title="`${project}: settings`" description="What its tickets need to be done, what they are labelled with, and the milestones they are planned for." :ui="{ content: 'max-w-lg' }">
     <template #body>
       <div class="flex flex-col gap-8" data-project-settings>
+        <!-- The close policy. -->
+        <section class="flex flex-col gap-3" data-project-close-policy :data-policy="read.project.closeRequires.join(' ')">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">To close a ticket</h3>
+          <p class="text-sm text-muted">What a ticket needs before it can be done. Nothing ticked: it closes with nothing required.</p>
+          <div class="flex flex-col gap-2">
+            <UCheckbox
+              v-for="r in CLOSE_REQUIREMENTS"
+              :key="r.value"
+              :model-value="policy.includes(r.value)"
+              :label="r.label"
+              :description="r.description"
+              :disabled="archived"
+              :data-close-requirement="r.value"
+              @update:model-value="(on: boolean | 'indeterminate') => tick(r.value, on)"
+            />
+          </div>
+          <div v-if="!archived" class="flex items-center gap-2">
+            <UButton label="Save the policy" icon="i-lucide-check" size="sm" :disabled="!policyChanged" :loading="policySaving" data-close-policy-save @click="savePolicy" />
+            <UButton v-if="policyChanged" label="Put it back" color="neutral" variant="ghost" size="sm" @click="policy = [...read.project.closeRequires]" />
+          </div>
+        </section>
+
         <!-- The labels. -->
         <section class="flex flex-col gap-3" data-project-labels :data-count="labels.length">
           <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Labels</h3>
