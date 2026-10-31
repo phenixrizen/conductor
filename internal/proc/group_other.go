@@ -10,3 +10,6 @@ func groupMembers(int, int) ([]int, error) {
 }
 
 func stillMembers(int, []int) []int { return nil }
+
+// exited cannot say here.
+func exited(int) bool { return false }

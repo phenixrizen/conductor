@@ -541,38 +541,211 @@ func mustMembers(pgid int) []int {
 	return pids
 }
 
+// closes waits up to 10 s for the output's end of file (launched.eof) of
+// the service svc will hold once Serve has returned, and says whether it
+// came.
+func closes(svc *atomic.Pointer[Service]) bool {
+	deadline := time.Now().Add(10 * time.Second)
+	for svc.Load() == nil {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-svc.Load().l.eof:
+		return true
+	case <-time.After(time.Until(deadline)):
+		return false
+	}
+}
+
+// The output's end, come before the end's judgement or held back past it
+// (lateOutput), for the tests of a kill beside the wait: the judgement is
+// the same either way.
+var outputEnds = []struct {
+	name string
+	late bool
+}{{"the output's end before the judgement", false}, {"the output's end after it", true}}
+
 // A stop's kill runs beside the wait for the group (Codex's review of
 // #511): the grace's end, or the stop's context, kills a member that holds
 // the output between two of the wait's looks, so the next finds the group
 // empty and the output closed with the member. What the kill took held
-// the output (Killed). The stop's context is ended at the wait's first
+// the output (Killed), whether the output's end comes before the
+// judgement or after it. The stop's context is ended at the wait's first
 // follow of the member, which ignores SIGTERM, and the follow waits until
-// the kill has taken it.
+// the kill has taken it, and, in the first order, the output has closed.
 func TestAStopsKillBesideTheWaitIsReadAsItWasSent(t *testing.T) {
+	for _, end := range outputEnds {
+		t.Run(end.name, func(t *testing.T) {
+			shortGrace(t, time.Hour)
+			if end.late {
+				lateOutput(t)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var pgid, member atomic.Int64
+			var svcp atomic.Pointer[Service]
+			var followed, taken, closed atomic.Bool
+			lookAt(t, func(n int, listing bool) bool {
+				if !listing && followed.CompareAndSwap(false, true) {
+					cancel()
+					taken.Store(leftGroup(int(pgid.Load()), int(member.Load())))
+					closed.Store(end.late || closes(&svcp))
+				}
+				return false
+			})
+			dir := t.TempDir()
+			svc := serve(t, dir, `sh -c "$1" & echo $$ > pid; wait`, func(s *Spec) { s.Argv = append(s.Argv, "sh", `trap "" TERM; echo $$ > child; exec sleep 3600`) })
+			svcp.Store(svc)
+			pgid.Store(int64(pidFile(t, filepath.Join(dir, "pid"))))
+			member.Store(int64(pidFile(t, filepath.Join(dir, "child"))))
+			if err := svc.Stop(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if !followed.Load() || !taken.Load() || !closed.Load() {
+				t.Fatalf("followed %v, the member taken by the stop's kill before the follow %v, the output closed %v", followed.Load(), taken.Load(), closed.Load())
+			}
+			if res := svc.Result(); res.Signal != "terminated" || res.Exit != -1 || !res.Killed || res.Err != "" {
+				t.Fatalf("%+v", res)
+			}
+		})
+	}
+}
+
+// A kill beside the wait at a service's own exit (settle's path, as a
+// Run's) is read as it was sent too (Codex's review of #511, round 2):
+// the service's context, or a stop come while the wait looks, kills the
+// child it left holding the output before the group is listed, and the
+// listing finds none of it. The child went with the group (Killed),
+// whether the output's end comes before the judgement or after it. The
+// kill is sent at the listing's look, which waits until it has taken the
+// child, and, in the first order, until the output has closed. The child
+// ignores SIGTERM, so the stop's SIGTERM does not end it before its kill.
+func TestAKillBesideTheWaitAtAnExitIsReadAsItWasSent(t *testing.T) {
+	for _, by := range []string{"the service's context", "a stop"} {
+		for _, end := range outputEnds {
+			t.Run(by+", "+end.name, func(t *testing.T) {
+				shortGrace(t, time.Hour)
+				if end.late {
+					lateOutput(t)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				stopped, stop := context.WithCancel(context.Background())
+				stop()
+				dir := t.TempDir()
+				var pgid atomic.Int64
+				var svcp atomic.Pointer[Service]
+				var listed, taken, closed atomic.Bool
+				stops := make(chan error, 1)
+				lookAt(t, func(n int, listing bool) bool {
+					if n != 1 || !listing {
+						return false
+					}
+					listed.Store(true)
+					if by == "a stop" {
+						go func() { stops <- svcp.Load().Stop(stopped) }()
+					} else {
+						cancel()
+					}
+					b, err := os.ReadFile(filepath.Join(dir, "child"))
+					child, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+					taken.Store(err == nil && child > 0 && leftGroup(int(pgid.Load()), child))
+					closed.Store(end.late || closes(&svcp))
+					return false
+				})
+				svc, err := Serve(ctx, Spec{Argv: []string{"sh", "-c", `sh -c "$1" & echo $! > child; while [ ! -e ready ]; do sleep 0.01; done; exit 0`, "sh", `trap "" TERM; echo > ready; exec sleep 3600`}, Dir: dir})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { svc.Stop(stopped) })
+				pgid.Store(int64(svc.Result().Process.PID))
+				svcp.Store(svc)
+				select {
+				case <-svc.Done():
+				case <-time.After(30 * time.Second):
+					t.Fatal("the service had not ended 30 s after its exit")
+				}
+				if by == "a stop" {
+					if err := <-stops; err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !listed.Load() || !taken.Load() || !closed.Load() {
+					t.Fatalf("listed %v, the child taken by the kill before the listing %v, the output closed %v", listed.Load(), taken.Load(), closed.Load())
+				}
+				// exec reports a command its context's end cancelled, which
+				// exited 0 all the same, with the context's error.
+				res, why := svc.Result(), ""
+				if by != "a stop" {
+					why = "context canceled"
+				}
+				if res.Exit != 0 || res.Signal != "" || !res.Killed || res.Err != why || res.Canceled != (by != "a stop") {
+					t.Fatalf("%+v", res)
+				}
+			})
+		}
+	}
+}
+
+// A kill sent once the last of a stopped group is gone takes nothing
+// (Codex's review of #511, round 2): the member that held the output has
+// finished its shutdown, and its output's end is read late (lateOutput),
+// so the output is still open when the stop's context ends and its kill is
+// sent, before the group is listed again; the listing finds none of it.
+// Nothing the kill took held the output, so the result is not Killed. The
+// member's shutdown is held until the wait follows it, the follow waits
+// until it is gone, and the stop's context is ended at the listing after
+// it, which waits until the kill is sent.
+func TestAKillOnceTheGroupIsGoneTakesNothing(t *testing.T) {
 	shortGrace(t, time.Hour)
+	held, late := lateOutput(t)
+	var killed atomic.Bool
+	watchSignals(t, func(x sent) {
+		if x.s == sigKill {
+			killed.Store(true)
+		}
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	dir := t.TempDir()
 	var pgid, member atomic.Int64
-	var followed, taken atomic.Bool
+	var followed, left, sawKill atomic.Bool
 	lookAt(t, func(n int, listing bool) bool {
-		if !listing && followed.CompareAndSwap(false, true) {
+		switch {
+		case !listing && followed.CompareAndSwap(false, true):
+			os.WriteFile(filepath.Join(dir, "go"), nil, 0o644)
+			left.Store(leftGroup(int(pgid.Load()), int(member.Load())))
+		case listing && n > 1 && followed.Load():
 			cancel()
-			taken.Store(leftGroup(int(pgid.Load()), int(member.Load())))
+			deadline := time.Now().Add(10 * time.Second)
+			for !killed.Load() && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			sawKill.Store(killed.Load())
 		}
 		return false
 	})
-	dir := t.TempDir()
-	svc := serve(t, dir, `sh -c "$1" & echo $$ > pid; wait`, func(s *Spec) { s.Argv = append(s.Argv, "sh", `trap "" TERM; echo $$ > child; exec sleep 3600`) })
+	script := `trap 'while [ ! -e go ]; do sleep 0.01; done; echo done > done; exit 0' TERM; echo $$ > child; while :; do sleep 0.05; done`
+	svc := serve(t, dir, `sh -c "$1" & echo $$ > pid; wait`, func(s *Spec) { s.Argv = append(s.Argv, "sh", script) })
 	pgid.Store(int64(pidFile(t, filepath.Join(dir, "pid"))))
 	member.Store(int64(pidFile(t, filepath.Join(dir, "child"))))
 	if err := svc.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !followed.Load() || !taken.Load() {
-		t.Fatalf("followed %v, the member taken by the stop's kill before the follow %v", followed.Load(), taken.Load())
+	if late() {
+		t.Fatal("settle had not returned 10 s after the output's last byte was read")
 	}
-	if res := svc.Result(); res.Signal != "terminated" || res.Exit != -1 || !res.Killed || res.Err != "" {
-		t.Fatalf("%+v", res)
+	if !followed.Load() || !left.Load() || !sawKill.Load() {
+		t.Fatalf("followed %v, the member gone %v, the kill sent before the listing %v", followed.Load(), left.Load(), sawKill.Load())
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "done")); err != nil || string(b) != "done\n" {
+		t.Fatalf("the member was killed before it finished its shutdown: %q %v", b, err)
+	}
+	if res := svc.Result(); held() || res.Signal != "terminated" || res.Exit != -1 || res.Killed || res.Err != "" {
+		t.Fatalf("held %v: %+v", held(), res)
 	}
 }
 
@@ -581,13 +754,15 @@ func TestAStopsKillBesideTheWaitIsReadAsItWasSent(t *testing.T) {
 // ended may hold the output. The output's close is waited for then, as
 // when the first listing fails, and what holds it finishes. The member's
 // shutdown is held until the wait follows it, so the first listing finds
-// it; it starts a process that holds the output a moment and ends, and
-// every listing after the first fails.
+// it; it starts a process that holds the output until the wait for the
+// output's end has begun (awaitingOutput), then ends; every listing after
+// the first fails. The process is still running when the wait begins, so
+// a wait that ended at the failed listing would kill it.
 func TestAStoppedGroupThatCannotBeListedAgainIsWaitedForByItsOutput(t *testing.T) {
 	shortGrace(t, time.Hour)
 	dir := t.TempDir()
 	var pgid, member atomic.Int64
-	var followed, failed, left atomic.Bool
+	var followed, failed, left, awaited, running atomic.Bool
 	lookAt(t, func(n int, listing bool) bool {
 		switch {
 		case listing && n > 1:
@@ -599,15 +774,22 @@ func TestAStoppedGroupThatCannotBeListedAgainIsWaitedForByItsOutput(t *testing.T
 		}
 		return false
 	})
-	script := `trap 'while [ ! -e go ]; do sleep 0.01; done; sh -c "sleep 0.5; echo done > done" & exit 0' TERM; echo $$ > child; while :; do sleep 0.05; done`
+	awaitingOutput = func() {
+		_, err := os.Stat(filepath.Join(dir, "done"))
+		running.Store(os.IsNotExist(err))
+		awaited.Store(true)
+		os.WriteFile(filepath.Join(dir, "release"), nil, 0o644)
+	}
+	t.Cleanup(func() { awaitingOutput = nil })
+	script := `trap 'while [ ! -e go ]; do sleep 0.01; done; sh -c "while [ ! -e release ]; do sleep 0.01; done; echo done > done" & exit 0' TERM; echo $$ > child; while :; do sleep 0.05; done`
 	svc := serve(t, dir, `sh -c "$1" & echo $$ > pid; wait`, func(s *Spec) { s.Argv = append(s.Argv, "sh", script) })
 	pgid.Store(int64(pidFile(t, filepath.Join(dir, "pid"))))
 	member.Store(int64(pidFile(t, filepath.Join(dir, "child"))))
 	if err := svc.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !followed.Load() || !left.Load() || !failed.Load() {
-		t.Fatalf("followed %v, the member gone %v, a listing failed %v", followed.Load(), left.Load(), failed.Load())
+	if !followed.Load() || !left.Load() || !failed.Load() || !awaited.Load() || !running.Load() {
+		t.Fatalf("followed %v, the member gone %v, a listing failed %v, the output's end awaited %v with what it started still running %v", followed.Load(), left.Load(), failed.Load(), awaited.Load(), running.Load())
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "done")); err != nil || string(b) != "done\n" {
 		t.Fatalf("what the member started as it ended was killed while it held the output: %q %v", b, err)

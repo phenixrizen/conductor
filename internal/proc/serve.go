@@ -160,18 +160,17 @@ func (s *stopping) cutNow() { s.cutOnce.Do(func() { close(s.cut) }) }
 // output still open closes now, or is held by a process that left the
 // group, and end gives it WaitDelay, as it does any such holder, and
 // leaves the holder alone. Where the group cannot be listed, at first or
-// when listed again, the output closed is taken for the group gone. held
-// says what end kills held the output: the output was open when the
-// stop's cut or ctx's end cut the wait short. It is read at that moment,
-// not from what the wait last saw: a wait that ended on its timer as the
-// output closed, or a listing during which it closed (a /proc listing is
-// slow on a loaded machine), would take a closed output for a held one.
-// The stop's cut and ctx's end each kill the group beside this wait
-// (Service.Stop, the command's Cancel), so a kill that came first is read
-// as it was sent (lifecycle.noteKills): a member it took may be gone from
-// the listing, and the output closed with it, when the wait looks.
+// when listed again, the output's end is waited for (or the cut, or ctx's
+// end), as the group's. held is the lifecycle's judgement (judge), made
+// where the wait ends: the output open at that moment, not what the wait
+// last saw (a wait that ended on its timer as the output closed, or a
+// listing during which it closed, since a /proc listing is slow on a
+// loaded machine, would take a closed output for a held one), and a kill
+// beside the wait (the stop's cut, the command's Cancel at ctx's end) read
+// as it was sent, whenever it was: a member it took may be gone from the
+// listing, and the output closed with it, when the wait looks; and one
+// sent once the group was found empty took nothing.
 func (l *launched) settleStopped(ctx context.Context) (held bool) {
-	l.g.noteKills(l.eof)
 	eof := l.eof
 	// until waits for c, the output's end, the stop's cut or ctx's end, and
 	// says whether the wait is over (the cut, or ctx).
@@ -187,26 +186,21 @@ func (l *launched) settleStopped(ctx context.Context) (held bool) {
 		}
 		return false
 	}
-	// heldNow says whether what end kills holds the output: whether it was
-	// open when a kill came, or, before any, whether it is open now.
-	heldNow := func() bool {
-		if killed, open := l.g.killedHolding(); killed {
-			return open
-		}
-		return outputOpen(l.eof)
-	}
 	// unlisted is the wait where the group cannot be listed: the output's
 	// end, or the cut, or ctx's end.
 	unlisted := func() bool {
 		if eof != nil {
+			if awaitingOutput != nil {
+				awaitingOutput()
+			}
 			until(nil)
 		}
-		return heldNow()
+		return l.g.judge()
 	}
 	hold := time.NewTimer(holdGrace)
 	defer hold.Stop()
 	if until(hold.C) {
-		return heldNow()
+		return l.g.judge()
 	}
 	members, known := l.g.members(l.cmd)
 	if !known {
@@ -216,7 +210,7 @@ func (l *launched) settleStopped(ctx context.Context) (held bool) {
 	defer tick.Stop()
 	for len(members) > 0 {
 		if until(tick.C) {
-			return heldNow()
+			return l.g.judge()
 		}
 		if members = l.g.still(l.cmd, members); len(members) == 0 {
 			if members, known = l.g.members(l.cmd); !known {
@@ -224,9 +218,14 @@ func (l *launched) settleStopped(ctx context.Context) (held bool) {
 			}
 		}
 	}
-	// None of the group is left: unless a kill took the last of it,
-	// whatever holds the output is no member of it, and end's wait after
-	// the reaping is the output's.
-	killed, open := l.g.killedHolding()
-	return killed && open
+	// None of the group is left (the listing noted it): unless a kill took
+	// the last of it, whatever holds the output is no member of it, and
+	// end's wait after the reaping is the output's.
+	return l.g.judge()
 }
+
+// awaitingOutput, when set, is called as settleStopped begins to wait for
+// the output's end where the group cannot be listed: the tests' way to let
+// what holds the output finish only once that wait has begun. Set it
+// before the process starts.
+var awaitingOutput func()

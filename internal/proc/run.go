@@ -257,7 +257,11 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 	cmd.Env = environment(s.Allow, s.Env, s.Inject)
 	cmd.Stdout, cmd.Stderr = w, w
 	cmd.WaitDelay = WaitDelay
-	g := &lifecycle{}
+	// The output's end is known to the lifecycle before anything can kill
+	// the group, so that every kill sent before the end's judgement is
+	// noted with what it took (lifecycle.judge).
+	eof := make(chan struct{})
+	g := newLifecycle(eof)
 	attr(cmd, g)
 
 	started := time.Now()
@@ -296,7 +300,7 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 		s.Started(res.Process)
 	}
 
-	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: make(chan struct{}), res: res}
+	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: eof, res: res}
 	var sink io.Writer = l.mem
 	if s.Log != nil {
 		l.lg = newLogSink(s.Log, logLimit)
@@ -392,9 +396,14 @@ func (l *launched) end(ctx context.Context) Result {
 // the output's end is read late (the goroutine that reads it can be, on a
 // loaded machine) or a process that left the group holds it, which end
 // gives WaitDelay and leaves alone; and the output is read again after
-// the listing, which is slow on a loaded machine. For a service whose stop
-// has asked its group to end (Service.Stop), before the exit or while this
-// waits, the group has the stop's grace instead (settleStopped).
+// the listing, which is slow on a loaded machine. Each answer is the
+// lifecycle's judgement (judge), which reads a kill sent beside this wait
+// (the command's Cancel at the context's end, or a stop's) as it was
+// sent: a child holding the output that it took went with the group,
+// though the listing finds none of it and the output closed with it. For
+// a service whose stop has asked its group to end (Service.Stop), before
+// the exit or while this waits, the group has the stop's grace instead
+// (settleStopped).
 func (l *launched) settle(ctx context.Context) (held bool) {
 	var asked <-chan struct{}
 	if l.stop != nil {
@@ -409,12 +418,10 @@ func (l *launched) settle(ctx context.Context) (held bool) {
 	defer hold.Stop()
 	select {
 	case <-l.eof:
-		return false
+		return l.g.judge()
 	case <-hold.C:
-		if members, known := l.g.members(l.cmd); known && len(members) == 0 {
-			return false
-		}
-		return outputOpen(l.eof)
+		l.g.members(l.cmd) // none of the group left is noted for the judgement
+		return l.g.judge()
 	case <-asked:
 		return l.settleStopped(ctx)
 	}

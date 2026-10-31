@@ -26,10 +26,10 @@ func (*lifecycle) members(*exec.Cmd) (pids []int, known bool) { return nil, fals
 
 func (*lifecycle) still(*exec.Cmd, []int) []int { return nil }
 
-// noteKills and killedHolding note nothing: no service runs here.
-func (*lifecycle) noteKills(<-chan struct{}) {}
+func newLifecycle(<-chan struct{}) *lifecycle { return &lifecycle{} }
 
-func (*lifecycle) killedHolding() (killed, held bool) { return false, false }
+// judge is never asked here: no exit is watched, so nothing settles.
+func (*lifecycle) judge() bool { return false }
 
 func attr(cmd *exec.Cmd, g *lifecycle) { cmd.Cancel = func() error { return g.signal(cmd, sigKill) } }
 

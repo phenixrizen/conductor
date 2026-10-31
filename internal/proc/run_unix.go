@@ -18,14 +18,23 @@ import (
 type lifecycle struct {
 	mu     sync.Mutex
 	reaped bool
-	// output, once noteKills is called, is the output's end of file
-	// (launched.eof); killed says a SIGKILL has been sent since, and
-	// killedOpen whether the output was open when the first was.
-	output             <-chan struct{}
-	killed, killedOpen bool
+	// output is the output's end of file (launched.eof), which the end's
+	// judgement reads (judge) and the first kill sent before it notes
+	// (signal).
+	output <-chan struct{}
+	// empty says a listing of the group found none of it left, the
+	// process's own exit aside; killed says a SIGKILL has been sent before
+	// the judgement, and killedHolder that the first, sent once the process
+	// had exited, took a member of the group while the output was open;
+	// judged that the judgement is made, after which no kill is noted.
+	empty, killed, killedHolder, judged bool
 	// looks counts the looks at the group (members, still), for looking.
 	looks int
 }
+
+// newLifecycle is the lifecycle of a command whose output's end of file
+// closes output (launched.eof).
+func newLifecycle(output <-chan struct{}) *lifecycle { return &lifecycle{output: output} }
 
 // looking, when set, is called before each look at the group, outside the
 // lifecycle's lock: n numbers the looks from 1, and listing says it is a
@@ -48,23 +57,50 @@ func (g *lifecycle) look(listing bool) (fail bool) {
 	return looking(n, listing)
 }
 
-// noteKills has the first SIGKILL sent from now on noted with whether
-// output was open when it was sent (killedHolding): a stopped service's
-// wait for its group (settleStopped) runs beside the stop's kill and the
-// context's, and reads from the note what such a kill took.
-func (g *lifecycle) noteKills(output <-chan struct{}) {
+// judge says, once the process has exited, whether what end kills holds
+// the output: read once, under the lock the kills take, so a kill beside
+// the end's wait (Service.Stop's cut, the command's Cancel at the
+// context's end) is read as it was sent, whatever came after it. A kill
+// that took a member holding the output (killedHolder) says so, though
+// the member is gone from a later listing and the output closed with it;
+// none of the group left (empty), nothing of it holds the output, however
+// late its end is read; else the output open at this moment is held. No
+// kill is noted after it.
+func (g *lifecycle) judge() (held bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.output = output
+	g.judged = true
+	switch {
+	case g.killedHolder:
+		return true
+	case g.empty:
+		return false
+	}
+	return outputOpen(g.output)
 }
 
-// killedHolding says whether a SIGKILL has been sent since noteKills, and
-// whether the output was open when the first was: what the kill took held
-// it.
-func (g *lifecycle) killedHolding() (killed, held bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.killed, g.killedOpen
+// noteKill notes the first SIGKILL sent before the judgement (judge),
+// with the lock held and before it is sent: whether it takes a member of
+// the group that holds the output. It does when the process has exited
+// (one that runs holds the output itself, and the wait after its exit
+// reads what it left), the output is open, and the group, listed now, has
+// a member, or cannot be listed; a listing that finds none is noted as
+// one of the end's (empty), and a group already found empty has none to
+// take.
+func (g *lifecycle) noteKill(pid int) {
+	if g.judged || g.killed {
+		return
+	}
+	g.killed = true
+	if !outputOpen(g.output) || g.empty || !exited(pid) {
+		return
+	}
+	pids, err := groupMembers(pid, pid)
+	if err == nil && len(pids) == 0 {
+		g.empty = true
+		return
+	}
+	g.killedHolder = true
 }
 
 // signalled, when set, is told each signal signal sends, once it is sent:
@@ -81,10 +117,10 @@ var signalled func(s sig, alone bool)
 // has put the default back while it cleans up, would end it before its
 // grace. One whose group cannot be read is sent none: unreaped, its pid
 // is still its own, so it has exited and needs none. A SIGKILL, which no
-// handler sees, goes to it either way; the first after noteKills is
-// noted with whether the output was open. It is the one place proc
-// signals a process. os.ErrProcessDone once the process is reaped, or
-// before it exists.
+// handler sees, goes to it either way; the first before the end's
+// judgement is noted (noteKill). It is the one place proc signals a
+// process. os.ErrProcessDone once the process is reaped, or before it
+// exists.
 func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -95,8 +131,8 @@ func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 	n := syscall.SIGKILL
 	if s == sigTerm {
 		n = syscall.SIGTERM
-	} else if g.output != nil && !g.killed {
-		g.killed, g.killedOpen = true, outputOpen(g.output)
+	} else {
+		g.noteKill(pid)
 	}
 	syscall.Kill(-pid, n)
 	if signalled != nil {
@@ -118,7 +154,9 @@ func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 }
 
 // members is the processes of cmd's process group that have not exited,
-// cmd's own left out, and known whether the group could be listed. It is
+// cmd's own left out, and known whether the group could be listed; none
+// found is noted for the judgement (judge), under the lock a kill takes,
+// so a kill after it is known to take nothing. It is
 // asked only before the reaping, while the exited process keeps the
 // group's id its own, so the answer is about this group and no later one;
 // the group is listed (groupMembers), never signalled, since a signal 0 to
@@ -135,6 +173,9 @@ func (g *lifecycle) members(cmd *exec.Cmd) (pids []int, known bool) {
 		return nil, false
 	}
 	pids, err := groupMembers(cmd.Process.Pid, cmd.Process.Pid)
+	if err == nil && len(pids) == 0 {
+		g.empty = true
+	}
 	return pids, err == nil
 }
 
