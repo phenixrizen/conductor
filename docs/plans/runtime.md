@@ -2,7 +2,8 @@
 
 The Runtime is the one place where the processes of Conductor's sessions
 and of a managed run's trees start: native processes on the machine that
-runs the session, as the user, unless a provider is registered. This plan
+runs the session, as the user, unless a registered provider takes a
+managed run (decision RT7). This plan
 is Program item C10 (the Program, section 4.2), written against `main` at
 `293bd7f6` (2026-10-30) after reading the launch paths, the engine's tree
 executor, the checks runner, the host agent and the ledger. It is reviewed
@@ -16,17 +17,23 @@ worktree, never a workspace (decision D5).
 
 The other Program items this plan meets, in plain words: C1 makes the
 public package `ext` (the eight extension interfaces, a registry, the free
-defaults in `ext/local`) and the composition root that reads the registry
-once at start, `docs/plans/ext.md`; this plan needs it merged. C6 adds
-`conductor export`, a zip of the data directory. C9 adds `GET
-/api/capabilities` and `ext/exttest`, a fake and a contract suite per
-interface. DS2 shows a ticket's runs, candidates and checks, this item's
-`where` among them. EN1 is project manifests: its PR #441 (issue #396), in
-review as this is written, gives the engine's tree executor the `serve`
-and `probe` this plan puts behind the Runtime, and is to merge first. F is
-the Boxcar integration, a Linux microVM running an attempt; it comes after
-this item and is not part of it. P0 is the private premium repository's
-first PR, the first code outside this repository that imports `ext`.
+defaults in `ext/local` with `local.Fill`, which puts a default in every
+slot nothing is registered in) and the composition root that reads the
+registry once at start, `docs/plans/ext.md` (PR #453); this plan builds
+on its names and needs it merged. C2 to C9 wire the other seven
+interfaces into the packages this item changes too, and this item's PRs
+come after theirs (The PRs, decision RT15). C6 adds `conductor export`, a
+zip of the data directory. C9 adds `GET /api/capabilities` and
+`ext/exttest`, a fake and a contract suite per interface; the Runtime's
+fake and checks are this item's, as `docs/plans/ext.md` says in its C9
+section, and come in PR-5 here. DS2 shows a ticket's runs, candidates and
+checks, this item's `where` among them. EN1 is project manifests: its PR
+#441 (issue #396), in review as this is written, gives the engine's tree
+executor the `serve` and `probe` this plan puts behind the Runtime, and is
+to merge first. F is the Boxcar integration, a Linux microVM running an
+attempt; it comes after this item and is not part of it. P0 is the
+private premium repository's first PR, the first code outside this
+repository that imports `ext`.
 
 ## Articles it serves
 
@@ -46,14 +53,20 @@ first PR, the first code outside this repository that imports `ext`.
    revoke, export (the ledger file, C6) and the approval paths (`Submit`,
    the control role, the held question) are untouched.
 5. Dependencies one way: no new module; the Runtime's part of `ext`
-   imports the standard library alone; its part of `ext/local` imports
-   `internal/pty` and `internal/proc`, which import nothing of `ext`; C1's
-   lint rule (no private module) holds.
+   imports the standard library alone; `ext/local`'s native Runtime
+   imports `internal/pty` and `internal/proc`, which import nothing of
+   `ext`. C1's `private-module` rule holds unchanged; its `ext-std` rule
+   is amended by PR-1 to let `ext/local`, and no other package under
+   `ext/`, import exactly those two (`ext/local`, below).
 6. No feature build tag: none added; `internal/pty` and `internal/proc`
    keep their `unix` and `!unix` splits.
 7. The free default is `main`: the native Runtime is `pty.Start`,
    `proc.Run`, `proc.Serve`, the probe and the port draw, moved behind one
-   interface unchanged; a registered provider could only add.
+   interface unchanged. A registered Runtime only adds: it is offered
+   managed runs alone, and takes one or declines it (`Takes`); a session a
+   person starts or resumes, a legacy crew's members, a hosted session and
+   every managed run it declines start natively, as on `main` (decision
+   RT7).
 8. A provider whose hosted dependency is unreachable: not touched; the
    native Runtime depends on nothing, and the composition root takes what is
    registered once at start, waiting on no service.
@@ -69,8 +82,9 @@ first PR, the first code outside this repository that imports `ext`.
     `host`, where its members run) and an integration's (the file an
     adapter installs into).
 12. Execution behind one seam: this item is that seam. After it every
-    process of a session or of a managed run's trees starts through one
-    Runtime, and every attempt and evidence row in the ledger says which.
+    process of a session or of a managed run's trees starts through an
+    `ext.Runtime` (a managed run's all through one), and every attempt and
+    evidence row in the ledger says which.
 
 ## Why and what happens
 
@@ -97,11 +111,17 @@ After this item:
 
 - `ext.Runtime` is the one interface behind all three: a terminal process
   (`Start`), a bounded command (`Run`), a service (`Serve`), one try of a
-  probe (`Probe`), a port (`Port`), and its name (`Where`). `ext/local`'s
-  native Runtime is `main`'s code.
-- The composition root (`runServe`, `runHost`) asks the registry for a
-  Runtime once and gives the server (its sessions and, through it, the
-  engine) and `conductor host` the one it finds, or the native one.
+  probe (`Probe`), a port (`Port`), whether it runs a managed run
+  (`Takes`), and its names (C1's `Name`, and `Where`). `ext/local`'s
+  native Runtime is `main`'s code and takes every run.
+- The composition root (`runServe`) hands the server C1's filled set
+  (`local.Fill`), whose Runtime is the registered one or the native one.
+  The server and its engine start every process through a Runtime: a
+  managed run's (its attempts, their sessions, trees and checks, and its
+  prerequisites) through the set's Runtime when it takes the run, and
+  everything else, and every run it declines, through the native one.
+  `conductor host` starts its command through the native Runtime, since a
+  host runs no managed run.
 - The ledger's attempts, checks (a task's checks and a manifest's steps
   share the table) and prerequisites rows say where they ran (`where_ran`,
   schema version 6); the task read, the steps route and the prerequisites
@@ -130,32 +150,35 @@ so.
 
 ### `ext`: the Runtime's contract
 
-C1 declares the eight interfaces (the Program, section 2.4, item C1); this
-plan specifies the Runtime's members, since C10 is the item that calls
-them. If C1 ships a narrower Runtime, PR-1 completes it as written here:
-nothing outside this repository implements `ext` before P0, so the change
-costs no one (decision RT13). The types are `ext`'s own, with no alias to an
-internal type. They are in-process Go types (a writer, a callback, an open
-directory), not wire DTOs: no hosted service implements a Runtime.
+C1 declares the Runtime's slot (`docs/plans/ext.md`, "`ext`: the eight
+interfaces and their records", Runtime, and its decision E4): `type
+Runtime interface { Provider; Where() Where }`, `type Where string`,
+`WhereNative Where = "native"` and `Where.Valid` (1 to 32 of a-z, 0-9 and
+'-', beginning with a letter), with `RegisterRuntime`,
+`RuntimeProvider()`, `Providers.Runtime` and `Freeze()` in its registry.
+It leaves the methods and the native default to this item, before
+anything implements it; PR-1 adds them to that declaration and keeps every
+name C1 gives (decision RT13). The types are `ext`'s own, with no alias to
+an internal type. They are in-process Go types (a writer, a callback, an
+open directory), not wire DTOs: no hosted service implements a Runtime.
 
 ```go
-// Where names the runtime a process ran in, as the ledger records it:
-// ^[a-z][a-z0-9-]{0,31}$. Native is the free default's.
-type Where string
-
-const Native Where = "native"
-
 // Runtime is where the processes of Conductor's sessions and of a managed
-// run's trees run: native processes on this machine, as the user, unless a
-// provider is registered.
+// run's trees run: native processes on this machine, as the user, unless
+// a registered Runtime takes the managed run.
 type Runtime interface {
+	Provider // Name, as C1 declares it
 	Where() Where
+	Takes(ref ProcessRef) bool
 	Start(ctx context.Context, s TerminalSpec) (Terminal, error)
 	Run(ctx context.Context, s CommandSpec) CommandResult
 	Serve(ctx context.Context, s CommandSpec) (ServiceProcess, error)
 	Probe(ctx context.Context, s ProbeSpec) (status int, err error)
 	Port(ctx context.Context, ref ProcessRef) (int, error)
 }
+
+// TakesWait is the most the server waits for Takes (C1's guard).
+const TakesWait = 100 * time.Millisecond
 ```
 
 - `ProcessRef{Session, Run, Task string; Attempt int; Tree string}`: what a
@@ -192,38 +215,67 @@ type Runtime interface {
   no redirect followed, as #441's `probeURL` makes it.
 
 Each method's doc states the contract, which is what the native one does:
-`Start` starts the process in `DirFile`'s directory with exactly `Env` on
-a terminal of `Cols` by `Rows`, `ctx` bounding the start, not the
-process's life; `Run` and `Serve` keep `proc`'s semantics (argv, never a
-shell; a timeout `Run` requires, at most `proc.MaxTimeout`; the output's
-head and tail; the log within `LogLimit`; `Started` once the process exists
-and before its output is read; what the command left in its process group
+`Takes` answers from the ref alone, with no I/O and no wait, whether this
+Runtime runs the managed run the ref names (`{Run}`), and is asked once
+for a run, when the run is made or continued (a provider that cannot run
+now, its machine's KVM gone, declines, and the run runs natively); `Start`
+starts the process in `DirFile`'s directory with exactly `Env` on a
+terminal of `Cols` by `Rows`, `ctx` bounding the start, not the process's
+life; `Run` and `Serve` keep `proc`'s semantics (argv, never a shell; a
+timeout `Run` requires, at most `proc.MaxTimeout`; the output's head and
+tail; the log within `LogLimit`; `Started` once the process exists and
+before its output is read; what the command left in its process group
 ended with it); `Probe` tries once from where the tree's services listen;
-`Port` gives a number free there; `Where` is constant for the Runtime's
-life. A Runtime receives a session's environment whole, its agent token
-among it (the address-based path of constraint 4), and logs and keeps none
-of it.
+`Port` gives a number free there; `Name` and `Where` are constant for the
+Runtime's life. A Runtime receives a session's environment whole, its
+agent token among it (the address-based path of constraint 4), and logs
+and keeps none of it.
 
-The registry holds one Runtime (section 2.4), read once by the composition
-root before `ext.Freeze()`. The Program writes the getter as `ext.X()`; Go
-cannot give a function the name of a type in the same package, so C1 names
-it, and this plan says "the registry's Runtime".
+The registry holds one Runtime (section 2.4), read once by the
+composition root through C1's `Freeze()` and `local.Fill`. PR-1 adds two
+panics to `RegisterRuntime`'s (C1's: nil, a name `ValidName` refuses, a
+second Runtime, after `Freeze`): a `Where` that `Where.Valid` refuses, and
+a `Where` of `WhereNative`, which only the free default reports, so a
+`native` row always means the native code ran it. `local.Fill` stays the
+one place that asks whether a Runtime is registered (C1's decision E7);
+nothing in this item asks again.
 
 ### `ext/local`: the native Runtime
 
-`local.Native()` (C1 names the defaults; this is the Runtime's): `Where`
-native; `Start` is `pty.Start`, its `*pty.Process` wrapped (`Exit`'s error
+`local.Native()` (`ext/local/runtime.go`): `Name` `local`, as C1's
+defaults are named; `Where` `ext.WhereNative`; `Takes` true for every
+ref; `Start` is `pty.Start`, its `*pty.Process` wrapped (`Exit`'s error
 as words, `Process` from `PID()` with the group the same number, as
 `creack/pty`'s setsid makes it, and the time `Start` returned); `Run` is
 `proc.Run` with `Spec.Environ`; `Serve` is `proc.Serve` likewise; `Probe`
-is `proc.Probe`; `Port` is `proc.FreePort`. `internal/api`,
-`internal/crew` and `internal/hostagent` take their default from it, so
-`ext/local` must import nothing that imports one of them (Go would refuse
-the cycle); its Runtime needs `ext`, `internal/pty` and `internal/proc`
-alone. Should one of C1's other defaults need such a package, the native
-Runtime moves to a package of its own under `ext/local` (decision RT13).
-Go's internal rule lets `ext/local` import `internal/…`; another module
-imports `ext/local`, never `internal/…`.
+is `proc.Probe`; `Port` is `proc.FreePort`. PR-1 adds it to `local.Fill`,
+which puts it in the Runtime slot when nothing is registered, as C1's
+`Fill` does for the other slots. `internal/api`, `internal/crew` and
+`internal/hostagent` take the native Runtime from it, so `ext/local` must
+import nothing that imports one of them (Go would refuse the cycle); the
+native Runtime needs `ext`, `internal/pty` and `internal/proc` alone, and
+neither of those two imports `ext` or any of the three (`internal/proc`
+imports `internal/pty`, which imports `creack/pty` and the standard
+library). Go's internal rule lets `ext/local` import `internal/…`;
+another module imports `ext/local`, never `internal/…`.
+
+C1's lint (`docs/plans/ext.md`, "The lint: `internal/opencore`") has an
+`ext-std` rule: a file under `ext/` that imports anything but the
+standard library and `ext/` fails `make lint`. The native Runtime cannot
+be written in the standard library (a terminal is `creack/pty`, through
+`internal/pty`), and the Program puts every free default in `ext/local`
+(section 2.4), so PR-1 amends the rule rather than move the default
+outside it: a file of `ext/local` may also import `internal/pty` and
+`internal/proc`, those two and no other package of this module or any
+other module, while `ext` and `ext/exttest` keep C1's rule unchanged, so
+the public interface package, the one the cloud repository takes its
+records from, stays the standard library's alone. PR-1 adds the plants
+that hold the amendment to `TestEachRuleCatchesItsPlant`: a file of
+`ext/local` importing `internal/session` and a file of `ext` importing
+`internal/pty`, each still reported, and a file of `ext/local` importing
+the two runners, reported nothing. `docs/repository-map.md`'s package
+table (C1's "May import" column) says so for `ext/local` (decision
+RT13).
 
 ### `internal/proc`
 
@@ -255,7 +307,8 @@ imports `ext/local`, never `internal/…`.
   server and the host hand the `Terminal` to it and keep no other handle,
   so no second raw write path appears (the Program, section 1.5).
 - `sessiontest.FakeRuntime`: the contract's fake for every package's tests.
-  Its `Where` is its own (`fake` unless set); it records every call with its
+  Its `Where` is its own (`fake` unless set) and its `Takes` true unless
+  set; it records every call with its
   spec and ref; each method answers as the test sets it (a `FakeProc`-backed
   `Terminal`, a scripted result, maps for `Probe` and `Port`) or, with
   `Base` set, passes the call to it (`local.Native()`), so a run's real
@@ -276,18 +329,32 @@ imports `ext/local`, never `internal/…`.
   a check, `runStep` for a step or a prerequisite, the service's start and
   its probe, `resolveTree`'s port draw).
 - `Engine.SetRuntime(rt ext.Runtime) error`, beside `SetCheckConcurrency`
-  and `SetEnvPassthrough` and set like them before the first launch: it
-  refuses nil, a `Where` that is not a name, and any call once the engine
-  has launched a run. It writes the executor and `where` under `e.mu`; the
-  first launch, which starts every goroutine that reads them, comes after.
-  `NewEngine` starts with `local.Native()`, so every engine test runs its
-  checks and steps through the adapter, as production does.
-- An attempt's `where` is set where the attempt is made, from the engine's
-  Runtime (`task.go:1148` in the pump; `continue.go:632` for a candidate
-  verified again), and never changed. `attemptRow` (`task.go:1320`) writes
-  it, and so does every receipt of the attempt (`verify.go:158` for a
-  check, `steps.go:654` for a step); a prerequisite's row (`steps.go:828`)
-  takes the engine's.
+  and `SetEnvPassthrough` and set like them before the first launch: the
+  Runtime the engine offers its managed runs. It refuses nil, a `Where`
+  that `Where.Valid` refuses, and any call once the engine has launched a
+  run, a continued one included. It writes it under `e.mu`; the first
+  launch, which starts every goroutine that reads it, comes after.
+  `NewEngine` starts with `local.Native()` offered, so every engine test
+  runs its checks and steps through the adapter, as production does. The
+  engine keeps `local.Native()` beside it, for what no offered Runtime
+  takes.
+- A managed run's Runtime is chosen when the run is made (`Engine.Launch`,
+  `run.go:563`, and the launches beside it) or continued (`ContinueRun`,
+  `continue.go:95`), before the run takes `e.mu`: the offered Runtime when
+  its `Takes` answers true for the run's ref `{Run}`, the native one
+  otherwise. It is fixed for the run's life in that engine, and every
+  process of the run goes through it: its prerequisites, its attempts'
+  sessions (`LaunchSpec.Where`, below), their trees' setup steps, services,
+  probes and ports, and their checks. A legacy crew's run is offered
+  nothing, and its members start natively.
+- An attempt's `where` is its run's Runtime's `Where`, set where the
+  attempt is made (`task.go:1148` in the pump; `continue.go:632` for a
+  candidate verified again) and never changed. `attemptRow`
+  (`task.go:1320`) writes it, and so does every receipt of the attempt
+  (`verify.go:158` for a check, `steps.go:654` for a step); a
+  prerequisite's row (`steps.go:828`) takes the run's.
+- `LaunchSpec.Where ext.Where`: the attempt's, which the Launcher starts
+  the session in; empty for a legacy member, started natively.
 - `AttemptState.Where` (`json:"where,omitempty"`: a run record saved before
   this item has none) and `StepState.Where` (`json:"where"`), filled by
   `attemptStateOf`, `attemptStateOfRow` (`continue.go:908`), `StepStates`
@@ -307,30 +374,63 @@ ALTER TABLE prerequisites ADD COLUMN where_ran TEXT NOT NULL DEFAULT 'native'
 ```
 
 The `schema` a new database is made with has the same three columns,
-default included, so a migrated database and a new one are alike. The
-column is `where_ran` because `WHERE` is a keyword, as `pgroup`,
-`commit_id` and `from_member` are the ledger's names for theirs; the Go
-fields are `AttemptRow.Where`, `CheckRow.Where` and `PrerequisiteRow.Where`
-(decision RT2). `PutAttempt`, `PutCheck` and `PutPrerequisite` write it and
-refuse a row with none (`ErrNoWhere`) or one past 32 bytes (`ErrTooLarge`)
-(decision RT5); `Attempts`, `checkCols` and `prerequisiteCols` read it.
-`WhereNative = "native"` is the ledger's constant. `Recover`, `Prune`,
-`Events` and the trees table are unchanged.
+default included, so a migrated database and a new one are alike. A
+migration's statements are history and never change with the schema:
+`prerequisitesTable` is today both `schema`'s definition and migration
+4's (`internal/crew/ledger/ledger.go:71`, `:104`, `:668`), so adding the
+column to it would give a version 4 database `where_ran` on its way to 5
+and then fail its step to 6 on a duplicate column, undoing the upgrade.
+PR-4 freezes today's text as `prerequisitesTableV5`, which migration 4
+keeps, and gives `schema` a definition of its own with the column
+(decision RT4). The column is `where_ran` because `WHERE` is a keyword,
+as `pgroup`, `commit_id` and `from_member` are the ledger's names for
+theirs; the Go fields are `AttemptRow.Where`, `CheckRow.Where` and
+`PrerequisiteRow.Where` (decision RT2). `PutAttempt`, `PutCheck` and
+`PutPrerequisite` write it and refuse a row with none (`ErrNoWhere`) or
+one past 32 bytes (`ErrTooLarge`) (decision RT5). `WhereNative =
+"native"` is the ledger's constant. `Recover`, `Prune`, `Events` and the
+trees table are unchanged.
+
+Reads do not assume the migration ran. A version 5 database stays one
+when its migration fails (opened read-only, with why) and while a new
+server waits for the owner lock the server it replaces still holds
+(`attach` opens it read-only and unmigrated, `ledger.go:253`, and
+`awaitLock` migrates it once the lock is let go). The ledger keeps the
+version of the database it opened (`schema_version`, read at `attach`
+under `mu`, read again after a migration), and `Attempts`, `checkCols`
+and `prerequisiteCols` (`transition.go:565`, made functions of the
+version) read `where_ran` at version 6 and the literal `'native'` in its
+place below it. A read of such a database answers as before, every row
+`native`, and writes nothing.
 
 ### `internal/api`
 
-- `Server` keeps its Runtime (`local.Native()` from `New`), under `s.mu`.
-  `SetRuntime(rt) error` sets it and the engine's (`Engine.SetRuntime`) and
-  refuses once the server has started a session of its own (a hosted one
-  runs on its host) or the engine a run; `Runtime()` reads it.
-- `createLocalSession(ctx, req, crewRef)` starts the process through the
-  Runtime's `Start` instead of `pty.Start`, with the `ProcessRef` its
-  `crewRef` gives; a refused start is `502 start_failed` as today. The
-  "session started" log line keeps its `pid`, from `Terminal.Process()`
-  (`sessions.go:375`). Its three callers pass their context: the request's
-  (`handleCreateSession`, the resume at `resume.go:173`) and `Launch`'s
-  own (a crew launch's, bounded by `runTimeout`, or an attempt's, which
-  ends with the attempt).
+- `Server` keeps two Runtimes under `s.mu`: the native one
+  (`local.Native()`, from `New`) and the one its engine offers managed
+  runs, set by C1's `UseExtensions(p)` from `p.Runtime` (the registered
+  one, or the native one `local.Fill` put in the empty slot).
+  `UseExtensions` wraps it in C1's guard, as it wraps every provider:
+  `Takes` goes through `extCall` within `ext.TakesWait`, its fallback
+  false, so a late, failing or panicking answer runs the run natively; a
+  process method has no wait and no fallback (a process that started is
+  not answered for by a default), but a panic in one is recovered and
+  answered as a refused start, or as a command's result with `Exit` -1 and
+  the words. `UseExtensions` then calls `Engine.SetRuntime` with the
+  wrapped Runtime; it runs once, before the listeners serve and before the
+  engine launches or continues a run (C1's order, `serve.go:173`), and
+  `Engine.SetRuntime`'s refusal after a launch makes a later call an error.
+- `createLocalSession(ctx, req, crewRef, where)` starts the process
+  through a Runtime's `Start` instead of `pty.Start`: the offered one when
+  `where` is its `Where` (an attempt of a run it took), the native one when
+  `where` is empty or `native` (a person's session, a resume, a legacy
+  crew member, an attempt of a run it declined); a `where` that is neither
+  is refused. The `ProcessRef` is the one its `crewRef` gives; a refused
+  start is `502 start_failed` as today. The "session started" log line
+  keeps its `pid`, from `Terminal.Process()` (`sessions.go:375`). Its
+  three callers pass their context and their `where`: the request's
+  (`handleCreateSession`, the resume at `resume.go:173`, both empty) and
+  `Launch`'s own (a crew launch's, bounded by `runTimeout`, or an
+  attempt's, which ends with the attempt; `LaunchSpec.Where`).
 - No route is added or changed: the task read, the steps route and the
   prerequisites route report `where` through `crew`'s types.
 
@@ -345,16 +445,13 @@ written at `:279` and read nowhere) is dropped rather than made a
 
 ### `internal/cli`
 
-- `pickRuntime(rt ext.Runtime, ok bool) (ext.Runtime, error)`: the
-  registry's answer in, the Runtime out (the registered one, or
-  `local.Native()` when there is none), refusing one whose `where` is not a
-  name with the words naming it; a function of its arguments, so its tests
-  touch no global registry.
-- `runServe`: where C1's composition root reads the registry, it reads the
-  Runtime too and passes it through `pickRuntime`, then calls
-  `srv.SetRuntime` right after `api.New` (`serve.go:173`), before any
-  listener is bound; an error stops the server with its words.
-- `runHost`: the same, into `Options.Runtime` (`host.go:147`).
+- `runServe`: nothing beyond C1's `srv.UseExtensions(local.Fill(
+  extensions()))` (`docs/plans/ext.md`, "The composition root"), which now
+  carries the Runtime; a plain build's line at start stays as C1 has it.
+- `runHost`: C1's `extensions()` closes the registry there; the host's
+  `Options.Runtime` is left nil, the native one, whatever is registered,
+  since a host runs no managed run and a hosted session is a person's
+  (decision RT7).
 
 ### `web`
 
@@ -371,18 +468,38 @@ makes constraints 1, 2 and 5 of the Program's section 2.5 a failing test
 worktrees under `.claude/` among them) and every directory with a `go.mod`
 of its own, parses each non-test Go file whatever its build tags
 (`go/parser`, the imports matched by path whatever their local names) and
-fails, naming the file, the line, the call and article 12, on a call of
-`os/exec`'s `Command` or `CommandContext`, `os.StartProcess`,
-`os.FindProcess`, `syscall`'s `ForkExec`, `Exec` or `Kill`,
-`golang.org/x/sys/unix`'s `Kill`, or `Kill` or `Signal` called on a
-selector ending in `.Process` (`cmd.Process.Kill()`), outside the packages
-that do so today: `internal/pty` (sessions), `internal/proc` (checks,
-steps, services), `internal/gitcli` (git, and `gitclitest`),
-`internal/nvim` (the editor), `internal/agents` (the identity probe),
-`internal/reach` (the gateway lookup on darwin) and `internal/cli/up.go`
-(opening the browser). `exec.LookPath` is allowed anywhere. `main` passes it as it stands; a new site is a reviewed edit of
-the allowlist. A second case runs the walker over a planted file in a
-temporary tree and expects the report.
+fails, naming the file, the line, the call and article 12, on two kinds of
+site:
+
+- A raw start or signal: a call of `os/exec`'s `Command` or
+  `CommandContext`, `os.StartProcess`, `os.FindProcess`, `syscall`'s
+  `ForkExec`, `Exec` or `Kill`, `golang.org/x/sys/unix`'s `Kill`, or
+  `Kill` or `Signal` called on a selector ending in `.Process`
+  (`cmd.Process.Kill()`), outside the packages that do so today:
+  `internal/pty` (sessions), `internal/proc` (checks, steps, services),
+  `internal/gitcli` (git, and `gitclitest`), `internal/nvim` (the editor),
+  `internal/agents` (the identity probe), `internal/reach` (the gateway
+  lookup on darwin) and `internal/cli/up.go` (opening the browser).
+  `exec.LookPath` is allowed anywhere.
+- A runner the Runtime wraps, used past it: `internal/pty`'s `Start` and
+  `internal/proc`'s `Run` and `Serve`, called or taken as a value (`run:
+  proc.Run` is a use), outside `ext/local` (the native Runtime) and the
+  two runners' own packages. On `main` three files use them
+  (`internal/api/sessions.go:308`, `internal/hostagent/agent.go:237` and
+  `internal/crew/steps.go:185`; #441 adds `proc.Serve`'s in
+  `internal/crew`). PR-1's allowlist names the files that use them when it
+  is cut; PR-2 removes `internal/crew`'s as it removes `nativeExec`, and
+  PR-3 the other two as sessions start through the Runtime, so from PR-3 on
+  the allowlist is `ext/local` and the runners alone, and a session or a
+  command that bypasses the Runtime fails the test.
+
+`main` passes it as it stands, under PR-1's allowlist; a new site is a
+reviewed edit of the allowlist. Planted cases run the walker over files in
+a temporary tree and expect each report: an `exec.Command` under
+`internal/api`, a `pty.Start` under `internal/api`, a `proc.Run` under
+`internal/crew`, a `proc.Serve` taken as a value under
+`internal/hostagent`; and a file of `ext/local` using all three runners,
+reported nothing.
 
 ### Docs
 
@@ -417,21 +534,25 @@ they are. No event kind is added and no payload changes: the rows carry
 
 What is written before what:
 
-1. The Runtime is set before the first launch: `runServe` calls
-   `SetRuntime` before a listener is bound, and `Engine.SetRuntime` and
-   `Server.SetRuntime` refuse once a run or a session has started, so a
-   server's sessions and its engine's trees always run in one Runtime.
-2. An attempt's `where` is in memory from the moment the attempt is made
+1. The Runtime a server's engine offers is set before the first launch:
+   `UseExtensions` calls `Engine.SetRuntime` before a listener serves and
+   before a run is launched or continued, and `Engine.SetRuntime` refuses
+   once a run has launched, so every managed run of a server is offered
+   the same Runtime.
+2. A managed run's Runtime is chosen once, when the run is made or
+   continued, before any attempt or prerequisite of it exists; every other
+   session starts in the native one.
+3. An attempt's `where` is in memory from the moment the attempt is made
    and is first written in its reservation's transaction (`attempt.reserved`,
    `task.go`), before its worktree, its session or any process of it exists,
    as every row of the attempt is today.
-3. A receipt carries its `where` from its first row (`check.started`,
+4. A receipt carries its `where` from its first row (`check.started`,
    `step.started`), committed before its process starts, and keeps it
    through its running and finished rows.
-4. Nothing rewrites a `where`: `Recover` concludes states and leaves it; a
+5. Nothing rewrites a `where`: `Recover` concludes states and leaves it; a
    continuation's new attempts (a candidate verified again among them) take
-   the `where` of the engine that makes them; an imported result keeps its
-   source run's rows.
+   the `where` of the Runtime the continued run was given; an imported
+   result keeps its source run's rows.
 
 What the ledger holds after the change: `where_ran`, NOT NULL, at most 32
 bytes, on every attempts, checks and prerequisites row. The trees table is
@@ -441,26 +562,32 @@ unchanged: a tree's lifecycle row is its attempt's, whose `where` covers it
 The migration, version 5 to 6: three `ADD COLUMN` statements with
 `DEFAULT 'native'` in `migrate`'s one transaction with the version's
 update, or nothing; one that fails leaves the database at version 5,
-opened read-only with why, as every migration does today. It is
-conservative in the owner's sense of the version 3 to 4 migration (claim
-nothing the rows cannot support; decision RT4): before this item nothing
-could run a process of a session or a run but the native code, so `native`
-is what happened to every row a version 5 database holds, not a guess. It
-says `native` of an attempt that never started a process (reserved, then
-uncertain or failed before its launch), which the column means as the
-runtime the engine dispatched it to. A version 6 database opened by an
-older Conductor opens read-only (`ledger.go`, a later version), and that
-Conductor's readers name their columns, so it reads the rows and never
-writes one without `where`.
+opened read-only with why, as every migration does today, and read
+through the version-5 columns (`internal/crew/ledger`, above), so its runs
+can still be inspected. Migration 4 creates the prerequisites table from
+its frozen version-5 text, so a database of any earlier version reaches 6
+through every step. It is conservative in the owner's sense of the version
+3 to 4 migration (claim nothing the rows cannot support; decision RT4):
+before this item nothing could run a process of a session or a run but the
+native code, so `native` is what happened to every row a version 5
+database holds, not a guess. It says `native` of an attempt that never
+started a process (reserved, then uncertain or failed before its launch),
+which the column means as the runtime the engine dispatched it to. A
+version 6 database opened by an older Conductor opens read-only
+(`ledger.go`, a later version), and that Conductor's readers name their
+columns, so it reads the rows and never writes one without `where`.
 
 Invariants, each held by a test (Tests per surface):
 
 - I1. Every attempts, checks and prerequisites row has a `where`: the
   ledger refuses one without; the crew tests' fake ledger refuses it too, so
   every engine test checks it.
-- I2. An attempt's receipts have the attempt's `where`.
-- I3. A server's sessions and its engine's trees use one Runtime, set once
-  before the first launch.
+- I2. An attempt's receipts have the attempt's `where`, and a run's
+  attempts and prerequisites the run's.
+- I3. A managed run's processes (its prerequisites, its attempts'
+  sessions, trees and checks) run in one Runtime, chosen once when the run
+  is made or continued; every other process of a server or a host runs in
+  the native one.
 - I4. Every refusal, environment, exit code and log line a native start or
   run gives is `main`'s, byte for byte.
 
@@ -490,9 +617,13 @@ of the rows.
   asking the Runtime instead of the server's machine.
 - Managed runs on a host: `Crew.Launchable` refuses a crew whose `where` is
   `host` (`internal/crew/crew.go:599`), unchanged.
-- `GET /api/capabilities` naming a registered Runtime, and `ext/exttest`'s
-  public fake and contract suite: item C9 (decision RT14). `ext.Host`: item
-  C1.
+- Offering a registered Runtime a session that is not a managed run's: a
+  person's, a resume, a legacy crew member's, a hosted one (item F's first
+  surface is `conductor host`). Item F proposes it, with how a person
+  chooses it (decision RT7).
+- `GET /api/capabilities` naming a registered Runtime: item C9, whose route
+  lists `ext.Registered()`, the Runtime's kind among them. `ext.Host`:
+  item C1.
 - Showing `where` in the web app: DS2's evidence view, then item F.
 - Open decisions O9 (where Boxcar's code lives; item F answers it), O12
   (the names `ext` and `app`; item C1) and O16 (paid features' UI; not
@@ -510,15 +641,21 @@ browser suite is evidence of no behaviour change. The Mac's row
 (`python3 scripts/preflight.py --machines mac --only go-test-race`, under
 the preflight lock) runs on every PR, since Darwin's PTY start (by path)
 and exit watch (kqueue) are not Linux's and CI's race tests run on Linux
-alone. No Python script changes, so the scripts suite is not affected. Each
-PR carries a test that a plain build registers no Runtime and runs natively,
-and every engine, session and host test it touches runs on the native
-default. The tests wait on the mechanism, never the clock (AGENTS.md,
-"Tests that do not flake"): a process's `Done`, a row the ledger holds, a
-call the fake recorded.
+alone. No Python script changes, so the scripts suite is not affected. A
+package's tests cannot see a plain build's registry (a test binary runs
+only its own imports' `init`s), so the plain-build test is C1's
+`TestPlainBuildRegistersNothing` in `cmd/conductor`, whose binary links
+everything `main` links; every PR runs it in `go test ./...`, and PR-1
+extends it to the Runtime slot (below). Every engine, session and host
+test a PR touches runs on the native default. The tests wait on the
+mechanism, never the clock (AGENTS.md, "Tests that do not flake"): a
+process's `Done`, a row the ledger holds, a call the fake recorded.
 
 Go, by package, the tests the PRs add:
 
+- `ext` (PR-1): `TestRegisterRuntimeRefusesItsWhere` (a `Where`
+  `Where.Valid` refuses and `WhereNative` each panic, naming the slot, as
+  C1's other refusals do).
 - `ext/local` (PR-1): `TestNativeStartsATerminalInItsFolder` (the folder
   renamed after it was opened, the process's working directory still it on
   Linux, as `internal/pty`'s start tests have it; output, input, resize, exit
@@ -526,9 +663,15 @@ Go, by package, the tests the PRs add:
   `TestNativeRunIsProcRun` (exit, signal, head and tail, a log within its
   limit, `Started` before the output, a timeout told from a cancel),
   `TestNativeServeStartsAndStops`, `TestNativeProbeAndPortAreProcs` (the
-  native's `Probe` and `Port` answer as `proc`'s), `TestAPlainBuildRegistersNoRuntime`
-  (the registry's Runtime is empty; `Native().Where()` is `ext.Native`),
-  `TestOnlyTheRunnersStartOrSignalAProcess` with its planted case.
+  native's `Probe` and `Port` answer as `proc`'s), `TestNativeTakesEveryRun`,
+  `TestFillGivesTheNativeRuntime` (an empty set filled: `Name` `local`,
+  `Where` `ext.WhereNative`; a set holding a fake keeps it),
+  `TestOnlyTheRunnersStartOrSignalAProcess` with its planted cases.
+- `cmd/conductor` (PR-1): C1's `TestPlainBuildRegistersNothing` gains the
+  Runtime slot: `ext.RuntimeProvider()` answers false and
+  `local.Fill(ext.Freeze()).Runtime` is the native one.
+- `internal/opencore` (PR-1): `TestEachRuleCatchesItsPlant` with the
+  `ext-std` amendment's three plants (`ext/local`, above).
 - `internal/proc` (PR-1): `TestPrepareRefusesAsRunDoes` (for each refusal,
   `Prepare`'s words are the `Result.Err` `Run` gives the same spec, in
   `bounds`' order), `TestRunWithEnvironGivesExactlyIt` (the command prints
@@ -543,23 +686,29 @@ Go, by package, the tests the PRs add:
   `RuntimeProcess`).
 - `internal/crew` (PR-2): `TestEveryProcessOfARunGoesThroughTheRuntime` (a
   crew whose manifest has a prerequisite, a setup step, a service with a
-  ready probe and a port, and a task with a check: the fake records each
-  call with its ref, the prerequisite's `{Run}`, the worktree's setup
+  ready probe and a port, and a task with a check, under an offered fake
+  that takes it: the fake records `Takes` once with `{Run}`, and each call
+  with its ref, the prerequisite's `{Run}`, the worktree's setup
   `{Run, Task, Attempt, Tree: worktree}`, the checkout's setup and the check
-  `{…, Tree: checkout}`), `TestAResultCrossesTheRuntimeWhole` (every
+  `{…, Tree: checkout}`), `TestADeclinedRunRunsNatively` (the offered fake
+  declines: it records `Takes` and nothing else, and the run ends as it
+  does natively), `TestALegacyRunIsOfferedNothing`,
+  `TestAResultCrossesTheRuntimeWhole` (every
   exported field of `proc.Result` has its `CommandResult` field, by
   reflection, and a scripted result lands in the check's row unchanged),
   `TestARefusedSpecKeepsItsWords` (the executor's `run`, given a spec
   `Prepare` refuses, an `Inject` name that is not Conductor's, answers
   `main`'s result, `Exit` -1 and the same words, and never calls the
   Runtime), `TestSetRuntimeRefusals`
-  (nil, a nameless `where`, after a launch), `TestAnEngineRunsNativelyByDefault`;
-  the existing tests' executor hooks take the ref, unchanged otherwise.
+  (nil, a `where` `Where.Valid` refuses, after a launch),
+  `TestAnEngineRunsNativelyByDefault`; the existing tests' executor hooks
+  take the ref, unchanged otherwise.
   (PR-4) `TestAnAttemptAndItsChecksReportTheSameWhere` (with the fake
-  Runtime, every attempts, checks and prerequisites row and every
-  `AttemptState` and `StepState` say `fake`; with the native, `native`),
-  `TestAContinuationsAttemptsTakeTheirEnginesWhere` (a run continued by an
-  engine with another Runtime: the old rows keep theirs, the new attempts
+  Runtime taking the run, every attempts, checks and prerequisites row and
+  every `AttemptState` and `StepState` say `fake`; declined, or with the
+  native, `native`),
+  `TestAContinuationsAttemptsTakeTheirRunsNewWhere` (a run continued by an
+  engine offered another Runtime: the old rows keep theirs, the new attempts
   and the candidate verified again take the new), `TestARecordWithoutWhereReadsWithout`
   (a run record saved before PR-4: no `where` on its attempts; the task read
   from the ledger says `native`); the fake ledger refuses a row with no
@@ -571,33 +720,58 @@ Go, by package, the tests the PRs add:
   `TestAVersion4DatabaseIsBroughtToVersion5` and
   `TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites` reach
   `Version` with `version6Added` added to their fixtures (the former's
-  `Version != 5` reads `Version`); `TestARowWithNoWhereIsRefused` (each of
+  `Version != 5` reads `Version`), and so does every other downgrade
+  fixture, `asVersion3` (`backfill_test.go:58` and its twin at `:315`) and
+  `ledger_test.go:827`'s among them, each dropping the version-6 columns
+  before it replays a migration; `TestAVersion4DatabaseGainsWhereOnce` (a
+  version 4 database reaches 6 through migration 4's frozen prerequisites
+  table: one `where_ran` column, no duplicate, every row `native`);
+  `TestAVersion5LedgerThatCannotMigrateIsRead` (the step to 6 made to fail
+  through a seam of the tests, as `takeLock` is one: read-only at version
+  5, why given, `Attempts` and the checks and prerequisites reads answer,
+  each row `native`, nothing written);
+  `TestAnUpgradeBesideThePreviousOwnerReads` (the owner lock held by
+  another: the version 5 database opened read-only and unmigrated, its
+  reads answer `native`; the lock let go: migrated to 6, the reads read the
+  column); `TestARowWithNoWhereIsRefused` (each of
   the three puts: empty refused with `ErrNoWhere`, 33 bytes with
   `ErrTooLarge`, the transaction undone); `TestARowKeepsItsWhere`;
-  `TestWhereNativeIsExtNative`. The rows the ledger's tests and the crew
+  `TestWhereNativeIsExtNative` (the ledger's constant is
+  `ext.WhereNative`'s text). The rows the ledger's tests and the crew
   tests that seed a ledger build by hand (about 40 literals) gain `Where:
   WhereNative`.
-- `internal/api` (PR-3): `TestASessionStartsThroughTheRuntime` (`POST
-  /api/sessions` with the fake: the argv, the directory, the folder, the
-  environment's names with no `CONDUCTOR_` from the server's own beside
-  Conductor's, the size, `{Session}`), `TestACrewMemberAndAnAttemptStartThroughTheRuntime`,
-  `TestAResumeStartsThroughTheRuntime`, `TestARefusedStartIsStartFailed`
-  (`502 start_failed`, nothing registered), `TestSetRuntimeReachesTheEngine`
-  (an attempt's session and its check in the same fake),
-  `TestSetRuntimeIsRefusedOnceASessionStarted`, `TestAPlainServerStartsNatively`.
+- `internal/api` (PR-3): `TestASessionStartsThroughTheNativeRuntime` (`POST
+  /api/sessions`, the server's native Runtime replaced by a fake through a
+  test seam: the argv, the directory, the folder, the environment's names
+  with no `CONDUCTOR_` from the server's own beside Conductor's, the size,
+  `{Session}`), `TestAPersonsSessionIsNotOffered` (a fake offered: a
+  person's session, a resume and a legacy crew member start natively, the
+  fake asked nothing), `TestAnAttemptStartsInItsRunsRuntime` (an attempt
+  of a run the fake took starts in it; of a run it declined, natively),
+  `TestARefusedStartIsStartFailed` (`502 start_failed`, nothing
+  registered), `TestUseExtensionsOffersTheEngineTheRuntime` (an attempt's
+  session and its check in the same fake), `TestATakesThatPanicsOrStallsRunsNatively`
+  (the guard: a panic, and an answer past `ext.TakesWait`, each run the run
+  natively, logged as C1's guard logs), `TestAServerWithNothingRegisteredStartsNatively`.
   (PR-4) `TestAnAttemptAndItsChecksRanWhereTheyReport` (a managed run of the
   stub worker on a real ledger under a `FakeRuntime` with `Base` native and
-  `where` `fake`: the fake recorded the attempt's `Start` and its check's
-  `Run`, and the task read's attempts and steps, the steps route and the
-  prerequisites route say `fake`), `TestTheTaskReadReportsWhere` (the same
-  run in a plain build: `native`), `TestAPlainBuildsRowsSayNative`.
+  `where` `fake`, taking the run: the fake recorded the attempt's `Start`
+  and its check's `Run`, and the task read's attempts and steps, the steps
+  route and the prerequisites route say `fake`), `TestTheTaskReadReportsWhere`
+  (the same run with nothing registered: `native`),
+  `TestADeclinedRunsRowsSayNative`.
 - `internal/hostagent` (PR-3): `TestAHostStartsThroughTheRuntime` (the
   fake's spec: argv, directory, environment, `{Session}` the registered id;
   the exit code from its terminal), `TestAHostWithNoRuntimeRunsNatively`.
-- `internal/cli` (PR-3): `TestPickRuntime` (none registered: the native;
-  one registered: it; a `where` that is not a name: refused with its
-  words), `TestAPlainBuildPicksTheNativeRuntime` (the registry's Runtime
-  empty, so `runServe` and `runHost` pass the native one on).
+- `internal/cli` (PR-3): `TestRunServeOffersTheRegisteredRuntime` (a fake
+  through the test's `extensions`: the server's engine is offered it) and
+  `TestRunHostRunsNatively` (the same fake: the host's `Options.Runtime` is
+  nil, the native one).
+- `ext/exttest` (PR-5): `TestTheContractHoldsForTheNativeRuntime`
+  (`exttest.Runtime` against `local.Native()`) and
+  `TestTheContractHoldsForTheFake` (against `exttest.FakeRuntime`, with and
+  without `Base`), and `TestRunAllChecksTheRuntime` (a `Providers` holding a
+  Runtime that breaks one rule fails `RunAll` with that rule's words).
 
 Web (PR-4): the type change; `npm --prefix web run typecheck`, `npm
 --prefix web test` and `make test-e2e`, the existing suites unchanged (no
@@ -618,11 +792,12 @@ The Program's section 2.5 lists eight; each, for this item:
 
 1. The engine starts an attempt only through `crew.Launcher`: honoured and
    made narrower. The attempt's session is still `Launcher.Launch`, which
-   now starts through the server's Runtime, and everything else a run
-   starts (checks, steps, services) goes through the same Runtime as the
-   engine's executor. The boundary test fails a new process started outside
-   the runners. Not touched: the scheduler client and Brakeman reach
-   `ext.Host` (C1, and their own items).
+   now starts it in its run's Runtime, and everything else a run starts
+   (prerequisites, checks, steps, services) goes through the same Runtime
+   as the engine's executor. The boundary test fails a new process started
+   outside the runners, and a runner used past the Runtime. Not touched:
+   the scheduler client and Brakeman reach `ext.Host` (C1, and their own
+   items).
 2. `session.Local` drives a `session.Process`: honoured. The Runtime's
    `Terminal` reaches `Local` through `session.RuntimeProcess`, and
    `internal/pty` is the native Runtime's implementation of it. The pid is
@@ -653,7 +828,9 @@ The Program's section 2.5 lists eight; each, for this item:
    reports.
 8. hostagent is a launch site as much as api: honoured. PR-3 wires
    `conductor host` and the server in the same PR, through the same
-   `ext.Runtime`, from the same composition root.
+   `ext.Runtime`: the host's command starts through `Options.Runtime`, the
+   native one, as a hosted session is a person's and a host runs no managed
+   run (decision RT7); offering it a registered one is item F's.
 
 ## Open-core checklist
 
@@ -673,54 +850,100 @@ Each PR is one issue and one branch `issue-N` from `main`, cut after the
 one it depends on has merged; it leaves `main` working and green on its
 own, ticks the checklist above, and names its checks. Every PR updates
 `docs/repository-map.md`'s rows it changes and adds its sentences to the
-item's `docs/features.md` entry, which PR-1 opens and PR-4 completes.
+item's `docs/features.md` entry, which PR-1 opens and PR-5 completes.
 Sizes are changed lines including tests. None runs beside another: each
-edits that entry, and PR-2 to PR-4 each build on the one before.
+edits that entry, and PR-2 to PR-5 each build on the one before.
+
+**Order with C2 to C9.** The Program gives C10 C1 alone as its
+prerequisite (section 4.2), so its PRs could run beside C2 to C9's, and
+they would meet in the same packages: C4's PR-8 in `internal/crew` and
+`internal/session`, C5's PR-9 and PR-10 in `internal/session` and
+`internal/hostagent`, C6's PR-11 and PR-12 in `internal/crew/ledger`,
+C7's PR-14 in `internal/opencore`, C9's PR-17 making `ext/exttest`, and
+nearly all of them in `internal/api`, which `docs/plans/ext.md` already
+runs one after another (PR numbers as in its table). This plan's default
+is that none of its PRs runs beside theirs: PR-1 is cut once C2 to C9 are
+Done (`docs/plans/ext.md`'s PR-18 merged), so every PR here is made on
+top of theirs (decision RT15). PR-4 then changes the ledger after C6's
+export and restore exist, and their tests run against version 6 in
+PR-4's own checks; PR-5 adds to the `ext/exttest` that C9 made.
 
 **PR-1: the Runtime's contract and its native default.** `ext`'s Runtime
-and its types as above (or what C1's declaration lacks of them);
-`ext/local`'s `Native()`; `internal/proc`'s `Prepare`, `Spec.Environ`, and
-`Probe` and `FreePort` moved from `internal/crew/steps.go` with their
-tests, `crew`'s `nativeExec` calling them; the boundary test; the errata
-line in `docs/plans/agent-harness.md`; `docs/repository-map.md` (`ext`,
-`internal/proc`); the features entry opened. Nothing calls the Runtime yet:
-behaviour is `main`'s. Touches `ext`, `ext/local`, `internal/proc`,
-`internal/crew` (the move), `docs`. Tests: the `ext/local` and
-`internal/proc` tests above. Depends on C1 and #441. About 1,000 lines.
+members, `TakesWait` and `RegisterRuntime`'s two refusals, added to C1's
+declaration; `ext/local`'s `Native()` and its place in `Fill`; the
+`ext-std` amendment and its plants in `internal/opencore`;
+`TestPlainBuildRegistersNothing`'s Runtime slot; `internal/proc`'s
+`Prepare`, `Spec.Environ`, and `Probe` and `FreePort` moved from
+`internal/crew/steps.go` with their tests, `crew`'s `nativeExec` calling
+them; the boundary test with its allowlist as it stands; the errata line
+in `docs/plans/agent-harness.md`; `docs/repository-map.md` (`ext`,
+`ext/local` and its "May import", `internal/proc`); the features entry
+opened. Nothing calls the Runtime yet: behaviour is `main`'s. Touches
+`ext`, `ext/local`, `internal/opencore`, `cmd/conductor`, `internal/proc`,
+`internal/crew` (the move), `docs`. Tests: the `ext`, `ext/local`,
+`cmd/conductor`, `internal/opencore` and `internal/proc` tests above.
+Depends on C1 to C9 (decision RT15) and #441. About 1,100 lines.
 
 **PR-2: a managed run's trees run through the Runtime.** `execFor`, the
-executor's functions taking the `ProcessRef`, `Engine.SetRuntime`,
-`NewEngine`'s native default, `nativeExec` removed; `sessiontest.FakeRuntime`;
-`docs/repository-map.md` (`internal/crew`), `docs/architecture.md` (Crew
-runs); the features entry's sentence. Touches `internal/crew`,
-`internal/session` (`sessiontest`), `docs`. Tests: the PR-2 tests of
-`internal/crew` and `sessiontest` above; every existing crew test, its
-checks and steps now through the adapter. Depends on PR-1. About 750 lines.
+executor's functions taking the `ProcessRef`, `Engine.SetRuntime`, a run's
+Runtime chosen by `Takes`, `NewEngine`'s native default, `nativeExec`
+removed and `internal/crew` out of the boundary test's allowlist;
+`sessiontest.FakeRuntime`; `docs/repository-map.md` (`internal/crew`),
+`docs/architecture.md` (Crew runs); the features entry's sentence. Touches
+`internal/crew`, `internal/session` (`sessiontest`), `ext/local` (the
+allowlist), `docs`. Tests: the PR-2 tests of `internal/crew` and
+`sessiontest` above; every existing crew test, its checks and steps now
+through the adapter. Depends on PR-1. About 850 lines.
 
 **PR-3: sessions start through the Runtime, on the server and on a host.**
-`session.RuntimeProcess`; `Server`'s Runtime, `SetRuntime` (the engine's
-too) and `Runtime()`; `createLocalSession(ctx, …)` and its three callers;
-`hostagent.Options.Runtime`; `runServe` and `runHost` taking the
-registry's Runtime or the native one; `docs/architecture.md` (the sessions
-diagram, Packages), `docs/repository-map.md` (`internal/pty`,
-`internal/session`, `internal/hostagent`); the features entry's sentence.
-Touches `internal/session`, `internal/api`, `internal/hostagent`,
-`internal/cli`, `docs`. Tests: the PR-3 tests of `internal/session`,
-`internal/api`, `internal/hostagent` and `internal/cli` above; the
-existing PTY, viewer and host tests on the native Runtime. Depends on PR-1
-and PR-2 (`SetRuntime` sets the engine's). About 700 lines.
+`session.RuntimeProcess`; `Server`'s two Runtimes, `UseExtensions` wrapping
+and offering the set's, `LaunchSpec.Where`; `createLocalSession(ctx, …,
+where)` and its three callers; `hostagent.Options.Runtime`; `runHost`
+leaving it native; `internal/api` and `internal/hostagent` out of the
+boundary test's allowlist; `docs/architecture.md` (the sessions diagram,
+Packages), `docs/repository-map.md` (`internal/pty`, `internal/session`,
+`internal/hostagent`); the features entry's sentence. Touches
+`internal/session`, `internal/api`, `internal/hostagent`, `internal/cli`,
+`internal/crew` (`LaunchSpec`), `ext/local` (the allowlist), `docs`.
+Tests: the PR-3 tests of `internal/session`, `internal/api`,
+`internal/hostagent` and `internal/cli` above; the existing PTY, viewer and
+host tests on the native Runtime. Depends on PR-1 and PR-2 (the engine's
+`SetRuntime`). About 800 lines.
 
 **PR-4: every attempt and its evidence say where they ran (ledger schema
-6).** The migration and the columns; the rows' `Where`, the puts' refusals,
-the readers; the attempt's `where`, its rows', `AttemptState.Where` and
-`StepState.Where`; the fake ledger's refusal; the web types;
-`docs/protocol.md`'s rows; `docs/architecture.md` and
-`docs/repository-map.md` (`internal/crew/ledger`: schema version 6); the
-features entry completed with what the Acceptance runs observed. Touches
-`internal/crew/ledger`, `internal/crew`, `internal/api` (its tests),
-`web/app/composables`, `docs`. Tests: the PR-4 tests of
+6).** The migration and the columns, migration 4's frozen prerequisites
+table, the version-aware reads; the rows' `Where`, the puts' refusals, the
+readers; the attempt's `where`, its rows', `AttemptState.Where` and
+`StepState.Where`; the fake ledger's refusal; every downgrade fixture; the
+web types; `docs/protocol.md`'s rows; `docs/architecture.md` and
+`docs/repository-map.md` (`internal/crew/ledger`: schema version 6).
+Touches `internal/crew/ledger`, `internal/crew`, `internal/api` (its
+tests), `web/app/composables`, `docs`. Tests: the PR-4 tests of
 `internal/crew/ledger`, `internal/crew` and `internal/api` above; the web
-checks. Depends on PR-3. About 850 lines.
+checks. Depends on PR-3. About 1,000 lines.
+
+**PR-5: the Runtime's public fake and contract check.** `ext/exttest`'s
+`FakeRuntime` (the standard library, `ext` and `ext/local` alone, as C1's
+table has `ext/exttest`: a terminal over pipes, scripted results, `Takes`
+as set, every call recorded, `Base` passing a call through), and
+`exttest.Runtime(t, rt, c RuntimeCase)`, added to `RunAll` for
+`Providers.Runtime`: the rules this plan writes, checked as PR-1 checks
+the native one. A valid `Name` and `Where`, constant; `Takes` within
+`TakesWait` from 32 goroutines at once; `Start` in the directory given
+with exactly `Env`, output, input, resize and exit, `Stop` ending its
+group within its grace; `Run` with argv never a shell (an argument with
+`;` printed as it is), a timeout told from a cancel, head and tail, the
+log within `LogLimit`, `Started` once and before the output; `Serve`
+started and stopped; `Probe` one try, no redirect followed; `Port` a free
+number; a cancelled context answered promptly. `RuntimeCase` gives the
+argv of the helper program the checks drive (what it does on which
+argument is in the package documentation; `exttest`'s own test runs its
+test binary as the helper, Go's helper-process pattern), so another
+module's CI runs the checks against its Runtime where that Runtime runs.
+`docs/repository-map.md` (`ext/exttest`); the features entry completed
+with what the Acceptance runs observed. Touches `ext/exttest`, `docs`.
+Tests: the `ext/exttest` tests above. Depends on PR-4 and C9's PR-17
+(`docs/plans/ext.md`). About 700 lines.
 
 ## Owner decisions
 
@@ -754,15 +977,26 @@ overturned is rewritten here before the PRs are cut.
 - **RT5, a row without `where` is refused, not defaulted.** Reason: a
   default would label any future runtime's omission native; a refusal makes
   it a failing test. `phase` keeps its default.
-- **RT6, one Runtime per process, `where` per Runtime.** The server and a
-  host each have one, set before the first launch; an attempt's `where` is
-  fixed when it is made. Reason: an attempt and its checks then report the
-  same `where` by construction, and nothing can mix runtimes mid-run; a
-  `where` per process is item F's to propose if a guest needs it.
-- **RT7, every session starts through the Runtime, not only attempts.**
-  Reason: `createLocalSession` is every server session's one path; the
-  `ProcessRef` tells a provider what a process is for, and the native
-  Runtime is `main`'s either way.
+- **RT6, one Runtime per managed run, `where` per Runtime.** A managed
+  run's Runtime is chosen once, when the run is made or continued, and its
+  prerequisites and its attempts, their sessions, trees and checks, all
+  run in it; an attempt's `where` is fixed when it is made. Reason: an
+  attempt and its checks then report the same `where` by construction,
+  and nothing mixes runtimes within a run; a `where` per process is item
+  F's to propose if a guest needs it.
+- **RT7, a registered Runtime is offered managed runs alone, and may
+  decline one.** A session a person starts or resumes, a legacy crew's
+  members and a hosted session start through the native Runtime whatever
+  is registered; a managed run goes to the registered Runtime only when
+  its `Takes` says so within the guard's wait, and runs natively
+  otherwise. Every process still starts through an `ext.Runtime`, so the
+  seam is one either way. Reason: article 7, a provider adds and never
+  removes: every session that is not a managed run's stays native, a
+  managed run is the provider's only when it takes it, and a stalled or
+  failing `Takes` is answered as the free default by C1's guard. Offering
+  a registered Runtime a person's or a hosted session (item F's first
+  surface is `conductor host`) is item F's to propose, with how a person
+  chooses it.
 - **RT8, Conductor builds the environment.** A Runtime receives it whole.
   Reason: the filter that keeps tokens and loaders out stays in one place.
 - **RT9, the whole tree executor.** `Serve`, `Probe` and `Port` beside
@@ -778,13 +1012,29 @@ overturned is rewritten here before the PRs are cut.
 - **RT12, the boundary test.** Reason: constraints 1, 2 and 5 become a
   failing test, so the boundary is code (decision D7), and a new process
   site is a reviewed edit.
-- **RT13, reconciliation with C1.** This plan specifies `ext.Runtime`'s
-  members; if `docs/plans/ext.md` declares them otherwise, the two plans are
-  made one before either's first PR is cut, keeping this plan's semantics
-  (what each method does and the `where` it reports).
-- **RT14, the fakes.** C10's fake is internal (`sessiontest.FakeRuntime`);
-  `ext/exttest`'s public fake and contract suite are C9's, covering the
-  Runtime with the cases PR-1 tests on the native one.
+- **RT13, C1's names.** This plan completes C1's Runtime declaration
+  (`docs/plans/ext.md`, its Runtime paragraph and decision E4) rather than
+  declaring its own: `Provider`'s `Name`, `Where`, `WhereNative`,
+  `Where.Valid`, `RegisterRuntime`, `RuntimeProvider()`, `Freeze()`,
+  `local.Fill` as the one place that asks, and `UseExtensions` as the
+  server's one door; it adds the methods, `TakesWait`, two refusals to
+  `RegisterRuntime`, the native default in `Fill`, and the `ext-std`
+  amendment for `ext/local`. Reason: C1's plan gives the Runtime its slot
+  and leaves these to this item, and nothing implements `ext` before P0.
+- **RT14, the fakes.** Both are this item's: `sessiontest.FakeRuntime` for
+  this repository's tests (PR-2), and `ext/exttest`'s `FakeRuntime` and
+  `exttest.Runtime` check, in `RunAll`, for another module's CI (PR-5), as
+  `docs/plans/ext.md` says in its C9 section. Reason: one owner, the one
+  that writes the contract.
+- **RT15, after C2 to C9.** PR-1 is cut once C2 to C9 are Done, so no PR
+  here runs beside theirs (The PRs). Reason: they share `internal/api`,
+  `internal/crew`, `internal/session`, `internal/hostagent`,
+  `internal/crew/ledger`, `internal/opencore` and `ext/exttest` with this
+  item's, `docs/plans/ext.md` already runs its `internal/api` PRs one after
+  another, PR-4's schema change then lands on C6's export and restore, and
+  PR-5 needs C9's `ext/exttest`. The owner may instead let PR-1 to PR-3 go
+  as soon as C1 is Done, each rebased on whatever of C2 to C9 merged
+  before it, with PR-4 after C6's PR-12 and PR-5 after C9's PR-17.
 
 ## Acceptance
 
@@ -796,7 +1046,8 @@ behaviour change on any platform", is observed three ways:
    check run in the fake Runtime, and every row and report says its
    `where`), `TestAnAttemptAndItsChecksReportTheSameWhere` (the engine's
    rows and reports, fake and native), `TestTheTaskReadReportsWhere` (a
-   plain build: `native`) and `TestAVersion5DatabaseIsBroughtToVersion6`.
+   server with nothing registered: `native`) and
+   `TestAVersion5DatabaseIsBroughtToVersion6`.
 2. By hand on WSL and on the Mac, on the build of PR-4: the example crew
    `example-todo-app-tasks` (its prerequisite included), with real agents
    in a scratch repository both trust, run to its end; then `GET
@@ -816,9 +1067,9 @@ behaviour change on any platform", is observed three ways:
    Windows runs the Linux server in WSL through the desktop app (ci.yml's
    build matrix has no windows row), so Linux's tests are its server's.
 
-Done means PR-1 to PR-4 merged and the runs of 2 and 3 recorded in the
+Done means PR-1 to PR-5 merged and the runs of 2 and 3 recorded in the
 item's `docs/features.md` entry; Status moves to Done then, not when the
-checklist is ticked. The owner merges each PR, decides RT1 to RT14 (and
+checklist is ticked. The owner merges each PR, decides RT1 to RT15 (and
 the status-log row RT1 proposes) at the plan's review, and the runs on the
 Mac and the Windows app use the owner's machines and the agents' logins
 there, by the owner or with the owner's word.
