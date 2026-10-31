@@ -283,45 +283,140 @@ func TestStoreKeepsKeysPrivate(t *testing.T) {
 	}
 }
 
-func TestFilesReloadWhenTheyChange(t *testing.T) {
-	ca := newFakeCA(t)
+// filePair is a certificate pair on disk for the files mode, each file
+// written with the mtime it is given so a check sees it as changed whatever
+// the file system's timestamp granularity.
+type filePair struct {
+	t                 *testing.T
+	ca                *fakeCA
+	certPath, keyPath string
+}
+
+func newFilePair(t *testing.T) *filePair {
 	dir := t.TempDir()
-	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
-	write := func(ids []string) {
-		t.Helper()
-		issued := ca.issue(t, ids, time.Now().Add(-time.Minute), time.Hour)
-		if err := os.WriteFile(certPath, issued.CertPEM, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(keyPath, issued.KeyPEM, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	return &filePair{t: t, ca: newFakeCA(t), certPath: filepath.Join(dir, "cert.pem"), keyPath: filepath.Join(dir, "key.pem")}
+}
+
+func (p *filePair) issue(id string) *Issued {
+	return p.ca.issue(p.t, []string{id}, time.Now().Add(-time.Minute), time.Hour)
+}
+
+// put writes one file and sets its mtime. It reports with t.Error, so the
+// manager's goroutine can call it from the afterRead seam.
+func (p *filePair) put(path string, data []byte, mtime time.Time) {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		p.t.Error(err)
 	}
-	write([]string{"one.example"})
-	m, err := New(Options{CertFile: certPath, KeyFile: keyPath, FileCheck: 20 * time.Millisecond})
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		p.t.Error(err)
+	}
+}
+
+func (p *filePair) write(issued *Issued, mtime time.Time) {
+	p.put(p.certPath, issued.CertPEM, mtime)
+	p.put(p.keyPath, issued.KeyPEM, mtime)
+}
+
+func (p *filePair) manager() *Manager {
+	p.t.Helper()
+	// An hour between the manager's own checks: the test pokes it for each.
+	m, err := New(Options{CertFile: p.certPath, KeyFile: p.keyPath, FileCheck: time.Hour})
 	if err != nil {
-		t.Fatal(err)
+		p.t.Fatal(err)
 	}
+	return m
+}
+
+func TestFilesReloadWhenTheyChange(t *testing.T) {
+	p := newFilePair(t)
+	at := time.Now()
+	p.write(p.issue("one.example"), at)
+	m := p.manager()
 	if st := m.Status(); !st.Ready || st.Mode != ModeFiles || st.Identifiers[0] != "one.example" {
 		t.Fatalf("status %+v", st)
 	}
 	runManager(t, m)
-	time.Sleep(30 * time.Millisecond) // past the first check, so the next sees a newer mtime
-	later := time.Now().Add(2 * time.Second)
-	write([]string{"two.example"})
-	_ = os.Chtimes(certPath, later, later)
+	// Each change is followed by a poke: a check starts after the change,
+	// whether the manager was waiting or in a check of its own.
+	at = at.Add(2 * time.Second)
+	p.write(p.issue("two.example"), at)
+	m.poke()
 	waitFor(t, "the reload", func() bool { return m.Status().Identifiers[0] == "two.example" })
 	// A broken pair keeps the one served and names the error.
-	_ = os.WriteFile(keyPath, []byte("not a key"), 0o600)
-	later = later.Add(2 * time.Second)
-	_ = os.Chtimes(keyPath, later, later)
+	at = at.Add(2 * time.Second)
+	p.put(p.keyPath, []byte("not a key"), at)
+	m.poke()
 	waitFor(t, "the error", func() bool { return m.Status().LastError != "" })
 	if st := m.Status(); !st.Ready || st.Identifiers[0] != "two.example" {
 		t.Fatalf("status %+v", st)
 	}
-	if _, err := New(Options{CertFile: certPath, KeyFile: keyPath}); err == nil {
+	if _, err := New(Options{CertFile: p.certPath, KeyFile: p.keyPath}); err == nil {
 		t.Fatal("a broken pair must refuse to start")
 	}
+}
+
+// A pair that changes while a check reads it is read again at the next
+// check (#281). A pair that loads records the files' time taken before the
+// read: a time taken after it is the change's, and no later check sees a
+// change. A pair that fails records no time, so it is read again even when
+// the write that completes it leaves the same mtime. The seam changes the
+// files between the read and the record, once completing a pair that fails
+// (a certificate written before its key, as a renewal tool writes them)
+// and once replacing a pair that loads.
+func TestFilesChangedWhileReadAreReadAgain(t *testing.T) {
+	p := newFilePair(t)
+	at := time.Now()
+	p.write(p.issue("one.example"), at)
+	m := p.manager()
+	// The checks are called here, one at a time, not by Run: each runs to
+	// its end before the test looks.
+	var change func()
+	m.afterRead = func() {
+		if change != nil {
+			change()
+			change = nil
+		}
+	}
+	check := func(wantErr bool) {
+		t.Helper()
+		if err := m.reloadFilesIfChanged(); (err != nil) != wantErr {
+			t.Fatalf("check: %v", err)
+		}
+	}
+
+	// The certificate is new and its key not yet: the read fails, and the
+	// key arrives, in the certificate's timestamp tick, before the failure
+	// is recorded.
+	two := p.issue("two.example")
+	at = at.Add(2 * time.Second)
+	p.put(p.certPath, two.CertPEM, at)
+	change = func() { p.put(p.keyPath, two.KeyPEM, at) }
+	check(true)
+	if st := m.Status(); st.Identifiers[0] != "one.example" || st.LastError == "" {
+		t.Fatalf("the half-written pair: %+v", st)
+	}
+	check(false)
+	if st := m.Status(); st.Identifiers[0] != "two.example" || st.LastError != "" {
+		t.Fatalf("the whole pair was not read again: %+v", st)
+	}
+
+	// A pair that loads, replaced before what was read is recorded.
+	three, four := p.issue("three.example"), p.issue("four.example")
+	at = at.Add(2 * time.Second)
+	p.write(three, at)
+	fourAt := at.Add(2 * time.Second)
+	change = func() { p.write(four, fourAt) }
+	check(false)
+	if st := m.Status(); st.Identifiers[0] != "three.example" {
+		t.Fatalf("the pair that was read: %+v", st)
+	}
+	check(false)
+	if st := m.Status(); st.Identifiers[0] != "four.example" {
+		t.Fatalf("the pair that replaced it was not read again: %+v", st)
+	}
+	// Nothing changed since: the next check reads nothing.
+	change = func() { t.Error("a check read an unchanged pair") }
+	check(false)
 }
 
 func TestNewDNSProviderNeedsItsSettings(t *testing.T) {
