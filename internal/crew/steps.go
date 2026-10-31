@@ -164,10 +164,11 @@ func (rm resolvedManifest) row() string {
 // session names the session its end waits for, one being stopped (set by
 // handTrees, or by the launch's record when the close came during the
 // launch). services are its services in the order they started, each
-// appended the moment its process exists; ready is set once its
-// tree.ready is recorded; dead is the first of its services that exited
-// on its own before that, and died is closed with it, for the phase that
-// waits on a probe.
+// appended the moment its process exists, until its end has recorded
+// theirs (endServices lets go of them); ready is set once its tree.ready
+// is recorded; dead is the first of its services that exited on its own
+// before that, and died is closed with it, for the phase that waits on a
+// probe.
 type tree struct {
 	kind     string // ledger.TreeWorktree | ledger.TreeCheckout
 	dir      string // the worktree or the checkout
@@ -1924,6 +1925,7 @@ func (ts *treeService) stopFor(why string) {
 // watchers, and records the end of each whose end is not recorded yet:
 // service.ended with the exit or signal its stop gave it (the run's stop's,
 // for one it stopped first) and why, its row finished, in one transaction.
+// Then the tree lets go of them, their handles and their output.
 func (e *Engine) endServices(ctx context.Context, r *run, t *tree, why string) {
 	e.mu.Lock()
 	svcs := slices.Clone(t.services)
@@ -1970,6 +1972,16 @@ func (e *Engine) endServices(ctx context.Context, r *run, t *tree, why string) {
 	if err != nil {
 		e.afterTransact(r, err)
 	}
+	// Their ends recorded, or kept for the run's next commit in rows that
+	// carry copies of their logs (finished), and their watchers returned:
+	// the tree lets go of them (Codex's review of #441, round 2). An ended
+	// tree stays its attempt's as long as the engine holds the run, and
+	// would keep each service's log, output and handle with it; nothing
+	// reads them now, no phase or check holding a tree whose end has
+	// begun.
+	e.mu.Lock()
+	t.services, t.dead = nil, nil
+	e.mu.Unlock()
 }
 
 // stopServices ends the services of r's live trees, as a stop does before

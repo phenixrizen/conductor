@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proc"
@@ -472,6 +475,87 @@ func TestATreeReadyTheLedgerRefusesIsNotCounted(t *testing.T) {
 				t.Fatalf("attempt 3's task file: previous %+v unusable %+v from %q\n%s", f.Previous, f.Unusable, f.StartFrom, md)
 			}
 			stopRun(t, eng, runID)
+		})
+	}
+}
+
+// weakService is weak pointers to the log and the handle of the first
+// service of the attempt's worktree, taken under e.mu: the test keeps no
+// strong one.
+func weakService(e *Engine, runID, taskID string, n int) (weak.Pointer[bytes.Buffer], weak.Pointer[proc.Service]) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ts := e.runs[runID].task(taskID).attempts[n-1].trees[0].services[0]
+	return weak.Make(ts.log), weak.Make(ts.svc.(*proc.Service))
+}
+
+// collected runs the collector until p's value has gone, for at most 10 s,
+// and says whether it went.
+func collected[T any](p weak.Pointer[T]) bool {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		if p.Value() == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// An ended tree keeps none of its services (Codex's review of #441, round
+// 2): an ended tree stays its attempt's as long as the engine holds the
+// run, and once their ends are recorded it lets go of their handles and
+// their output, so the log it buffered, up to ledger.MaxLog a service, is
+// the ledger's alone. The worktree's and the checkout's service rows keep
+// what web wrote, a refused commit's carried by the next, and the
+// worktree service's log and handle are collected.
+func TestAnEndedTreeLetsGoOfItsServices(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "their ends recorded", true: "their ends refused once"}[refused], func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			web := shStep("web", `echo serving; echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; while :; do sleep 0.05; done`)
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{web}}, work("build", "lead")))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			logOf, svcOf := weakService(e, run.ID, "build", 1)
+			if refused {
+				l.mu.Lock()
+				l.failOn, l.failOnce = "service.ended", true
+				l.mu.Unlock()
+			}
+			commitResult(t, e, a, "done.txt", "done\n", "done")
+			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
+			waitTreesEnded(t, e, run.ID)
+			l.mu.Lock()
+			unused := l.failOn != ""
+			l.mu.Unlock()
+			if unused {
+				t.Fatal("no service.ended was refused")
+			}
+			rows := l.stepRows(run.ID, "build", 1)
+			for k := 1; k <= 2; k++ {
+				if row, ok := rowOf(rows, "web", k); !ok || row.State != ledger.CheckFinished || string(row.Log) != "serving\n" {
+					t.Fatalf("web's row %d: %+v", k, row)
+				}
+			}
+			e.mu.Lock()
+			trees := e.runs[run.ID].task("build").attempts[0].trees
+			var holding []string
+			for _, tr := range trees {
+				if !tr.ended || tr.services != nil || tr.dead != nil {
+					holding = append(holding, tr.kind)
+				}
+			}
+			n := len(trees)
+			e.mu.Unlock()
+			if n != 2 || len(holding) > 0 {
+				t.Fatalf("%d trees; not ended, or holding their services: %v", n, holding)
+			}
+			if !collected(logOf) || !collected(svcOf) {
+				t.Fatal("the worktree service's log or handle outlived its tree's end")
+			}
+			stopRun(t, e, run.ID)
 		})
 	}
 }
