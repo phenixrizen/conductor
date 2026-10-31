@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
@@ -266,9 +267,14 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
 
 test('a session row’s actions: the copies say so, Open Files/Chat/Activity/People reach the page on that view, Type a line opens the field, Resume makes a new session', async ({ page, api, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows actions' })
+  // Names of this run's own: a repeat's sessions stay listed, ended, until the server sweeps them, and a name typed into the
+  // palette must find this one alone (the first row, Resume's new session by its name).
+  const tag = randomUUID().slice(0, 8)
+  const actions = `e2e rows actions ${tag}`
+  const goneName = `e2e rows gone ${tag}`
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: actions })
   sessions.push(s.id)
-  const gone = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows gone' })
+  const gone = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: goneName })
   sessions.push(gone.id)
   await api.stopSession(gone.id)
   await expect.poll(async () => (await api.session(gone.id)).status, { timeout: 15_000 }).toMatch(/stopped|ended/)
@@ -285,39 +291,39 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
     await expect(row.locator('[data-palette-actions]')).toBeVisible()
     return (action: string) => row.locator(`[data-palette-action="${action}"]`)
   }
-  let a = await act('e2e rows actions', s.id)
+  let a = await act(actions, s.id)
   await a('copy-path').click()
   await expect(toast(page, 'Path copied')).toBeVisible({ timeout: 15_000 })
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('copy-link').click()
   await expect(toast(page, /View link to .* copied/)).toBeVisible({ timeout: 15_000 })
   for (const [action, tab, item] of [['open-files', 'files', 'explorer'], ['open-chat', 'chat', 'chat'], ['open-activity', 'activity', 'activity'], ['open-people', 'people', 'people']] as const) {
     await page.goto('/agents')
     await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
-    a = await act('e2e rows actions', s.id)
+    a = await act(actions, s.id)
     await a(action).click()
     await expect(page).toHaveURL(new RegExp(`/sessions/${s.id}\\?tab=${tab}`), { timeout: 15_000 })
     await expect(page.locator(`[data-inspector] [data-rail-item="${item}"]`)).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
   }
   // On the session's own page the same action shows the view here, twice without hiding it.
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('open-chat').click()
   await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('open-chat').click()
   await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
   // Type a line opens the field; Resume on an exited session makes a new one.
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('field').click()
   await expect(page.locator(`[data-palette-row="session:${s.id}"] [data-palette-field] input`)).toBeFocused()
   await closePalette(page)
-  a = await act('e2e rows gone', gone.id)
+  a = await act(goneName, gone.id)
   await a('resume').click()
   // The new session itself, by its name: the list's length is no measure of it, since the server sweeps sessions that ended a
   // while ago at any time (#281: on CI, with ninety sessions from the specs before, the count fell by eight as this waited).
-  const resumed = async () => (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((x) => x.name === 'e2e rows gone' && x.id !== gone.id)
+  const resumed = async () => (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((x) => x.name === goneName && x.id !== gone.id)
   await expect.poll(async () => (await resumed())?.id ?? '', { timeout: 30_000, message: 'Resume makes a new session under the old name' }).toMatch(/^[0-9a-f]{16}$/)
   const made = await resumed()
   if (made) sessions.push(made.id)
@@ -325,9 +331,12 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
 
 test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notifications; the dialogs; the prefixes', async ({ page, api, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write', 'notifications'])
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows verbs' })
+  // Names of this run's own: a verb's name must match one thing, and a repeat's sessions stay listed, ended, until the server
+  // sweeps them (#281: "mark e2e rows verbs working" read as a search in the second repeat of a --repeat-each run).
+  const tag = randomUUID().slice(0, 8)
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: `e2e rows verbs ${tag}` })
   sessions.push(s.id)
-  const asks = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e rows asks' })
+  const asks = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: `e2e rows asks ${tag}` })
   sessions.push(asks.id)
   await expect.poll(async () => (await api.session(asks.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
   await page.goto('/agents')
@@ -343,11 +352,11 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   }
   await verb('go yard')
   await expect(page).toHaveURL(/\/yard/)
-  await verb('mark e2e rows verbs working')
+  await verb(`mark e2e rows verbs ${tag} working`)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('working')
-  await verb('share e2e rows verbs')
+  await verb(`share e2e rows verbs ${tag}`)
   await expect(toast(page, /View link to .* copied/)).toBeVisible({ timeout: 15_000 })
-  await verb('answer e2e rows asks 1')
+  await verb(`answer e2e rows asks ${tag} 1`)
   await expect.poll(async () => (await api.session(asks.id)).attention?.state ?? '', { timeout: 15_000 }).not.toBe('needs_input')
   // The switches: the theme flips the html class and back; the sidebar row's words follow its state; notifications flips.
   const dark = async () => page.evaluate(() => document.documentElement.classList.contains('dark'))
