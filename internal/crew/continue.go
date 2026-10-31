@@ -190,14 +190,28 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 
 // flushPending writes what a run the engine holds has kept for the ledger (the
 // rows and events of changes whose commits failed), so a continuation
-// reads it whole; markContinuing refuses one that still has some.
+// reads it whole; markContinuing refuses one that still has some. A run
+// stopped before its launch was recorded, its stop refused by the ledger,
+// holds that stop: the run's first transaction (transactFirst), written
+// now as one, its row first through CreateRun, so an id the ledger has
+// is refused still and the run, another's, let go (dropForeign). Nothing
+// else of a run whose launch is not recorded is written (errLaunching):
+// it has nothing pending, its launch's refused commit dropped with it.
 func (e *Engine) flushPending(ctx context.Context, runID string) {
 	e.mu.Lock()
 	r := e.runs[runID]
+	first := r != nil && r.unrecorded() && r.stoppedAt != nil
 	e.mu.Unlock()
-	if r != nil {
-		_ = e.transact(ctx, r, func() tx { return tx{} }, nil)
+	if r == nil {
+		return
 	}
+	if first {
+		if err := e.transactFirst(ctx, r, func() tx { return tx{} }, nil); errors.Is(err, ErrRunExists) {
+			e.dropForeign(r)
+		}
+		return
+	}
+	_ = e.transact(ctx, r, func() tx { return tx{} }, nil)
 }
 
 // markContinuing marks the run the engine holds as being continued

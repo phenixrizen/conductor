@@ -881,10 +881,12 @@ func (e *Engine) pumpLocked(r *run) {
 // afterTransact takes a transaction's outcome for what rests on it:
 // committed, the ready tasks are dispatched; failed, the run's dispatch
 // pauses until a person looks, the run log says why, and the pause's own
-// commit carries the change's rows. It reports whether the change is
-// durable now, by the one commit or the other: a side effect that must
-// follow the change (a session stopped) waits for that. The caller holds
-// neither lock.
+// commit carries the change's rows. A change refused because the run's
+// launch was not recorded yet (errLaunching) is no failure of the
+// ledger's and pauses nothing (pauseFor). It reports whether the change
+// is durable now, by the one commit or the other: a side effect that
+// must follow the change (a session stopped) waits for that. The caller
+// holds neither lock.
 func (e *Engine) afterTransact(r *run, err error) (durable bool) {
 	if err == nil {
 		e.pumpLocked(r)
@@ -895,8 +897,15 @@ func (e *Engine) afterTransact(r *run, err error) (durable bool) {
 
 // pauseFor pauses the run's dispatch after the ledger refused a
 // transaction, in a transaction that carries what the refused one could
-// not. The caller holds neither lock.
+// not. A change refused before it was made, the run's launch not recorded
+// yet (errLaunching), is not the ledger's refusal: nothing of it waits to
+// be written, and the launch may have committed since, so a pause now
+// would stall a run launched whole. It pauses nothing and is returned:
+// the change is not durable. The caller holds neither lock.
 func (e *Engine) pauseFor(r *run, err error) error {
+	if errors.Is(err, errLaunching) {
+		return err
+	}
 	return e.transact(context.Background(), r, func() tx {
 		return pausedTx(e.pauseDispatch(r, err), err)
 	}, nil)
@@ -913,6 +922,10 @@ func (e *Engine) pauseFor(r *run, err error) error {
 // and the continuation of a run that stopped so starts paused, for a
 // person to look at (Codex's review of #367). The caller holds e.mu.
 func (e *Engine) pauseDispatch(r *run, err error) bool {
+	if errors.Is(err, errLaunching) {
+		// Refused before it was made: no failure of the ledger's (pauseFor).
+		return false
+	}
 	if r.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		r.note(session.ActivityStatus, "the ledger did not record the run's state as it stopped: %v", err)
 		return false

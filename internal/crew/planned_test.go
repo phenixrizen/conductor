@@ -781,3 +781,122 @@ func TestALaunchWhoseFirstTransactionFailsIsForgotten(t *testing.T) {
 		t.Fatal("the failed run's record was not written")
 	}
 }
+
+// A command refused because the launch was not recorded yet, whose
+// refusal is handled only once the launch has committed (afterRefused),
+// pauses nothing: the refusal is no failure of the ledger's, so the run
+// launched whole is not paused, no run.paused is written, and its tasks
+// are dispatched as the launch armed them.
+func TestACommandRefusedBeforeTheLaunchPausesNothing(t *testing.T) {
+	dir := newRepo(t)
+	c := repoCrew(dir, work("build", "lead"), work("docs", "writer"))
+	e, ld := sqlEngine(t)
+	refused := make(chan error, 1)
+	handle := make(chan struct{})
+	done := make(chan error, 1)
+	e.afterRefused = func(runID string, err error) {
+		refused <- err
+		<-handle
+	}
+	var refusal error
+	e.afterAdd = func(runID string) {
+		go func() {
+			_, err := e.Cancel(context.Background(), runID, "admin", Command{ID: "c1"}, "docs")
+			done <- err
+		}()
+		// Refused while the launch is not recorded; handled after it is.
+		refusal = <-refused
+	}
+	run := launchManaged(t, e, c)
+	e.afterAdd = nil
+	close(handle)
+	cmdErr := <-done
+	e.afterRefused = nil
+	if !errors.Is(refusal, errLaunching) || !errors.Is(cmdErr, ErrTaskState) {
+		t.Fatalf("the refusal %v, the command's error %v", refusal, cmdErr)
+	}
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	if r, ok := e.Get(run.ID); !ok || r.Paused {
+		t.Fatalf("the run after the refusal: %+v %v", r, ok)
+	}
+	got := ledgerOf(t, ld, run.ID)
+	if got.Row.Paused || slices.ContainsFunc(got.Events, func(ev ledger.EventRow) bool { return ev.Kind == "run.paused" }) {
+		t.Fatalf("the refusal paused the run: %+v", got.Events)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A run stopped before its launch was recorded, its stop's first
+// transaction refused once by the ledger, holds the stop for the ledger;
+// once the ledger takes transactions again, a continuation writes it
+// first, as the run's first transaction (its row through CreateRun), and
+// goes on from it: never ErrRunUnsettled for a stop it could write. The
+// write still refuses an id the ledger has come to hold meanwhile: the
+// held run, another's, is let go, nothing of it written, and the
+// continuation is the ledger's run's to judge.
+func TestAnEarlyStopTheLedgerRefusedIsWrittenForAContinuation(t *testing.T) {
+	stoppedEarly := func(t *testing.T) (*Engine, *fakeLedger, string) {
+		t.Helper()
+		e, _, l := managedEngine(t)
+		c := repoCrew(newRepo(t), work("build", "lead"))
+		l.mu.Lock()
+		l.failOn, l.failOnce = "run.stopped", true
+		l.mu.Unlock()
+		var id string
+		var stopErr error
+		e.afterAdd = func(runID string) {
+			id = runID
+			stopErr = e.Stop(t.Context(), runID)
+		}
+		_, release, err := e.LaunchNamed(t.Context(), c, "")
+		release()
+		e.afterAdd = nil
+		if stopErr == nil || !errors.Is(err, ErrRunStopped) {
+			t.Fatalf("the stop: %v, the launch: %v", stopErr, err)
+		}
+		if r, ok := e.Get(id); !ok || r.StoppedAt == nil {
+			t.Fatalf("the stopped run: %+v %v", r, ok)
+		}
+		if _, found, _ := l.Load(t.Context(), id); found {
+			t.Fatal("the refused stop wrote the run's row")
+		}
+		return e, l, id
+	}
+
+	t.Run("written", func(t *testing.T) {
+		e, l, id := stoppedEarly(t)
+		next, err := e.ContinueRun(t.Context(), id, "")
+		if err != nil {
+			t.Fatalf("the continuation of a run whose first stop was refused: %v", err)
+		}
+		from, found, err := l.Load(t.Context(), id)
+		if err != nil || !found || from.Run.State == ledger.RunRunning || from.Run.ContinuedBy != next.ID {
+			t.Fatalf("the stopped run's row: %+v %v %v", from.Run, found, err)
+		}
+		if kinds := l.kinds(id); !slices.Contains(kinds, "run.stopped") {
+			t.Fatalf("the stopped run's events: %v", kinds)
+		}
+		waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+		stopRun(t, e, next.ID)
+	})
+
+	t.Run("the id another run's meanwhile", func(t *testing.T) {
+		e, l, id := stoppedEarly(t)
+		other := ledger.RunRow{ID: id, CrewID: "api-sweep", Crew: `{"id":"api-sweep","name":"another launch"}`, State: ledger.RunRunning}
+		l.mu.Lock()
+		l.runs[id] = other
+		l.mu.Unlock()
+		_, err := e.ContinueRun(t.Context(), id, "")
+		if !errors.Is(err, ErrRunRunning) {
+			t.Fatalf("the continuation of an id another run holds: %v", err)
+		}
+		if _, ok := e.Get(id); ok {
+			t.Fatal("the engine kept the run whose id is another's")
+		}
+		from, found, _ := l.Load(t.Context(), id)
+		if !found || !reflect.DeepEqual(from.Run, other) || len(l.kinds(id)) != 0 {
+			t.Fatalf("the other run's row %+v, its events %v", from.Run, l.kinds(id))
+		}
+	})
+}

@@ -361,6 +361,10 @@ type Engine struct {
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// afterRefused, when set, runs in a command once its taking was
+	// refused and before the refusal is handled (afterTransact): a test
+	// commits the run's launch there.
+	afterRefused func(runID string, err error)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)
