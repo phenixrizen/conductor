@@ -229,6 +229,11 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/delete":                  {"/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": "a10"}},
 	"POST /api/dispatch/tickets/{key}/undelete":                {"/api/dispatch/tickets/CND-1/undelete", map[string]any{"opId": "a11"}},
 	"GET /api/dispatch/tickets/{key}/history":                  {"/api/dispatch/tickets/CND-1/history", nil},
+	"GET /api/dispatch/tickets/{key}/plans":                    {"/api/dispatch/tickets/CND-1/plans", nil},
+	"POST /api/dispatch/tickets/{key}/plans":                   {"/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "c1", "crew": "team"}},
+	"GET /api/dispatch/plans/{id}":                             {"/api/dispatch/plans/0123456789abcdef", nil},
+	"POST /api/dispatch/plans/{id}/approve":                    {"/api/dispatch/plans/0123456789abcdef/approve", map[string]any{"opId": "c2", "note": "ok"}},
+	"POST /api/dispatch/plans/{id}/withdraw":                   {"/api/dispatch/plans/0123456789abcdef/withdraw", map[string]any{"opId": "c3"}},
 	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
 	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
 	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
@@ -1560,9 +1565,10 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	e := dispatchEnv(t)
 	const upload = "POST /api/dispatch/tickets/{key}/attachments"
 	bounds := map[string]int{
-		"POST /api/dispatch/tickets":            maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/edit": maxTicketBody,
-		upload:                                  maxAttachmentBody,
+		"POST /api/dispatch/tickets":             maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/edit":  maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/plans": maxTicketBody,
+		upload:                                   maxAttachmentBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
@@ -1615,7 +1621,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 29 {
+	if writes != 32 {
 		t.Fatalf("%d writes", writes)
 	}
 }
