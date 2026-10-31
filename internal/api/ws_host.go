@@ -22,7 +22,15 @@ import (
 func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// An open host presents no token at all, on a switchyard that admits
 	// them, and lives under the per-address limits; a wrong token is refused
-	// as ever (a typo must show), a right one is trusted and unlimited.
+	// as ever (a typo must show), a right one is trusted and unlimited. A
+	// query that cannot be read presents no token, so it is refused here,
+	// never read as an open host's: its token may be a wrong one.
+	if r.Header.Get("Authorization") == "" {
+		if _, err := parseQuery(r.URL.RawQuery); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
 	tok := presentedToken(r, true)
 	open := tok == "" && s.cfg.Switchyard.Enabled && s.cfg.Switchyard.OpenHosts
 	if !open && !s.hostTokenOK(tok) {
@@ -127,6 +135,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// (signal.HostConn.Next).
 	go func() {
 		for {
+			if s.viewerSeam != nil && s.viewerSeam.taking != nil {
+				s.viewerSeam.taking(ctx)
+			}
 			o, ok := conn.Next(ctx)
 			if !ok {
 				select {

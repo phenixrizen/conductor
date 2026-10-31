@@ -23,8 +23,9 @@ import (
 
 // Dispatch over HTTP (docs/plans/dispatch.md): the projects with their
 // labels and milestones, the people, the tickets with their comments,
-// relations and links, the saved views, the ticket a run is linked to, and
-// the receipts. Every route is the admin's (Owner decisions, 17:
+// relations, links and attachments (dispatch_attachments.go), the saved
+// views, the ticket a run is linked to, and the receipts. Every route is
+// the admin's (Owner decisions, 17:
 // share-link viewers see no ticket) and a switchyard's 403 (launching),
 // since a switchyard keeps no tickets. Every write is one of the store's
 // typed operations under the actor admin (dispatch.Store.Apply): its body
@@ -127,6 +128,9 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/tickets/{key}/relations/{id}/delete", s.handleDispatchRemoveRelation},
 		{"POST /api/dispatch/tickets/{key}/links", s.handleDispatchAddLink},
 		{"POST /api/dispatch/tickets/{key}/links/{id}/delete", s.handleDispatchRemoveLink},
+		{"POST /api/dispatch/tickets/{key}/attachments", s.handleDispatchAddAttachment},
+		{"POST /api/dispatch/tickets/{key}/attachments/{id}/delete", s.handleDispatchRemoveAttachment},
+		{"GET /api/dispatch/attachments/{id}", s.handleDispatchAttachment},
 		{"GET /api/dispatch/links", s.handleDispatchRunTicket},
 		{"GET /api/dispatch/views", s.handleDispatchViews},
 		{"POST /api/dispatch/views", s.handleDispatchCreateView},
@@ -144,7 +148,9 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 // dispatch_unavailable. A store that opens read-only (a newer Conductor
 // wrote it, it fails its check, another writer held it past the busy
 // timeout) is logged with why: its reads answer as they can and its
-// writes are 503 dispatch_unavailable with why.
+// writes are 503 dispatch_unavailable with why. What the store's sweep of
+// its attachments' files at open could not delete is logged too: it is
+// left for the next sweep, and the store serves regardless.
 func openDispatch(st *store.Store, log logger) *dispatch.Store {
 	ds, err := dispatch.Open(filepath.Join(st.Dir(), "dispatch"))
 	if err != nil {
@@ -153,6 +159,9 @@ func openDispatch(st *store.Store, log logger) *dispatch.Store {
 	}
 	if ro, why := ds.ReadOnly(); ro {
 		log.Warn("Dispatch is read-only: its writes are refused", "why", why)
+	}
+	if err := ds.SweepError(); err != nil {
+		log.Warn("Dispatch's sweep of its attachments' files left some for the next", "err", err)
 	}
 	return ds
 }
@@ -564,14 +573,25 @@ func readQuery(r *http.Request, names ...string) (dispatchQuery, error) {
 	return dispatchQuery(v), nil
 }
 
+// maxQueryParams bounds the parameters of one query string, as
+// url.ParseQuery bounds them by default: a query of more is refused whole,
+// before any is read.
+const maxQueryParams = 10000
+
 // parseQuery parses a query string as a form's is read
 // (application/x-www-form-urlencoded, as a browser's URLSearchParams
 // reads one): its parameters are separated by '&' alone, so a ';' is
 // part of a value, as a search or a name may hold one. url.ParseQuery
 // refuses a query that holds a ';' unescaped, which a client's encoder
 // leaves so (ufo's, the web app's, among them). A '+' is a space; a
-// %-escape that is not one is an error.
+// %-escape that is not one is an error, and so are more than
+// maxQueryParams parameters. Every route reads its query through it:
+// Dispatch's reads through readQuery, the others through queryValues, and
+// a token in the query through presentedToken.
 func parseQuery(raw string) (url.Values, error) {
+	if strings.Count(raw, "&") >= maxQueryParams {
+		return nil, fmt.Errorf("the query string holds more than %d parameters", maxQueryParams)
+	}
 	v := url.Values{}
 	for raw != "" {
 		var pair string
@@ -590,6 +610,18 @@ func parseQuery(raw string) (url.Values, error) {
 		v[key] = append(v[key], value)
 	}
 	return v, nil
+}
+
+// queryValues is the query string of a route that reads its parameters by
+// name, read by parseQuery: a query it cannot read is 400 invalid_request,
+// never read as no parameters. When it reports false it has answered.
+func queryValues(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+	v, err := parseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	return v, true
 }
 
 // noQuery refuses any parameter on a read that takes none, as readQuery

@@ -127,11 +127,16 @@ func TestAViewerThatStopsReadingHoldsUpNobody(t *testing.T) {
 		}
 		p.outW.Write([]byte("MARKER"))
 	}()
-	if !waitFor(5*time.Second, func() bool { return errors.Is(hs.Reason(), ErrSlowConsumer) }) {
+	// The held transport's write waits until the test opens it, so these
+	// waits bound only a hang: 4 MiB through the session under the race
+	// detector on a loaded machine is not done in a few seconds (#428's
+	// checks), and nothing of the product's ends the hold meanwhile.
+	const hang = time.Minute
+	if !waitFor(hang, func() bool { return errors.Is(hs.Reason(), ErrSlowConsumer) }) {
 		t.Fatal("the viewer that stopped reading was never dropped")
 	}
 	// Its write is still waiting: everything else goes on.
-	if !waitFor(5*time.Second, healthy.sawMarker) {
+	if !waitFor(hang, healthy.sawMarker) {
 		t.Fatal("the healthy viewer stopped receiving the output")
 	}
 	third := &countSink{}

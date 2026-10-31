@@ -150,10 +150,23 @@ func TestACheckThatLeavesManyLongPathsIsRecorded(t *testing.T) {
 	seg := strings.Repeat("d", 200)
 	long := filepath.Join(seg, seg, strings.Repeat("f", 200)) // 602 bytes, and the number
 	build := work("build", "lead")
-	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", `for i in $(seq 100 249); do mkdir -p "$(dirname "$i$1")" && : > "$i$1"; done`, "sh", "/" + long}}}
+	// The check's timeout is the code's bound on the check: 120 s here,
+	// well inside the test binary's 10 minutes, so a check that hangs
+	// fails the test by it.
+	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", `for i in $(seq 100 249); do mkdir -p "$(dirname "$i$1")" && : > "$i$1"; done`, "sh", "/" + long}, TimeoutSeconds: 120}}
 	run := launchManaged(t, e, repoCrew(dir, build))
 	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	commitResult(t, e, a, "built.txt", "b\n", "built")
+	// The check starts some 300 processes, a dirname and a mkdir for each
+	// path, and the verify then reads the checkout back: on a loaded
+	// machine that takes longer than waitTask's 10 s, which is no cap of
+	// the code's. So the test waits on the mechanism, as the run's stop
+	// does: the run's checks, on which the submit registered the verify
+	// before it returned. The task is decided before the verify is done.
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	r.checks.Wait()
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
 	// The event keeps its lists, cut short, not the oversized note that
 	// stands in for an event too large.
@@ -246,12 +259,20 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: 600})
 	}
 	// The manifest's section at its largest (a file's blob of a SHA-256
-	// repository, eight ports of the longest names at five digits each),
-	// and the uncounted attempt before at its largest: never cut, and the
+	// repository, eight ports of the longest names at five digits each, a
+	// preview of maxPreview bytes, four services of the longest ids), and
+	// the uncounted attempt before at its largest: never cut, and the
 	// manifest's at most 2 KiB as the sum of its parts.
 	manifest := &TaskManifest{Source: sourceFile, Digest: strings.Repeat("f", 64), Revision: 1<<63 - 1, Ports: map[string]int{}}
 	for i := range maxManifestPorts {
 		manifest.Ports[fmt.Sprintf("p%d%s", i, strings.Repeat("o", 14))] = maxPort - i
+	}
+	manifest.Preview = "http://127.0.0.1:65535/" + strings.Repeat("p", maxPreview-len("http://127.0.0.1:65535/"))
+	for i := range maxManifestServices {
+		manifest.Services = append(manifest.Services, fmt.Sprintf("s%d%s", i, strings.Repeat("v", 38)))
+	}
+	if len(manifest.Preview) != maxPreview || len(manifest.Services[0]) != 40 {
+		t.Fatalf("a preview of %d bytes, an id of %d", len(manifest.Preview), len(manifest.Services[0]))
 	}
 	if b, _ := json.Marshal(manifest); len(b) > 2<<10 {
 		t.Fatalf("the manifest's section is %d bytes", len(b))
@@ -286,7 +307,9 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	}
 	if kept.Manifest == nil || !reflect.DeepEqual(*kept.Manifest, *manifest) || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||
 		!strings.Contains(string(md), "The project manifest `conductor.manifest.json` as this commit holds it") || !strings.Contains(string(md), unusable.Error) ||
-		!strings.Contains(string(md), "The tree's state directory is `.conductor/state`") {
+		!strings.Contains(string(md), "The tree's state directory is `.conductor/state`") ||
+		!strings.Contains(string(md), "Its services "+strings.Join(manifest.Services, ", ")+" run beside your session") ||
+		!strings.Contains(string(md), "is "+manifest.Preview+" (`CONDUCTOR_PREVIEW_URL`)") {
 		t.Fatalf("the manifest's section or the attempt before was cut: %+v %+v %+v", kept.Manifest, kept.Unusable, kept.Previous)
 	}
 	for name, n := range manifest.Ports {
@@ -595,7 +618,9 @@ func TestALaunchAndASetupThatHappenedKeepTheirEvents(t *testing.T) {
 				// that step: not counted, the dispatch paused; unpaused, the
 				// next attempt runs.
 				attemptFailed(t, e, run.ID, "build", 1)
-				if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || !strings.Contains(row.Error, "the ledger could not record the step deps") {
+				// The run as read is one change ahead of the ledger while
+				// that change commits: the row is waited for in the ledger.
+				if row := l.attemptWhen(t, run.ID, "build", 1, failedRow); row.Stage != "setup deps" || !strings.Contains(row.Error, "the ledger could not record the step deps") {
 					t.Fatalf("attempt 1: %+v", row)
 				}
 				waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })

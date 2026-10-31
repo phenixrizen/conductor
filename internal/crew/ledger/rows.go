@@ -193,9 +193,10 @@ type CheckRow struct {
 	Phase    string
 	Manifest string
 	// Ports are the tree's ports by name, Tries the tries of a readiness
-	// probe (1 otherwise), Error the words of its failure ("" for none),
-	// bounded as an event's are, and URL a probe's expanded URL (at most
-	// MaxURL bytes), its command when it has no argv.
+	// probe (0 when it ran none, a service of its tree having exited before
+	// its first; 1 for every other row), Error the words of its failure
+	// ("" for none), bounded as an event's are, and URL a probe's expanded
+	// URL (at most MaxURL bytes), its command when it has no argv.
 	Ports            map[string]int
 	Tries            int
 	Error            string

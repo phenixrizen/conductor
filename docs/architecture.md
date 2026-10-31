@@ -285,7 +285,18 @@ than one statement (a ticket with its sets, comments, links and close
 state; a list and its total) is one read transaction, so a reply
 describes one state whatever commits meanwhile. The store's one sight of
 the engine is `RunExists`, which the server gives it: a run link names a
-run the engine holds or has a record of.
+run the engine holds or has a record of. A ticket's attachments are files
+beside the database, one per content, named by its SHA-256
+(`attachments.go`): an upload writes and hashes its file, holds the hash
+with a lease (an `uploads` row) committed before the file is published
+under it, and writes the row naming it, the lease dropped in the same
+transaction, only once the file's new name is durable (on unix its shard
+and then `attachments/` synced, on Windows the move written through). The
+sweep at open (`sweep.go`) is the one thing that deletes a file: it drops
+the leases older than an hour in a transaction committed before any
+unlink, then deletes the files no live row and no lease names, under a
+write lock it holds while it does, so an upload paused across another
+server's sweep either finds its file named or is refused `expired`.
 
 `internal/api`'s `dispatch.go` puts the store on the HTTP API: the admin's
 routes alone, a switchyard's 403 (it opens no store), each write's body
@@ -367,7 +378,7 @@ registers the `conductor:` scheme: an invite opens its own join page with
 | `internal/store` | atomic JSON documents in the data directory, and plain files such as the generated workbench token |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
-| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, or the database is damaged or newer |
+| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
@@ -478,7 +489,8 @@ interrupted when they open, and never written back to an older revision.
 
 Dispatch's store, `dispatch/dispatch.sqlite` beside the ledger, keeps the
 projects, the tickets and their history across restarts: one SQLite file
-and its write-ahead log, checkpointed into it as the server shuts down. A
+and its write-ahead log, checkpointed into it as the server shuts down, and
+the attachments' files beside it in `dispatch/attachments/`. A
 ticket's delete is a tombstone that keeps its key, a project is archived
 and never deleted, and the log keeps every change; only the receipts past
 the newest 20,000 are dropped, the log still answering a resend of an

@@ -3,6 +3,7 @@ package ledger
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -262,6 +264,125 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 	l = openLedger(t, dir)
 	if ro, why := l.ReadOnly(); ro {
 		t.Fatalf("still read-only: %s", why)
+	}
+}
+
+// A Close that comes while the ledger waits for the owner lock leaves no
+// try for it under way (#281): each try is made under the ledger's lock
+// and only while the ledger is open, so Close waits for one in flight and
+// none follows it. A try opens the lock file, making it when it is
+// missing, and a lock taken opens the database: once Close has returned,
+// none of that may happen in the directory, which a test's cleanup may be
+// removing by then (a second server's ledger, still waiting, made its
+// files again under a temporary directory being removed). The wait's first
+// try is held at a gate (takeLock) while Close is called.
+func TestACloseLeavesNoTryForTheOwnerLockUnderWay(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	openLedger(t, dir) // the owner: the next ledger waits for its lock
+	var (
+		w       atomic.Pointer[Ledger]
+		tries   atomic.Int32
+		ready   = make(chan struct{}) // w is set
+		trying  = make(chan struct{}) // the wait's first try is under way
+		gate    = make(chan struct{}) // lets it go on
+		closed  = make(chan struct{}) // Close has returned
+		outside atomic.Bool           // a try made without the ledger's lock
+		late    atomic.Bool           // a try made once Close had begun, or under way when it returned
+		letGo   sync.Once
+	)
+	old := takeLock
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		n := tries.Add(1)
+		if n == 1 {
+			return old(path) // Open's own: held by the owner
+		}
+		<-ready
+		l := w.Load()
+		if l.mu.TryLock() {
+			l.mu.Unlock()
+			outside.Store(true)
+		}
+		select {
+		case <-l.done:
+			late.Store(true)
+		default:
+		}
+		if n == 2 {
+			close(trying)
+			<-gate
+			select {
+			case <-closed:
+				late.Store(true)
+			default:
+			}
+		}
+		return old(path)
+	}
+	t.Cleanup(func() { takeLock = old })
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		letGo.Do(func() { close(gate) })
+		l.Close()
+	})
+	w.Store(l)
+	close(ready)
+	<-trying
+	go func() {
+		l.Close()
+		close(closed)
+	}()
+	letGo.Do(func() { close(gate) })
+	<-closed
+	if outside.Load() {
+		t.Fatal("a try for the owner lock was made outside the ledger's lock: a Close could return with it under way")
+	}
+	if late.Load() {
+		t.Fatal("a try for the owner lock was made once Close had begun, or was still under way when it returned")
+	}
+	if ro, why := l.ReadOnly(); !ro {
+		t.Fatalf("the ledger closed while it waited took the lock: %s", why)
+	}
+}
+
+// A wait that comes to its try with the ledger closed makes none (#281).
+// A Close can land after the wait has taken its tick and before it takes
+// the ledger's lock, and the wait's select can pick a tick that is due
+// over a closed done: either way the wait reaches its try with the ledger
+// closed, and a try made then would open owner.lock, making it, and take
+// the lock when it is free, after Close had returned. The test above
+// holds a try that is under way when Close comes; this one runs the wait
+// on a ledger in the state a later Close leaves it in, closed with done
+// still open, so that its first tick brings it to the check.
+func TestAWaitThatFindsTheLedgerClosedMakesNoTry(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var tries atomic.Int32
+	old := takeLock
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		tries.Add(1)
+		return old(path)
+	}
+	t.Cleanup(func() { takeLock = old })
+	l := &Ledger{dir: dir, done: make(chan struct{}), closed: true}
+	l.awaitLock(filepath.Join(dir, Lock), filepath.Join(dir, File)) // returns at its first tick
+	if n := tries.Load(); n != 0 {
+		t.Errorf("a closed ledger tried for the owner lock %d time(s)", n)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 {
+		var made []string
+		for _, e := range entries {
+			made = append(made, e.Name())
+		}
+		t.Errorf("a closed ledger made %s in its directory", strings.Join(made, ", "))
 	}
 }
 
@@ -631,6 +752,163 @@ func TestADamagedHeaderDoesNotFailOpen(t *testing.T) {
 	}
 	if _, err := again.Transition(context.Background(), "team-00000001", func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("a write: %v", err)
+	}
+}
+
+// A database in a rollback journal's mode, as another tool or a restore
+// can leave it, that the server cannot write opens read-only and is read
+// (#417): the read-only connection sets no journal mode, since a switch to
+// WAL writes the file's header, which read-only mode refuses, and a
+// refused open would leave the ledger nothing to read. The file stays in
+// the mode it was found in; written again by its owner, it is back in WAL.
+func TestARollbackJournalDatabaseItCannotWriteIsRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a file whatever its mode")
+	}
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	newRun(t, l, "team-00000001")
+	newRun(t, l, "team-00000002")
+	if rev, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("launched", nil) }); err != nil || rev != 2 {
+		t.Fatalf("a transition: rev %d err %v", rev, err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, File)
+	// Another tool's connection, which sets no journal mode, leaves the
+	// file in a rollback journal's mode.
+	other, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	err = other.QueryRowContext(ctx, "PRAGMA journal_mode = DELETE").Scan(&mode)
+	if cerr := other.Close(); err != nil || cerr != nil || mode != "delete" {
+		t.Fatalf("the rollback journal's mode: %q %v %v", mode, err, cerr)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+	again := openLedger(t, dir)
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	// It reads what the file holds, the writable open still failing.
+	if runs, err := again.Runs(ctx); err != nil || len(runs) != 2 || runs[0].ID != "team-00000001" || runs[1].ID != "team-00000002" {
+		t.Fatalf("the runs: %+v %v", runs, err)
+	}
+	if r, ok, err := again.Run(ctx, "team-00000001"); err != nil || !ok || r.Revision != 2 || r.State != RunRunning || r.Base != "abc123" {
+		t.Fatalf("a run: %+v %v %v", r, ok, err)
+	}
+	events, err := again.Events(ctx, "team-00000001", 0, 0)
+	if err != nil || len(events) != 2 || events[0].Seq != 1 || events[0].Kind != "run.created" || events[1].Seq != 2 || events[1].Kind != "launched" {
+		t.Fatalf("the events: %+v %v", events, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write: %v", err)
+	}
+	if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "delete" {
+		t.Fatalf("the journal mode the read-only ledger left: %q %v", mode, err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Writable again, the file is the owner's, whose connection sets WAL.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner := openLedger(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	if err := owner.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("the owner's journal mode: %q %v", mode, err)
+	}
+	if runs, err := owner.Runs(ctx); err != nil || len(runs) != 2 {
+		t.Fatalf("the runs: %+v %v", runs, err)
+	}
+}
+
+// A database in WAL mode, the mode the ledger leaves it in, that the
+// server cannot write opens read-only (#444). SQLite opens a file the
+// process may not write read-only without an error, and with the file
+// already in WAL mode the connection's journal_mode(WAL) has nothing to
+// write, so the open succeeds and only a write would show it: the ledger
+// tries one at open, rolled back. It reads what the file holds, refuses a
+// write as read-only rather than failing with SQLite's error, and leaves
+// the file's mode as it found it; made writable again, it is the owner's.
+func TestAWALDatabaseItCannotWriteIsReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a file whatever its mode")
+	}
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	newRun(t, l, "team-00000001")
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, File)
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+	again := openLedger(t, dir)
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "readonly database") || strings.Contains(why, "nor read") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	var mode string
+	if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("the journal mode: %q %v", mode, err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o400 {
+		t.Fatalf("the file's mode after the open: %v %v", fi.Mode(), err)
+	}
+	if runs, err := again.Runs(ctx); err != nil || len(runs) != 1 || runs[0].ID != "team-00000001" {
+		t.Fatalf("the runs: %+v %v", runs, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("launched", nil) }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write: %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file made writable again, the WAL and its index beside it are
+	// not: SQLite made them with the file's mode, and a connection that
+	// may not write the WAL does not write. The ledger says so, as it
+	// does for the file.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	half := openLedger(t, dir)
+	if ro, why := half.ReadOnly(); !ro || !strings.Contains(why, "readonly database") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if err := half.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// All three writable, the ledger is the owner's, and nothing of the
+	// opens' tries is in the file.
+	for _, p := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := openLedger(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	if rev, err := owner.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("launched", nil) }); err != nil || rev != 2 {
+		t.Fatalf("a write: rev %d err %v", rev, err)
 	}
 }
 

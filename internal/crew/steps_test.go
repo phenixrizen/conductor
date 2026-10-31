@@ -178,7 +178,7 @@ func TestEveryStepOfATreeIsAReceipt(t *testing.T) {
 		}
 	}
 	kinds := l.kinds(run.ID)
-	order := []string{"attempt.reserved", "manifest.resolved", "attempt.workspace", "step.started", "step.running", "step.finished", "attempt.launched"}
+	order := []string{"attempt.reserved", "manifest.resolved", "attempt.workspace", "step.started", "step.running", "step.finished", "tree.ready", "attempt.launched"}
 	for i := 1; i < len(order); i++ {
 		if slices.Index(kinds, order[i-1]) < 0 || slices.Index(kinds, order[i-1]) > slices.Index(kinds, order[i]) {
 			t.Fatalf("%s before %s: %v", order[i-1], order[i], kinds)
@@ -187,8 +187,11 @@ func TestEveryStepOfATreeIsAReceipt(t *testing.T) {
 	if p := l.payloads(run.ID, "manifest.resolved")[0]; p["tree"] != ledger.TreeWorktree || p["source"] != "crew" || p["revision"] != int64(3) {
 		t.Fatalf("manifest.resolved: %v", p)
 	}
-	if tr, ok := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); !ok || tr.State != ledger.TreeResolved || tr.Dir != a.Attempt.Worktree || tr.Commit != a.Attempt.Start || tr.Manifest != "crew:3" {
+	if tr, ok := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); !ok || tr.State != ledger.TreeReady || tr.Dir != a.Attempt.Worktree || tr.Commit != a.Attempt.Start || tr.Manifest != "crew:3" {
 		t.Fatalf("the worktree's row while it runs: %+v", tr)
+	}
+	if p := l.payloads(run.ID, "tree.ready"); len(p) != 1 || p[0]["tree"] != ledger.TreeWorktree || p[0]["preview"] != "" {
+		t.Fatalf("tree.ready: %v", p)
 	}
 	md, f := taskFileOf(t, a)
 	if f.Manifest == nil || f.Manifest.Source != "crew" || f.Manifest.Revision != 3 || !strings.Contains(md, "The crew's project manifest (revision 3) made the tree usable") {
@@ -572,6 +575,51 @@ func (f *fakePorts) draws() []int {
 	return slices.Clone(f.drawn)
 }
 
+// fakeProbes is the harness's probe executor (treeExec.probe): it answers
+// a probe over HTTP from a map, by URL, never the network; a URL it has no
+// answer for is refused, as a port nothing listens on is. It counts the
+// tries each URL was asked.
+type fakeProbes struct {
+	mu      sync.Mutex
+	answers map[string]func(ctx context.Context) (int, error)
+	asked   map[string]int
+}
+
+func newFakeProbes() *fakeProbes {
+	return &fakeProbes{answers: map[string]func(ctx context.Context) (int, error){}, asked: map[string]int{}}
+}
+
+// probe is one try of the probe of url.
+func (f *fakeProbes) probe(ctx context.Context, url string, _ time.Duration) (int, error) {
+	f.mu.Lock()
+	answer := f.answers[url]
+	f.asked[url]++
+	f.mu.Unlock()
+	if answer == nil {
+		return 0, errors.New("dial tcp: connect: connection refused (no answer in the harness)")
+	}
+	return answer(ctx)
+}
+
+// answer makes url answer status from now on.
+func (f *fakeProbes) answer(url string, status int) {
+	f.answerWith(url, func(context.Context) (int, error) { return status, nil })
+}
+
+// answerWith makes url answer as fn says from now on.
+func (f *fakeProbes) answerWith(url string, fn func(ctx context.Context) (int, error)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers[url] = fn
+}
+
+// tries is how many times url was asked.
+func (f *fakeProbes) tries(url string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.asked[url]
+}
+
 // leases is the engine's port leases: each number and the tree it is
 // leased to.
 func leases(e *Engine) map[int]string {
@@ -884,7 +932,7 @@ func TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted(t *testing.T) {
 					t.Fatal("the tree's end did not reach its commit")
 				}
 			}
-			if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State != ledger.TreeResolved || l.count(run.ID, "tree.ended") != 0 {
+			if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State != ledger.TreeReady || l.count(run.ID, "tree.ended") != 0 {
 				t.Fatalf("the worktree's row: %+v; events %v", tr, l.kinds(run.ID))
 			}
 			if got := leases(e); !maps.Equal(got, map[int]string{shared: "build.1 " + ledger.TreeWorktree}) {

@@ -68,7 +68,7 @@ func TestAResultWhoseManifestCannotBeUsedIsRefusedAtManifest(t *testing.T) {
 	}{
 		{"a broken file", `{"schema": 1, "setup": [`, "conductor.manifest.json at "},
 		{"no file", "", "does not hold conductor.manifest.json"},
-		{"a phase this build does not run", `{"schema": 1, "services": [{"id": "web", "argv": ["sh", "-c", "sleep 60"]}]}`, "this build does not run a project manifest's services yet"},
+		{"a phase this build does not run", `{"schema": 1, "verify": [{"id": "e2e", "argv": ["sh", "-c", "exit 0"]}]}`, "this build does not run a project manifest's verify steps yet"},
 		{"a name the server does not allow", `{"schema": 1, "env": ["EN1_NOT_ALLOWED"], "setup": [{"id": "deps", "argv": ["true"]}]}`, "EN1_NOT_ALLOWED is not in the server's envPassthrough"},
 		{"a name the host does not have", `{"schema": 1, "env": ["EN1_UNSET"], "setup": [{"id": "deps", "argv": ["true"]}]}`,
 			"the host has no EN1_UNSET: set it where the server starts, start it again and continue the run"},

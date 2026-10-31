@@ -11,8 +11,11 @@
 // rules of rules.go. The package imports the standard library and the
 // database driver (modernc.org/sqlite, SQLite translated to Go, so the
 // binaries stay CGO_ENABLED=0; the managed runs' ledger is its other
-// importer) and nothing else: no HTTP, no session, no process. The API,
-// the CLI and the tests are its callers.
+// importer), and on Windows golang.org/x/sys/windows for an attachment's
+// move written through (a module internal/proc imports already), and
+// nothing else: no HTTP, no session, no process. A ticket's attachments
+// are files beside the database (attachments.go), which only the sweep
+// deletes (sweep.go). The API, the CLI and the tests are its callers.
 package dispatch
 
 import (
@@ -104,6 +107,32 @@ type Store struct {
 	// committed: a test makes the commit fail with an error, or acts
 	// while the lock is held.
 	beforeReceipt func() error
+
+	// The attachments' files (attachments.go, sweep.go). syncDir makes a
+	// directory's entries durable (syncDirectory; on Windows the move is
+	// written through instead), unlink deletes a file the sweep collects
+	// (os.Remove), and sweepGrace is how old a lease or an upload's temp
+	// file is when the sweep takes it for a crashed upload's (an hour):
+	// fields a test replaces, read under mu. beforePublish, when set, runs
+	// in an upload between its lease's commit and the file's publication,
+	// and beforeCommit between the publication and the operation that
+	// writes the attachment's row: a test pauses an upload there.
+	// beforeOpen, when set, runs in OpenAttachment between the row's read
+	// and the file's open: a test removes the attachment and sweeps its
+	// file there. sweepErr is what the sweep at open ended with
+	// (SweepError). dirSynced says a sync of the store's directory has
+	// succeeded since the attachments' directory was there
+	// (attachmentDirs): Open's, else an upload's, so one that failed at
+	// open is tried again before an upload is taken; read and written
+	// under mu.
+	syncDir       func(path string) error
+	unlink        func(path string) error
+	sweepGrace    time.Duration
+	beforePublish func()
+	beforeCommit  func()
+	beforeOpen    func()
+	sweepErr      error
+	dirSynced     bool
 }
 
 // Errors of a store that cannot serve.
@@ -146,13 +175,22 @@ type Change struct {
 // two openers on one directory are ordered by the write lock: the second
 // waits for the first's commit, then reads the version it wrote and finds
 // nothing to do. It never fails for want of a usable database: a database
-// a newer Conductor wrote, one that fails its check, or one another
-// writer holds past busyTimeout opens read-only, read when it can be and
-// never written, and ReadOnly says why. It fails only when the directory
-// cannot be made or the database file is a symbolic link. A relative dir
-// is taken under the working directory, and the store keeps it absolute.
-// The receipts are pruned at open (prune) and then every day by a
-// goroutine of the store's, which Close stops.
+// a newer Conductor wrote, one that fails its check, one another writer
+// holds past busyTimeout, or one the store may not write (proved by a
+// write the schema's transaction tries and rolls back, writable) opens
+// read-only, read when it can be and never written, and ReadOnly says
+// why. The file is made private (0600, or 0400 when the owner may not
+// write it) before the schema's transaction.
+// It fails only when the directory cannot be made or the database file is
+// a symbolic link. A relative dir is taken under the working directory,
+// and the store keeps it absolute.
+// A writable store then makes its attachments' directories when they are
+// missing and sweeps their files (sweep), before any caller can upload:
+// what the sweep could not delete is left for the next, a sync of the
+// store's directory that failed is tried again by the next upload, and
+// SweepError says why, the store serving regardless. The receipts are
+// pruned at open (prune) and then every day by a goroutine of the
+// store's, which Close stops.
 func Open(dir string) (*Store, error) { return openWith(dir, nil) }
 
 // openWith is Open, configure (when given) setting the store's fields
@@ -169,7 +207,7 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("dispatch: %s is a symbolic link", path)
 	}
-	s := &Store{dir: dir, path: path, pruneEvery: defaultPruneEvery}
+	s := &Store{dir: dir, path: path, pruneEvery: defaultPruneEvery, syncDir: syncDirectory, unlink: os.Remove, sweepGrace: defaultSweepGrace}
 	if configure != nil {
 		configure(s)
 	}
@@ -184,28 +222,44 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 		s.readBack(ctx)
 		return s, nil
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	// Private before the first transaction, which makes the -wal and -shm
+	// with the file's mode as it is then: a file the open has just made
+	// has the umask's.
+	if err := private(path); err != nil {
 		db.Close()
 		s.readOnly, s.why = true, "the database's mode could not be set: "+err.Error()
 		s.readBack(ctx)
 		return s, nil
 	}
 	if err := s.prepare(ctx, db); err != nil {
-		// Damaged, written by a newer Conductor, or held by another
-		// writer: kept as it is, read when it can be, never written.
+		// Damaged, written by a newer Conductor, held by another writer,
+		// or a file the store may not write (#444): kept as it is, read
+		// when it can be, never written.
 		db.Close()
 		s.readOnly, s.why = true, err.Error()
 		s.readBack(ctx)
 		return s, nil
 	}
 	s.db = db
+	now := time.Now()
+	// The sweep, before any caller can upload: what it leaves is the next
+	// one's, and nothing is lost but space, so Open does not fail for it.
+	s.sweepErr = s.openAttachments(ctx, now)
 	// A pruning that fails drops nothing, and the next one (the
 	// goroutine's, or the next open's) takes what it left: nothing is lost
 	// but space, so Open does not fail for it.
-	s.prune(ctx, time.Now())
+	s.prune(ctx, now)
 	s.startPruning()
 	return s, nil
 }
+
+// SweepError is what the sweep at open ended with (sweep): the first file
+// it could not delete, left for the next sweep, the database's error, or
+// the attachments' directories' (their making, or the sync of the store's
+// directory, which the next upload tries again); nil when it found nothing
+// it could not clear, and for a store opened read-only, which sweeps
+// nothing. The server logs it.
+func (s *Store) SweepError() error { return s.sweepErr }
 
 // startPruning starts the goroutine that prunes the receipts every
 // pruneEvery, until Close stops it.
@@ -362,6 +416,11 @@ func (s *Store) prepare(ctx context.Context, db *sql.DB) error {
 	case err == nil && version > Version:
 		return fmt.Errorf("dispatch: the database is version %d, written by a newer Conductor; this one writes version %d", version, Version)
 	case err == nil && version == Version:
+		// Nothing to write: a write rolled back proves the connection
+		// writes at all (writable).
+		if err := writable(ctx, tx); err != nil {
+			return fmt.Errorf("dispatch: %s cannot be written: %w", s.path, err)
+		}
 		return nil
 	case err == nil:
 		if err := migrate(ctx, tx, version); err != nil {
@@ -412,6 +471,36 @@ func isNoTable(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table")
 }
 
+// private takes the group's and others' permissions off the database
+// file and grants the owner none it lacks: 0644 becomes 0600, and a file
+// made 0400 stays 0400, so a file the store may not write stays so and
+// opens read-only (#444).
+func private(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(path, fi.Mode().Perm()&0o600)
+}
+
+// writable proves that the connection writes, with a write the
+// schema's transaction, tx, rolls back. SQLite opens a file the process
+// may not write (or whose WAL it may not write) read-only, without an
+// error, and nothing short of a write shows it: a file in a rollback
+// journal's mode fails the open, whose switch to WAL writes the header,
+// but one already in WAL mode, the mode the store leaves it in, has
+// nothing to write at open, and in WAL mode even BEGIN IMMEDIATE takes its
+// lock (#444). The write sets the header's user version to what it is,
+// so the file is as it was even were it committed.
+func writable(ctx context.Context, tx *sql.Tx) error {
+	var v int64
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v))
+	return err
+}
+
 // isBusy says err is SQLite's refusal of a lock another connection holds.
 func isBusy(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "SQLITE_BUSY") || strings.Contains(err.Error(), "database is locked"))
@@ -419,7 +508,9 @@ func isBusy(err error) bool {
 
 // ReadOnly reports whether the store takes no writes, and why: a newer
 // Conductor wrote the database, it failed its check, another writer held
-// it past the busy timeout at open, or it could not be opened at all.
+// it past the busy timeout at open, the store may not write the database
+// file (in a rollback journal's mode the open fails, in WAL mode the write
+// the open tries does), or it could not be opened at all.
 func (s *Store) ReadOnly() (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

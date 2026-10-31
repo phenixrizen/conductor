@@ -588,7 +588,7 @@ func (e *Engine) TaskOf(runID, taskID string) (TaskState, []AttemptState, error)
 	st := r.taskStateOf(t)
 	attempts := make([]AttemptState, 0, len(t.attempts))
 	for _, a := range t.attempts {
-		as := attemptStateOf(a)
+		as := r.attemptState(a)
 		if a.submitted != nil {
 			res := *a.submitted
 			res.Issues, res.Findings = slices.Clone(res.Issues), slices.Clone(res.Findings)

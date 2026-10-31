@@ -379,7 +379,9 @@ func TestAContinuationAfterARefusedResultStartsWhereItStarted(t *testing.T) {
 	waitTaskWhere(t, e, run.ID, "build", "attempt 1 failed", func(ts TaskState) bool {
 		return ts.Attempt != nil && ts.Attempt.N == 1 && ts.Attempt.State == ledger.AttemptFailed
 	})
-	if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || row.Checkpoint == "" {
+	// The run as read is one change ahead of the ledger while that change
+	// commits, so the failed row is waited for in the ledger, not read once.
+	if row := l.attemptWhen(t, run.ID, "build", 1, failedRow); row.Stage != "setup deps" || row.Checkpoint == "" {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	stopRun(t, e, run.ID)
