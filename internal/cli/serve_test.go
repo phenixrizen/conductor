@@ -101,6 +101,28 @@ func writeServeConfig(t *testing.T, dir, body string) string {
 	return path
 }
 
+// serveStartWait bounds how long a test waits for a server it started to
+// say it is serving: a bound only a hang reaches. Starting opens the
+// ledger's and Dispatch's stores, each open and the ledger's recovery
+// capped at 30 s by the product, and a machine loaded with other suites
+// takes a race build well past any few seconds there (10 s was overrun at
+// a load of 77 to 160, #281); the test binary's own timeout stays above
+// it (startDeadline).
+const serveStartWait = 3 * time.Minute
+
+// startDeadline fires when a test has waited serveStartWait for a server
+// to start, or shortly before the test binary's -timeout would end the
+// run, so that a hang fails with the server's log rather than a panic. It
+// returns the wait it set as well.
+func startDeadline(t *testing.T) (<-chan time.Time, time.Duration) {
+	t.Helper()
+	wait := serveStartWait
+	if end, ok := t.Deadline(); ok {
+		wait = min(wait, time.Until(end)-10*time.Second)
+	}
+	return time.After(wait), wait
+}
+
 // serveUntilListening runs `conductor serve` on a free loopback port until it
 // reports that it is serving, stops it, and returns everything it logged.
 func serveUntilListening(t *testing.T, args ...string) string {
@@ -119,13 +141,13 @@ func serveUntilListening(t *testing.T, args ...string) string {
 		}
 		done <- err
 	}()
-	deadline := time.After(10 * time.Second)
+	deadline, wait := startDeadline(t)
 	for !strings.Contains(logs.String(), "conductor serving") {
 		select {
 		case err := <-done:
 			t.Fatalf("serve returned before serving: %v\n%s", err, logs.String())
 		case <-deadline:
-			t.Fatalf("serve did not start:\n%s", logs.String())
+			t.Fatalf("serve did not start in %s:\n%s", wait, logs.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
