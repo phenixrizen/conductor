@@ -1844,6 +1844,8 @@ its run, and on no other.
 | `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
 | `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
 | `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
+| `GET /api/sessions/{id}/ticket` | the session's agent token, or admin | the Dispatch ticket the session's run is linked to (see Dispatch, An attempt's ticket), for `conductor task ticket` and the MCP tool `ticket_read`: `{ticket, labels, milestone}`, `ticket` as `GET /api/dispatch/tickets/{key}` reads it (its last 50 comments among it), `labels` the rows of its live labels, by name, and `milestone` its live milestone's row or `null`, which the project's routes give the admin alone; the live ticket whose live `run` link names the session's run, one at most, a deleted ticket's link holding none; `404 no_ticket` for a session that is no member of a run and for a run no live ticket holds; `400 invalid_request` for any parameter; under 3 MiB, as the ticket's own read; a switchyard's `403 switchyard` |
+| `POST /api/sessions/{id}/ticket/comments` | the session's agent token, or admin | comment on that ticket (`comment.add`, Dispatch operations), for `conductor task ticket comment` and the MCP tool `ticket_comment`: body `{opId, body}`, `body` Markdown of 1 to 16 KiB; the comment is the session's member's, `agent:<member>` its author and the actor its operation is kept under, whichever token sent it, with no display name; reply `201 {receipt, comment}`, `200` for the same `opId` sent again, as the admin's comment route; `404 no_ticket` as above; `400 invalid_request` for a body that is not `{opId, body}`, `413 bound` past 64 KiB, and the store's refusals as the admin's route answers them; an agent reads its ticket and comments on it, nothing more; a switchyard's `403 switchyard` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
 | `GET /api/sessions/{id}/links` | admin | share links of a session (`{links, published?, republish?}`), each with `active` viewers; with a switchyard configured, `published` says the session is published there now, and `republish: true` that the publication the switchyard ended has not been made again, which the next link does (the Share dialog makes a link anew then, and in place of one it made here while the session was not published, once it is); for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
@@ -2672,13 +2674,14 @@ in the data directory, and its attachments' files beside it in
 `dispatch/attachments/`, which the file routes never reach. It is not the
 engine's scheduling of a managed run's attempts (Managed runs): it starts
 nothing, and a ticket links to a run the engine made. Every Dispatch route
-is the admin's, a share link's viewers seeing no ticket, and a switchyard's
-`403 switchyard`. Without a data directory every route answers `503
-store_unavailable`; with a store that could not be opened, `503
-dispatch_unavailable`. A store opened read-only (a newer Conductor wrote
-it, it fails its check, another writer held it past the busy timeout as
-the server started, or the server may not write its file; the server's
-log says which) answers its reads as it
+is the admin's, a share link's viewers seeing no ticket, but the two of an
+attempt's ticket (below), which take the session's own token too; on a
+switchyard each answers `403 switchyard`. Without a data directory every
+route answers `503 store_unavailable`; with a store that could not be
+opened, `503 dispatch_unavailable`. A store opened read-only (a newer
+Conductor wrote it, it fails its check, another writer held it past the
+busy timeout as the server started, or the server may not write its file;
+the server's log says which) answers its reads as it
 can and every write `503 dispatch_unavailable` with why. A failure of the
 database is `500 store_failed`, logged. A read takes the query
 parameters its row names and no other: any other is `400
@@ -2699,7 +2702,8 @@ of letters, digits, `.`, `_`, `~` and `-`), `expectedRev`, the revision of
 the entity it acts on that the client expects (absent or 0 for none), and
 `byName`, the display name the store records as `by` (at most 60
 characters, no control character; never in the query string). The admin's
-operations are kept under the actor `admin`. Each is one transaction: the
+operations are kept under the actor `admin`, a run member's under
+`agent:<member>` (An attempt's ticket, below). Each is one transaction: the
 receipt is looked up (the same `opId` with the same content answers with
 the receipt given before, `repeat: true`, and changes nothing; with other
 content it is `409 op_conflict`), the revision compared (`409
@@ -2747,6 +2751,28 @@ the machine asleep) finds its lease dropped and is refused `409 expired`,
 a failed receipt kept, rather than name a file the sweep may have
 deleted: the client sends the file again under a new `opId`. A download is
 served from the file the row names, never from a path a client gave.
+
+**An attempt's ticket.** A run belongs to one live ticket at most, the
+one whose live `run` link names it, so a session of the run's member has
+one ticket to read and comment on, over HTTP with its own token
+(`CONDUCTOR_NOTIFY_TOKEN`), as every task route takes it: `GET
+/api/sessions/{id}/ticket` and `POST /api/sessions/{id}/ticket/comments`,
+which `conductor task ticket` and the MCP tools `ticket_read` and
+`ticket_comment` call. A deleted ticket's link holds no run, and with no
+live ticket both answer `404 no_ticket`. The comment is a `comment.add`
+of the actor `agent:<member>`, its receipts kept under that actor, apart
+from the admin's (`GET /api/dispatch/ops/{opId}` reads none of them).
+The ticket is found inside the comment's own transaction, after its
+receipt is looked up, and the operation's content is the run and the
+body, never the ticket: the same `opId` sent again, or sent while the
+first is still in flight, answers that operation's receipt wherever the
+run's link is now and whether its ticket is live, a repeat naming the
+comment on the ticket it went to, or `op_conflict` for another body (a
+refused comment's too), never a comment on another ticket or `404
+no_ticket`; a new `opId` goes to the ticket that holds the run when it
+commits, and with none answers `404 no_ticket` with nothing kept. An
+agent reads its ticket and comments on it, nothing more: no route of
+its creates, edits, links or closes a ticket.
 
 **The `dispatch` event.** After each commit the server sends one
 `dispatch` event per entity the commit changed on `GET /api/events`, the
