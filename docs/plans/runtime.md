@@ -24,9 +24,11 @@ on its names and needs it merged. C2 to C9 wire the other seven
 interfaces into the packages this item changes too, and this item's PRs
 come after theirs (The PRs, decision RT15). C6 adds `conductor export`, a
 zip of the data directory. C9 adds `GET /api/capabilities` and
-`ext/exttest`, a fake and a contract suite per interface; the Runtime's
-fake and checks are this item's, as `docs/plans/ext.md` says in its C9
-section, and come in PR-5 here. DS2 shows a ticket's runs, candidates and
+`ext/exttest`, a fake and a contract suite per interface; its
+`FakeRuntime` and `Runtime` check answer only a `Where`, and the rest of
+the Runtime's fake and checks are this item's, as `docs/plans/ext.md`
+says in its C9 section: PR-1 here gives that fake the methods it adds to
+the interface, and PR-5 their behaviour and the execution checks. DS2 shows a ticket's runs, candidates and
 checks, this item's `where` among them. EN1 is project manifests: its PR
 #441 (issue #396), in review as this is written, gives the engine's tree
 executor the `serve` and `probe` this plan puts behind the Runtime, and is
@@ -247,35 +249,48 @@ and keeps none of it.
 
 `StartTerminal`'s context bounds the start, never the process's life:
 
-- A context already ended is answered with its error and nothing is
-  started.
-- A start the context ends before it completes returns the context's
-  error and leaves no process: whatever the Runtime began (a process, a
-  guest) it ends before returning. A start that completed returns its
-  `Terminal`, which is the caller's from then on whether or not the
+- A context already ended when the call is made is answered with its
+  error and nothing is started.
+- A context that ends while the start is under way is answered one of
+  two ways, never both. Each Runtime has a commitment point of its own:
+  a context that ends before it abandons the start, whatever the Runtime
+  began (a process, a guest) ended and reaped before the call returns,
+  and the context's error returned; a context that ends past it changes
+  nothing, the start completes and its `Terminal` is returned. A
+  `Terminal` returned is the caller's from then on whether or not the
   context has ended since, so a process is always owned by exactly one
   side: the Runtime until `StartTerminal` returns, the caller once it has
-  returned a `Terminal`.
+  returned a `Terminal`. Callers take a `Terminal` returned under an
+  ended context as a started session, as `main` takes what `pty.Start`
+  returns.
 - `DirFile` is lent for the call: the Runtime neither closes it nor keeps
   it once `StartTerminal` returns, and the caller closes it then, as
   `createLocalSession` and `hostagent.Run` do on `main`.
 
 The native Runtime meets them with `pty.Start` unchanged, which takes no
-context and forks synchronously (`internal/pty/pty.go:56`): it checks the
+context and runs synchronously, its directory resolution and its fork
+and exec (`creack.StartWithSize`) included (`internal/pty/pty.go:56` to
+`:94`). Its commitment point is the call of `pty.Start`: it checks the
 context, then runs a test seam of `ext/local` (a gate before the second
-check and a hook after `pty.Start`, both nil outside its tests), checks
-the context again, and calls `pty.Start`; an ended context
-at either check returns its error with no `pty.Start` made. Once
-`pty.Start` is called the start is not interruptible (a fork and an exec,
-bounded by the kernel, as on `main`), so it completes and its `Terminal`
-is returned; there is no window in which a process exists that neither
-side owns. `pty.Start` is done with `DirFile` when it returns (its
+check, a start function that is `pty.Start` outside the tests, and a hook
+after it returns, the gate and the hook nil outside them), checks the
+context again, and calls the start function; an ended context at either
+check returns its error with no `pty.Start` made. A context that ends
+after the second check, while `pty.Start` runs or after it has returned,
+is past the commitment point: the start completes and its `Terminal` is
+returned with no error, the contract's second answer. That answer is the
+native one because `pty.Start` cannot be interrupted (a fork and an
+exec, bounded by the kernel, as on `main`), and ending the process it
+made would only turn a start that succeeded into a refusal `main` never
+gives; there is no window in which a process exists that neither side
+owns. `pty.Start` is done with `DirFile` when it returns (its
 `runtime.KeepAlive` holds it until the child has changed into it). What
 callers pass keeps `main`'s behaviour (I4): `handleCreateSession` and the
 resume pass `context.WithoutCancel` of the request's context, since `main`
 starts a person's session whose client has gone; `Launch` passes its own,
 which it already refuses when ended (`internal/api/runs.go:56`), the
-refusal now also made at the fork; `hostagent.Run` passes its context, an
+refusal now also made at the Runtime's checks before its commitment
+point; `hostagent.Run` passes its context, an
 ended one taking the existing start-failed path (the connection closed
 "start failed").
 
@@ -296,6 +311,28 @@ unchanged:
   left behind by a leader that exited on its own before `Stop`, is left as
   `main` leaves it (Out of scope). The force reaches every member still in
   the group when it is sent.
+
+A panic does not change who owns a process. Until `StartTerminal`, `Run`
+or `Serve` has returned normally, whatever it began is the Runtime's, and
+a panic that leaves the method, the Runtime's own or one raised by a
+callback it calls on the caller's goroutine (`CommandSpec.Started`, the
+caller's code), leaves nothing running: before the panic leaves, the
+Runtime ends what it began and reaps it, then lets the panic go on
+unchanged, swallowing no caller's panic. A `Log` writer is called on a
+goroutine of the Runtime's, where no caller could recover a panic: it
+must not panic, and one that does ends the program, as on `main`. The
+native Runtime meets this with deferred cleanup:
+
+- In `StartTerminal`, everything between `pty.Start`'s return and its own
+  (the wrapping, and the seam's after-start hook in its tests) runs under
+  a deferred function that, on a panic, stops the process with no grace
+  (`Stop(ctx, 0)`: SIGKILL to the group, the leader reaped within
+  `StopKillWait`), closes the terminal and re-raises.
+- In `proc.Run` and `proc.Serve` (PR-1), `Started` is called under a
+  deferred function that, on a panic, ends the group as the command's own
+  end does (`g.signal`), reaps the leader, closes the output pipe and
+  re-raises. On `main` a panicking `Started` leaves the command running
+  (`internal/proc/run.go:246`); nothing else of `proc`'s changes.
 
 The registry holds one Runtime (section 2.4), read once by the
 composition root through C1's `Freeze()` and `local.Fill`. PR-1 adds two
@@ -381,7 +418,10 @@ RT13).
   spec and ref; each method answers as the test sets it (a `FakeProc`-backed
   `Terminal`, a scripted result, maps for `Probe` and `Port`) or, with
   `Base` set, passes the call to it (`local.Native()`), so a run's real
-  work can be done under a `where` that is not `native`. It imports `ext`,
+  work can be done under a `where` that is not `native`. With
+  `PanicAfterStart` set, its `StartTerminal` starts through `Base`, then
+  ends and reaps what `Base` started, as the contract asks of every
+  Runtime, and panics. It imports `ext`,
   `ext/local` and `internal/pty`, never `internal/session`, so the
   session's own tests may use it.
 
@@ -474,20 +514,29 @@ place below it. A read of such a database answers as before, every row
 
 ### `internal/api`
 
-- `Server` keeps two Runtimes under `s.mu`: the native one
-  (`local.Native()`, from `New`) and the one its engine offers managed
-  runs, set by C1's `UseExtensions(p)` from `p.Runtime` (the registered
-  one, or the native one `local.Fill` put in the empty slot).
-  `UseExtensions` wraps it in C1's guard, as it wraps every provider:
-  `Takes` goes through `extCall` within `ext.TakesWait`, its fallback
-  false, so a late, failing or panicking answer runs the run natively; a
-  process method has no wait and no fallback (a process that started is
-  not answered for by a default), but a panic in one is recovered and
-  answered as a refused start, or as a command's result with `Exit` -1 and
-  the words. `UseExtensions` then calls `Engine.SetRuntime` with the
-  wrapped Runtime; it runs once, before the listeners serve and before the
-  engine launches or continues a run (C1's order, `serve.go:173`), and
-  `Engine.SetRuntime`'s refusal after a launch makes a later call an error.
+- `Server` keeps two Runtimes, both set in `New` and never changed after:
+  the native one (`local.Native()`) and the one its engine offers managed
+  runs, from `p.Runtime` of C1's constructor option
+  `api.WithExtensions(p)` (`docs/plans/ext.md`, "The composition root, and
+  the guard"): the registered one, or the native one `local.Fill` put in
+  the empty slot; a server made without the option, as most tests make
+  it, has `local.Fill(ext.Providers{})`'s, the native one. `New` wraps it
+  in C1's guard where it wraps every provider: `Takes` goes through
+  `extCall` within `ext.TakesWait`, its fallback false, so a late, failing
+  or panicking answer runs the run natively; a process method has no wait
+  and no fallback (a process that started is not answered for by a
+  default). A panic in a process method is recovered only once the method
+  has unwound, by when the contract has had the Runtime end and reap what
+  it began (above); the guard logs it at error, naming the Runtime, and
+  answers it as a refused start, or as a command's result with `Exit` -1
+  and the words. `New` then calls `Engine.SetRuntime` with the wrapped
+  Runtime, once both the guard's wrapping and `crew.NewEngine`
+  (`server.go:298`) have run, beside `SetCheckConcurrency` and
+  `SetEnvPassthrough` and before `UseLedger` and the ledger's recovery: it
+  is inside `New`, so before the listeners serve and before any run is
+  launched or continued (a continuation is a route's, `runs.go:604` and
+  `:673`); a refusal from it is `New`'s error. C1's other providers keep
+  their injection in `New` as C1 has it.
 - `createLocalSession(ctx, req, crewRef, where)` starts the process
   through a Runtime's `StartTerminal` instead of `pty.Start`: the offered one when
   `where` is its `Where` (an attempt of a run it took), the native one when
@@ -514,9 +563,10 @@ written at `:279` and read nowhere) is dropped rather than made a
 
 ### `internal/cli`
 
-- `runServe`: nothing beyond C1's `srv.UseExtensions(local.Fill(
-  extensions()))` (`docs/plans/ext.md`, "The composition root"), which now
-  carries the Runtime; a plain build's line at start stays as C1 has it.
+- `runServe`: nothing beyond C1's `api.New(…,
+  api.WithExtensions(local.Fill(extensions())))` (`docs/plans/ext.md`,
+  "The composition root, and the guard"), whose set now carries the
+  Runtime; a plain build's line at start stays as C1 has it.
 - `runHost`: C1's `extensions()` closes the registry there; the host's
   `Options.Runtime` is left nil, the native one, whatever is registered,
   since a host runs no managed run and a hosted session is a person's
@@ -604,8 +654,9 @@ they are. No event kind is added and no payload changes: the rows carry
 What is written before what:
 
 1. The Runtime a server's engine offers is set before the first launch:
-   `UseExtensions` calls `Engine.SetRuntime` before a listener serves and
-   before a run is launched or continued, and `Engine.SetRuntime` refuses
+   `api.New` calls `Engine.SetRuntime` from its `WithExtensions` set
+   before it returns, so before a listener serves and before a run is
+   launched or continued, and `Engine.SetRuntime` refuses
    once a run has launched, so every managed run of a server is offered
    the same Runtime.
 2. A managed run's Runtime is chosen once, when the run is made or
@@ -743,9 +794,17 @@ Go, by package, the tests the PRs add:
   its error, and the seam's count of `pty.Start` calls still 0),
   `TestNativeStartCancelledWhileGated` (the seam's gate holds the start,
   the context is cancelled, the gate let go: the context's error and no
-  `pty.Start` made), `TestNativeStartCompletedIsTheCallers` (the context
+  `pty.Start` made), `TestNativeStartCancelledDuringTheForkIsTheCallers`
+  (the seam's start function cancels the context and then calls
+  `pty.Start`, so the context ends while the start runs: the `Terminal`
+  is returned with no error, its process runs and its `Stop` ends it),
+  `TestNativeStartCompletedIsTheCallers` (the context
   cancelled from the seam's hook after `pty.Start`: the `Terminal` is
   returned, its process runs and its `Stop` ends it),
+  `TestNativeStartThatPanicsAfterTheForkLeavesNothing` (the seam's hook
+  after `pty.Start` panics: the same panic leaves `StartTerminal`, and
+  when it is recovered the process, whose pid its pid file holds, and its
+  group have been killed and the leader reaped),
   `TestNativeStopAsksTheGroup` (a leader and a child in its group, both
   ending on SIGTERM: nil within the grace, each pid gone, read from the pid
   files they write), `TestNativeStopForcesALeaderThatIgnoresTheAsk` (the
@@ -773,7 +832,11 @@ Go, by package, the tests the PRs add:
   `Prepare`'s words are the `Result.Err` `Run` gives the same spec, in
   `bounds`' order), `TestRunWithEnvironGivesExactlyIt` (the command prints
   its environment, Conductor's own `CONDUCTOR_RUN` and `CONDUCTOR_PORT_WEB`
-  among it, and nothing else), `TestEnvironBesideAllowIsRefused`, and the probe's and
+  among it, and nothing else), `TestEnvironBesideAllowIsRefused`,
+  `TestAStartedThatPanicsEndsTheCommand` (`Run` and `Serve` of a command
+  that writes its pid and a child's into files and waits, given a
+  `Started` that panics: the same panic leaves, and when it is recovered
+  both are gone and the leader reaped), and the probe's and
   the port's tests moved from `internal/crew` with the code (#441's "the
   native executor's probe asks the loopback through a client of its own"
   and its redirect case).
@@ -846,8 +909,16 @@ Go, by package, the tests the PRs add:
   fake asked nothing), `TestAnAttemptStartsInItsRunsRuntime` (an attempt
   of a run the fake took starts in it; of a run it declined, natively),
   `TestARefusedStartIsStartFailed` (`502 start_failed`, nothing
-  registered), `TestUseExtensionsOffersTheEngineTheRuntime` (an attempt's
-  session and its check in the same fake), `TestATakesThatPanicsOrStallsRunsNatively`
+  registered), `TestWithExtensionsOffersTheEngineTheRuntime` (`New` given
+  `WithExtensions` with a fake taking runs: an attempt's session and its
+  check in the same fake; `New` without the option: the engine offered
+  the native one), `TestAStartThatPanicsAfterItsProcessIsRefusedWithNoneLeft`
+  (the offered Runtime a `FakeRuntime` with `Base` native and
+  `PanicAfterStart`, taking the run: the attempt's launch is refused as a
+  start that failed, the panic logged at error, and by then the process
+  `Base` started, whose pid its pid file holds, is gone and reaped; the
+  server serves on and the next attempt's start is made),
+  `TestATakesThatPanicsOrStallsRunsNatively`
   (the guard: a panic, and an answer past `ext.TakesWait`, each run the run
   natively, logged as C1's guard logs), `TestAServerWithNothingRegisteredStartsNatively`,
   `TestARuntimeThatIsAStarterIsStartedFirst` (a fake that is both, given
@@ -872,11 +943,22 @@ Go, by package, the tests the PRs add:
   through the test's `extensions`: the server's engine is offered it) and
   `TestRunHostRunsNatively` (the same fake: the host's `Options.Runtime` is
   nil, the native one).
+- `ext/exttest` (PR-1): C9's `TestFakes` and `TestSuitePassesEveryFake`
+  pass with the `FakeRuntime` PR-1 gives the new methods (each recorded,
+  each unscripted one answering its refusal), and the package compiles
+  `var _ ext.Runtime = (*FakeRuntime)(nil)`.
 - `ext/exttest` (PR-5): `TestTheContractHoldsForTheNativeRuntime`
-  (`exttest.Runtime` against `local.Native()`) and
+  (`exttest.Runtime` and `exttest.RuntimeExec` against `local.Native()`) and
   `TestTheContractHoldsForTheFake` (against `exttest.FakeRuntime`, with and
-  without `Base`), and `TestRunAllChecksTheRuntime` (a `Providers` holding a
-  Runtime that breaks one rule fails `RunAll` with that rule's words).
+  without `Base`), `TestRunAllChecksTheRuntime` (a `Providers` holding a
+  Runtime that breaks one rule fails `RunAll` with that rule's words),
+  `TestRunAllTakesTheRuntimeCase` (a Runtime that records the argv it is
+  asked to run, wrapping the native one, through `RunAll` with
+  `WithRuntimeCase` naming a helper argv: every process the execution
+  checks start is that helper's, and `RunAll` passes) and
+  `TestRunAllWithoutACaseRefusesAnotherRuntime` (the same Runtime with no
+  `WithRuntimeCase`: `RunAll` fails, naming the missing case; the native
+  one with none: passes, its static checks run).
 
 Web (PR-4): the type change; `npm --prefix web run typecheck`, `npm
 --prefix web test` and `make test-e2e`, the existing suites unchanged (no
@@ -975,8 +1057,16 @@ PR-4's own checks; PR-5 adds to the `ext/exttest` that C9 made.
 
 **PR-1: the Runtime's contract and its native default.** `ext`'s Runtime
 members, `TakesWait`, `StopKillWait` and `RegisterRuntime`'s two refusals,
-added to C1's declaration; `ext/local`'s `Native()` (its context checks
-and start seam) and its place in `Fill`; `internal/pty`'s `KillWait`
+added to C1's declaration; every implementation of the slot C1 to C9
+left given the new methods in the same PR, so the whole module still
+builds: C9's `exttest.FakeRuntime` (each method recorded and answering
+as a test sets it, an unscripted one its refusal: `StartTerminal`,
+`Serve`, `Probe` and `Port` an error naming the method, `Run` `Exit` -1
+with those words, `Takes` true unless set; its behaviour is PR-5's) and
+the Runtime doubles of C1 to C9's tests (`ext`'s registry tests among
+them), each found by the module's build; `ext/local`'s `Native()` (its
+context checks, start seam and panic cleanup) and its place in `Fill`;
+`proc`'s cleanup of a panicking `Started`; `internal/pty`'s `KillWait`
 named; the
 `ext-std` amendment and its plants in `internal/opencore`;
 `TestPlainBuildRegistersNothing`'s Runtime slot; `internal/proc`'s
@@ -986,10 +1076,12 @@ them; the boundary test with its allowlist as it stands; the errata line
 in `docs/plans/agent-harness.md`; `docs/repository-map.md` (`ext`,
 `ext/local` and its "May import", `internal/proc`); the features entry
 opened. Nothing calls the Runtime yet: behaviour is `main`'s. Touches
-`ext`, `ext/local`, `internal/opencore`, `cmd/conductor`, `internal/pty`
-(the constant's name), `internal/proc`,
-`internal/crew` (the move), `docs`. Tests: the `ext`, `ext/local`,
-`cmd/conductor`, `internal/opencore` and `internal/proc` tests above.
+`ext`, `ext/local`, `ext/exttest` (the fake's methods), `internal/opencore`,
+`cmd/conductor`, `internal/pty` (the constant's name), `internal/proc`,
+`internal/crew` (the move), the test doubles of other packages that
+implement the slot, `docs`. Tests: the `ext`, `ext/local`,
+`ext/exttest` (PR-1), `cmd/conductor`, `internal/opencore` and
+`internal/proc` tests above.
 Depends on C1 to C9 (decision RT15) and #441. About 1,100 lines.
 
 **PR-2: a managed run's trees run through the Runtime.** `execFor`, the
@@ -1004,8 +1096,9 @@ allowlist), `docs`. Tests: the PR-2 tests of `internal/crew` and
 through the adapter. Depends on PR-1. About 850 lines.
 
 **PR-3: sessions start through the Runtime, on the server and on a host.**
-`session.RuntimeProcess`; `Server`'s two Runtimes, `UseExtensions` wrapping
-and offering the set's, `LaunchSpec.Where`; `createLocalSession(ctx, …,
+`session.RuntimeProcess`; `Server`'s two Runtimes, set in `New`, which
+wraps the `WithExtensions` set's in the guard (a process method's panic
+logged and refused) and offers it to the engine, `LaunchSpec.Where`; `createLocalSession(ctx, …,
 where)` and its three callers; `hostagent.Options.Runtime`; `runHost`
 leaving it native; `internal/api` and `internal/hostagent` out of the
 boundary test's allowlist; `docs/architecture.md` (the sessions diagram,
@@ -1030,17 +1123,35 @@ tests), `web/app/composables`, `docs`. Tests: the PR-4 tests of
 `internal/crew/ledger`, `internal/crew` and `internal/api` above; the web
 checks. Depends on PR-3. About 1,000 lines.
 
-**PR-5: the Runtime's public fake and contract check.** `ext/exttest`'s
-`FakeRuntime` (the standard library, `ext` and `ext/local` alone, as C1's
-table has `ext/exttest`: a terminal over pipes, scripted results, `Takes`
-as set, every call recorded, `Base` passing a call through), and
-`exttest.Runtime(t, rt, c RuntimeCase)`, added to `RunAll` for
-`Providers.Runtime`: the rules this plan writes, checked as PR-1 checks
-the native one. A valid `Name` and `Where`, constant; `Takes` within
-`TakesWait` from 32 goroutines at once; `StartTerminal` in the directory
+**PR-5: the Runtime's public fake and contract check.** The behaviour of
+`ext/exttest`'s `FakeRuntime`, whose methods PR-1 added (the standard
+library, `ext` and `ext/local` alone, as C1's table has `ext/exttest`: a
+terminal over pipes, scripted results, `Takes` as set, every call
+recorded, `Base` passing a call through). C9's `exttest.Runtime(t, r)`
+keeps its signature and gains the checks that start nothing: a valid
+`Name` and `Where`, constant; `Takes` within `TakesWait` from 32
+goroutines at once. The checks that start processes are a new
+`exttest.RuntimeExec(t, r, c RuntimeCase)`, and `RunAll` reaches them
+through an option: `RunAll(t, p ext.Providers, opts ...RunOption)`,
+variadic so C9's callers compile unchanged, with
+`exttest.WithRuntimeCase(c RuntimeCase) RunOption`. `RunAll` runs
+`Runtime(t, p.Runtime)` as C9 has it, and `RuntimeExec(t, p.Runtime, c)`
+with the case given; a Runtime whose `Where` is not `native` with no case
+fails `RunAll`, naming the option, so another module's CI cannot leave
+the execution checks out by leaving the case out, while the native one
+with none runs its static checks alone (`ext/local`'s tests and
+`TestTheContractHoldsForTheNativeRuntime` run its processes). C9's
+`TestSuitePassesEveryFake` passes `WithRuntimeCase` with the test
+binary's helper; `TestSuitePassesEveryDefault` is unchanged; the package
+documentation says the premium repository passes its case. The
+execution checks are the rules this plan writes, checked as PR-1 checks
+the native one: `StartTerminal` in the directory
 given with exactly `Env`, output, input, resize and exit, `DirFile`
 closed by the check as soon as it returns, an ended context answered with
-its error and no `Terminal`; `Stop` by the rules above, asked (a helper
+its error and no `Terminal`, a context cancelled while the start runs
+answered either way the contract allows (a `Terminal` is stopped by the
+check); a `Started` that panics leaving `Run` and `Serve` as that same
+panic; `Stop` by the rules above, asked (a helper
 that exits on the ask: nil within its grace) and forced (a helper that
 ignores it: nil within `grace` plus `StopKillWait`), and after an exit
 (nil), descendants not checked, as the contract promises none; `Run` with argv never a shell (an argument with
@@ -1128,16 +1239,19 @@ overturned is rewritten here before the PRs are cut.
   (`docs/plans/ext.md`, its Runtime paragraph and decision E4) rather than
   declaring its own: `Provider`'s `Name`, `Where`, `WhereNative`,
   `Where.Valid`, `RegisterRuntime`, `RuntimeProvider()`, `Freeze()`,
-  `local.Fill` as the one place that asks, and `UseExtensions` as the
-  server's one door; it adds the methods, `TakesWait`, two refusals to
+  `local.Fill` as the one place that asks, and `api.New`'s
+  `WithExtensions` option as the server's one door; it adds the methods, `TakesWait`, two refusals to
   `RegisterRuntime`, the native default in `Fill`, and the `ext-std`
   amendment for `ext/local`. Reason: C1's plan gives the Runtime its slot
   and leaves these to this item, and nothing implements `ext` before P0.
 - **RT14, the fakes.** Both are this item's: `sessiontest.FakeRuntime` for
-  this repository's tests (PR-2), and `ext/exttest`'s `FakeRuntime` and
-  `exttest.Runtime` check, in `RunAll`, for another module's CI (PR-5), as
-  `docs/plans/ext.md` says in its C9 section. Reason: one owner, the one
-  that writes the contract.
+  this repository's tests (PR-2), and the methods and behaviour of
+  `ext/exttest`'s `FakeRuntime` (the methods with the interface in PR-1,
+  the behaviour in PR-5) and the `exttest.Runtime` and `RuntimeExec`
+  checks, reached from `RunAll` through `WithRuntimeCase`, for another
+  module's CI (PR-5), as `docs/plans/ext.md` says in its C9 section (C9
+  ships the fake and the check answering a `Where`). Reason: one owner,
+  the one that writes the contract.
 - **RT15, after C2 to C9.** PR-1 is cut once C2 to C9 are Done, so no PR
   here runs beside theirs (The PRs). Reason: they share `internal/api`,
   `internal/crew`, `internal/session`, `internal/hostagent`,
