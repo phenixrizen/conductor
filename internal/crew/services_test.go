@@ -509,14 +509,18 @@ func collected[T any](p weak.Pointer[T]) bool {
 // their output, so the log it buffered, up to ledger.MaxLog a service, is
 // the ledger's alone. The worktree's and the checkout's service rows keep
 // what web wrote, a refused commit's carried by the next, and the
-// worktree service's log and handle are collected.
+// worktree service's log and handle are collected. Each tree is ready
+// only once its web has written its line and then its pid (the probe up),
+// so neither tree ends before the line is written (Codex's review of
+// #441, round 3).
 func TestAnEndedTreeLetsGoOfItsServices(t *testing.T) {
 	for _, refused := range []bool{false, true} {
 		t.Run(map[bool]string{false: "their ends recorded", true: "their ends refused once"}[refused], func(t *testing.T) {
 			dir := newRepo(t)
 			e, _, l := managedEngine(t)
 			web := shStep("web", `echo serving; echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; while :; do sleep 0.05; done`)
-			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{web}}, work("build", "lead")))
+			m := Manifest{Services: []Check{web}, Ready: []Probe{byFile("up", "web.pid")}}
+			run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
 			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 			logOf, svcOf := weakService(e, run.ID, "build", 1)
 			if refused {
