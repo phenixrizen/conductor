@@ -175,6 +175,16 @@ add its rule here.
   edge on arrival failed only when the page's 5 s tick came first. Switch
   a mode or toggle a setting, then check again, so a bug that only a
   redraw shows fails every run.
+- Judge by the state at the moment of judging, not by what a wait last
+  saw. A wait that ended on its timer, or a slow step after it, leaves a
+  variable saying "still open" after the thing closed: a stopped service's
+  `/proc` listing outlasted its member's shutdown on a loaded machine, and
+  the output, closed during the listing, was reported held (`Killed`,
+  #281). Read the channel or the file again where the answer is made, and
+  let the test hold the event back past the judgement through a seam
+  (`outputRead`, `settled` in `internal/proc`), so the old code fails
+  every run. A flake a whole loaded box will not show comes back when the
+  test and a few busy loops share a few cores (`taskset -c 0-3`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
