@@ -146,6 +146,13 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
+- A starting value is not a result. A threshold the starting state
+  already meets (cols above 60 on a session born 80 x 24) passes before
+  anything happened, and a settle that compares a read with one made a
+  moment before settles at once. Wait for the step that makes the value
+  (the window attached: the session counts it as a viewer) and compare
+  with what the actor itself computed (the page's drawn grid), on two
+  reads an interval apart.
 - A run's log is not its ledger. The engine notes a change in the run's
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
