@@ -178,6 +178,15 @@ add its rule here.
   edge on arrival failed only when the page's 5 s tick came first. Switch
   a mode or toggle a setting, then check again, so a bug that only a
   redraw shows fails every run.
+- Mark what you read with what you saw before reading it. A poll that
+  records a file's time (a version, a cursor) after its read can record a
+  change the read never saw, and no later poll sees a change: the
+  certificate files' check read a certificate whose key was not yet
+  written, failed, then stat'd the pair and recorded the key's time
+  (#281). Take the mark first and record it only for a read that loaded;
+  a test changes the thing between the read and the record through a
+  seam (`afterRead` in `internal/certs`), and pokes or calls each check
+  itself instead of racing a ticker.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
