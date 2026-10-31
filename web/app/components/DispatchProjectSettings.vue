@@ -1,0 +1,204 @@
+<script setup lang="ts">
+import type { DispatchLabel, DispatchMilestone, LabelColor, LabelReply, MilestoneEdit, MilestoneReply, ProjectRead } from '~/composables/useDispatch'
+import type { DispatchOrder } from '~/utils/dispatchOrder'
+import { LABEL_COLOR_CHOICES, labelDot } from '~/utils/dispatch'
+
+/**
+ * A project's labels and milestones (docs/plans/dispatch.md, PR-10), managed from its page: a label made, renamed, recoloured with one
+ * of the twelve names the UI maps to the brand's scales (never a value of the client's own) and deleted; a milestone made, renamed,
+ * given a target date and a description, closed and opened again, and deleted. Each change is one operation on the revision shown
+ * (useDispatchOps); a delete leaves every ticket that had the label or the milestone, which the open pages of those tickets see by the
+ * project's events. The page reads the project again once an operation is done (`changed`) and on every event of the project.
+ */
+const open = defineModel<boolean>('open', { default: false })
+const props = defineProps<{ project: string; read: ProjectRead; gate: DispatchOrder; archived: boolean }>()
+const emit = defineEmits<{ changed: [] }>()
+
+const api = useDispatchApi()
+const ops = useDispatchOps(props.gate)
+
+const labels = computed(() => [...props.read.labels].sort((a, b) => a.name.localeCompare(b.name)))
+const milestones = computed(() => {
+  const order = (m: DispatchMilestone) => (m.state === 'closed' ? 2 : m.target ? 0 : 1)
+  return [...props.read.milestones].sort((a, b) => order(a) - order(b) || a.target.localeCompare(b.target) || a.name.localeCompare(b.name))
+})
+const colorItems = LABEL_COLOR_CHOICES.map((c) => ({ label: c.label, value: c.value, dot: c.dot }))
+
+/** Each operation answers whether it was done; the page reads the project again after one that was. */
+async function done<R>(p: Promise<R | null>): Promise<boolean> {
+  const r = await p
+  if (r) emit('changed')
+  return !!r
+}
+
+// ---------------------------------------------------------------------------
+// The labels
+
+const newLabel = ref('')
+const newColor = ref<LabelColor>('blue')
+async function makeLabel() {
+  const name = newLabel.value.trim()
+  if (!name || props.archived) return
+  const color = newColor.value
+  if (await done(ops.run<LabelReply>((op) => api.createLabel(props.project, { ...op, name, color }), { thing: `label:new:${props.project}`, what: `The label ${name}` }))) newLabel.value = ''
+}
+
+const renaming = ref('')
+const renameDraft = ref('')
+function startRename(l: DispatchLabel) {
+  renaming.value = l.id
+  renameDraft.value = l.name
+}
+async function rename(l: DispatchLabel) {
+  const name = renameDraft.value.trim()
+  if (!name || name === l.name) {
+    renaming.value = ''
+    return
+  }
+  if (await done(ops.run<LabelReply>((op) => api.editLabel(props.project, l.id, { ...op, name }), { thing: `label:${l.id}`, what: `The label ${l.name}`, expectedRev: l.rev }))) renaming.value = ''
+}
+function recolor(l: DispatchLabel, color: unknown) {
+  if (typeof color !== 'string' || color === l.color) return
+  void done(ops.run<LabelReply>((op) => api.editLabel(props.project, l.id, { ...op, color: color as LabelColor }), { thing: `label:${l.id}`, what: `The label ${l.name}`, expectedRev: l.rev }))
+}
+
+const confirming = ref('')
+function deleteLabel(l: DispatchLabel) {
+  confirming.value = ''
+  void done(ops.run<LabelReply>((op) => api.deleteLabel(props.project, l.id, op), { thing: `label:${l.id}`, what: `The label ${l.name}`, expectedRev: l.rev, done: `The label ${l.name} deleted` }))
+}
+
+// ---------------------------------------------------------------------------
+// The milestones
+
+const newMilestone = ref('')
+const newTarget = ref('')
+async function makeMilestone() {
+  const name = newMilestone.value.trim()
+  if (!name || props.archived) return
+  const target = newTarget.value
+  if (await done(ops.run<MilestoneReply>((op) => api.createMilestone(props.project, { ...op, name, ...(target ? { target } : {}) }), { thing: `milestone:new:${props.project}`, what: `The milestone ${name}` }))) {
+    newMilestone.value = ''
+    newTarget.value = ''
+  }
+}
+
+function editMilestone(m: DispatchMilestone, change: MilestoneEdit): Promise<boolean> {
+  return done(ops.run<MilestoneReply>((op) => api.editMilestone(props.project, m.id, { ...op, ...change }), { thing: `milestone:${m.id}`, what: `The milestone ${m.name}`, expectedRev: m.rev }))
+}
+
+/** The milestone whose name and description are being edited, and the drafts. */
+const editingMilestone = ref('')
+const milestoneName = ref('')
+const milestoneDescription = ref('')
+function startMilestone(m: DispatchMilestone) {
+  editingMilestone.value = m.id
+  milestoneName.value = m.name
+  milestoneDescription.value = m.description
+}
+async function saveMilestone(m: DispatchMilestone) {
+  const change: MilestoneEdit = {}
+  const name = milestoneName.value.trim()
+  if (name && name !== m.name) change.name = name
+  if (milestoneDescription.value !== m.description) change.description = milestoneDescription.value
+  if (!Object.keys(change).length || (await editMilestone(m, change))) editingMilestone.value = ''
+}
+function setTarget(m: DispatchMilestone, target: string) {
+  if (target !== m.target) void editMilestone(m, { target })
+}
+function deleteMilestone(m: DispatchMilestone) {
+  confirming.value = ''
+  void done(ops.run<MilestoneReply>((op) => api.deleteMilestone(props.project, m.id, op), { thing: `milestone:${m.id}`, what: `The milestone ${m.name}`, expectedRev: m.rev, done: `The milestone ${m.name} deleted` }))
+}
+
+/** A milestone's description's bound (the store's), in bytes. */
+const MAX_MILESTONE_DESCRIPTION = 4 << 10
+const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescription.value).length > MAX_MILESTONE_DESCRIPTION)
+</script>
+
+<template>
+  <USlideover v-model:open="open" :title="`${project}: labels and milestones`" description="What its tickets are labelled with, and the milestones they are planned for." :ui="{ content: 'max-w-lg' }">
+    <template #body>
+      <div class="flex flex-col gap-8" data-project-settings>
+        <!-- The labels. -->
+        <section class="flex flex-col gap-3" data-project-labels :data-count="labels.length">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Labels</h3>
+          <p v-if="!labels.length" class="text-sm text-dimmed">None yet.</p>
+          <ul class="flex flex-col gap-1.5">
+            <li v-for="l in labels" :key="l.id" class="flex flex-col gap-1.5" :data-project-label="l.name" :data-label-color="l.color">
+              <div class="flex min-w-0 items-center gap-2">
+                <USelect :model-value="l.color" :items="colorItems" :disabled="archived" size="xs" class="w-28 flex-none" :aria-label="`The colour of ${l.name}`" data-label-color-pick @update:model-value="(c: unknown) => recolor(l, c)">
+                  <template #leading><span class="size-2.5 rounded-full" :class="labelDot(l.color)" /></template>
+                  <template #item-leading="{ item }"><span class="size-2.5 rounded-full" :class="item.dot" /></template>
+                </USelect>
+                <form v-if="renaming === l.id" class="flex min-w-0 flex-1 items-center gap-1.5" @submit.prevent="rename(l)">
+                  <UInput v-model="renameDraft" size="xs" maxlength="40" autofocus class="min-w-0 flex-1" aria-label="The label's name" data-label-rename-input @keydown.escape.stop="renaming = ''" />
+                  <UButton type="submit" label="Save" size="xs" data-label-rename-save />
+                </form>
+                <span v-else class="min-w-0 flex-1 truncate text-sm" data-label-name>{{ l.name }}</span>
+                <template v-if="!archived && renaming !== l.id">
+                  <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Rename ${l.name}`" data-label-rename @click="startRename(l)" />
+                  <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Delete ${l.name}`" data-label-delete @click="confirming = l.id" />
+                </template>
+              </div>
+              <div v-if="confirming === l.id" class="flex flex-wrap items-center gap-2 text-sm" data-label-confirm>
+                <span class="text-muted">Delete {{ l.name }}? Every ticket that has it loses it.</span>
+                <UButton label="Delete" color="error" variant="soft" size="xs" data-label-delete-confirm @click="deleteLabel(l)" />
+                <UButton label="Keep it" color="neutral" variant="ghost" size="xs" @click="confirming = ''" />
+              </div>
+            </li>
+          </ul>
+          <form v-if="!archived" class="flex items-center gap-2" data-label-new @submit.prevent="makeLabel">
+            <USelect v-model="newColor" :items="colorItems" size="sm" class="w-28 flex-none" aria-label="The new label's colour" data-label-new-color>
+              <template #leading><span class="size-2.5 rounded-full" :class="labelDot(newColor)" /></template>
+              <template #item-leading="{ item }"><span class="size-2.5 rounded-full" :class="item.dot" /></template>
+            </USelect>
+            <UInput v-model="newLabel" placeholder="A new label…" maxlength="40" size="sm" class="min-w-0 flex-1" aria-label="The new label's name" data-label-new-name />
+            <UButton type="submit" label="Make" icon="i-lucide-plus" size="sm" :disabled="!newLabel.trim()" data-label-new-submit />
+          </form>
+        </section>
+
+        <!-- The milestones. -->
+        <section class="flex flex-col gap-3" data-project-milestones :data-count="milestones.length">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Milestones</h3>
+          <p v-if="!milestones.length" class="text-sm text-dimmed">None yet.</p>
+          <ul class="flex flex-col gap-3">
+            <li v-for="m in milestones" :key="m.id" class="flex flex-col gap-2 rounded-md p-3 ring ring-default" :data-project-milestone="m.name" :data-milestone-state="m.state">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <UIcon :name="m.state === 'closed' ? 'i-lucide-milestone' : 'i-lucide-flag'" class="size-4 flex-none text-muted" />
+                <span class="min-w-0 flex-1 truncate text-sm font-medium" :class="m.state === 'closed' ? 'text-muted line-through' : 'text-highlighted'" data-milestone-name>{{ m.name }}</span>
+                <UInput type="date" :model-value="m.target" :disabled="archived" size="xs" class="w-36" :aria-label="`The target of ${m.name}`" data-milestone-target @change="(e: Event) => setTarget(m, (e.target as HTMLInputElement).value)" />
+              </div>
+              <p v-if="m.description && editingMilestone !== m.id" class="whitespace-pre-wrap text-xs text-muted">{{ m.description }}</p>
+              <form v-if="editingMilestone === m.id" class="flex flex-col gap-2" @submit.prevent="saveMilestone(m)">
+                <UInput v-model="milestoneName" size="sm" maxlength="60" aria-label="The milestone's name" data-milestone-name-input />
+                <UTextarea v-model="milestoneDescription" :rows="3" autoresize size="sm" placeholder="What it is for…" aria-label="The milestone's description" data-milestone-description-input />
+                <div class="flex items-center gap-2">
+                  <span v-if="milestoneOver" class="text-xs text-error">More than the 4 KiB a milestone's description may hold</span>
+                  <div class="flex-1" />
+                  <UButton label="Cancel" color="neutral" variant="ghost" size="xs" @click="editingMilestone = ''" />
+                  <UButton type="submit" label="Save" size="xs" :disabled="milestoneOver || !milestoneName.trim()" data-milestone-save />
+                </div>
+              </form>
+              <div v-else-if="!archived" class="flex flex-wrap items-center gap-1">
+                <UButton label="Edit" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" data-milestone-edit @click="startMilestone(m)" />
+                <UButton :label="m.state === 'closed' ? 'Open again' : 'Close'" :icon="m.state === 'closed' ? 'i-lucide-rotate-ccw' : 'i-lucide-check'" size="xs" color="neutral" variant="ghost" data-milestone-state-toggle @click="editMilestone(m, { state: m.state === 'closed' ? 'open' : 'closed' })" />
+                <UButton label="Delete" icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" data-milestone-delete @click="confirming = m.id" />
+              </div>
+              <div v-if="confirming === m.id" class="flex flex-wrap items-center gap-2 text-sm" data-milestone-confirm>
+                <span class="text-muted">Delete {{ m.name }}? Every ticket planned for it is left with none.</span>
+                <UButton label="Delete" color="error" variant="soft" size="xs" data-milestone-delete-confirm @click="deleteMilestone(m)" />
+                <UButton label="Keep it" color="neutral" variant="ghost" size="xs" @click="confirming = ''" />
+              </div>
+            </li>
+          </ul>
+          <form v-if="!archived" class="flex flex-wrap items-center gap-2" data-milestone-new @submit.prevent="makeMilestone">
+            <UInput v-model="newMilestone" placeholder="A new milestone…" maxlength="60" size="sm" class="min-w-0 flex-1" aria-label="The new milestone's name" data-milestone-new-name />
+            <UInput v-model="newTarget" type="date" size="sm" class="w-36" aria-label="The new milestone's target" data-milestone-new-target />
+            <UButton type="submit" label="Make" icon="i-lucide-plus" size="sm" :disabled="!newMilestone.trim()" data-milestone-new-submit />
+          </form>
+        </section>
+      </div>
+    </template>
+  </USlideover>
+</template>

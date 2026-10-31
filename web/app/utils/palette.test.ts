@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropPrefix, frecency, matchRange, noteUse, parsePrefix, parseVerb, rank, readRecent, RECENT_KEY, RECENT_MAX, rowMatches, writeRecent, type Named, type PaletteGroup } from './palette'
+import { capGroup, dropPrefix, frecency, matchRange, noteUse, PAGES, parsePrefix, parseVerb, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
 
 const names: Named[] = [
   { kind: 'session', id: 's1', name: 'api sweep', words: ['/home/dev/conductor', 'claude'] },
@@ -116,5 +116,63 @@ describe('rank', () => {
     expect(matchRange('API sweep', 'sweep')).toEqual([4, 9])
     expect(matchRange('api sweep', 'x')).toBeNull()
     expect(matchRange('api sweep', '')).toBeNull()
+  })
+})
+
+describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decisions, 11)", () => {
+  // The Tickets group as usePaletteRows makes it: each ticket's key and title, its key its exact name; E2E-10 used lately.
+  const tickets: PaletteGroup = {
+    id: 'tickets',
+    label: 'Tickets',
+    rows: [
+      { key: 'ticket:E2E-10', label: 'E2E-10 Tidy the login page', words: ['E2E-10'], exact: ['E2E-10'] },
+      { key: 'ticket:E2E-11', label: 'E2E-11 Fix the logout', words: ['E2E-11'], exact: ['E2E-11'] },
+      { key: 'ticket:E2E-1', label: 'E2E-1 Fix the login', words: ['E2E-1'], exact: ['E2E-1'] },
+      { key: 'ticket:API-1', label: 'API-1 Rate limits', words: ['API-1'], exact: ['API-1'] },
+    ],
+  }
+  const recent = { 'ticket:E2E-10': { count: 9, last: Date.now() }, 'ticket:E2E-11': { count: 4, last: Date.now() } }
+
+  it('ranks the ticket a key typed whole names first in Tickets, whatever was used lately, in any case', () => {
+    for (const q of ['E2E-1', 'e2e-1', ' E2E-1 ']) {
+      const [g] = rank([tickets], q, recent)
+      expect(g!.rows.map((r) => r.key)).toEqual(['ticket:E2E-1', 'ticket:E2E-10', 'ticket:E2E-11'])
+    }
+    expect(rowExact(tickets.rows[2]!, 'e2e-1')).toBe(true)
+    expect(rowExact(tickets.rows[2]!, 'e2e-')).toBe(false)
+    expect(rowExact(tickets.rows[2]!, '')).toBe(false)
+  })
+
+  it('finds a ticket by a word of its title, those used lately first, and by a part of a key, with no exact name to lift one', () => {
+    expect(rank([tickets], 'login', recent)[0]!.rows.map((r) => r.key)).toEqual(['ticket:E2E-10', 'ticket:E2E-1'])
+    expect(rank([tickets], 'e2e-', recent)[0]!.rows.map((r) => r.key)).toEqual(['ticket:E2E-10', 'ticket:E2E-11', 'ticket:E2E-1'])
+    expect(rank([tickets], 'rate', recent)[0]!.rows.map((r) => r.key)).toEqual(['ticket:API-1'])
+  })
+
+  it('goes to Dispatch with go dispatch, and keeps twelve verbs', () => {
+    expect(PAGES).toContain('dispatch')
+    expect(parseVerb('go dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
+    expect(parseVerb('go Dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
+    expect(VERBS).toHaveLength(12)
+    expect(parsePrefix('E2E-1')).toEqual({ mode: 'search', rest: 'E2E-1' })
+  })
+})
+
+describe('a long group cut to its first rows', () => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({ key: `ticket:A-${i + 1}`, label: `A-${i + 1} Ticket` }))
+  const groups: PaletteGroup[] = [
+    { id: 'running', label: 'Running', rows: rows.slice(0, 3) },
+    { id: 'tickets', label: 'Tickets', rows },
+  ]
+  it('keeps its first n rows as ranked, says how many it holds, and leaves the other groups whole', () => {
+    const [running, tickets] = capGroup(groups, 'tickets', 10)
+    expect(tickets!.rows.map((r) => r.key)).toEqual(rows.slice(0, 10).map((r) => r.key))
+    expect(tickets!.label).toBe('Tickets · 10 of 12, type to find the rest')
+    expect(running!.rows).toHaveLength(3)
+    expect(running!.label).toBe('Running')
+  })
+  it('leaves a group of n rows or fewer as it is', () => {
+    expect(capGroup(groups, 'tickets', 12)[1]).toEqual(groups[1])
+    expect(capGroup(groups, 'none', 1)).toEqual(groups)
   })
 })

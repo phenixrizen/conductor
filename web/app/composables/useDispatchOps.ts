@@ -1,7 +1,7 @@
 import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
 import { closeRefusalWords } from '~/utils/dispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
-import type { DispatchReceipt, OpBody } from './useDispatch'
+import type { DispatchReceipt, DispatchTicket, OpBody, TicketEdit, TicketReply, TicketSummary } from './useDispatch'
 
 /** How one operation is sent and what becomes of its reply. */
 export interface DispatchOpOptions<R> {
@@ -17,10 +17,26 @@ export interface DispatchOpOptions<R> {
   rev?: (reply: R) => number | undefined
   /** A toast's title once it is done; none when the page shows what changed. */
   done?: string
-  /** Called after a refusal, for the page to read what the store holds now (a stale revision: someone else's edit came first). */
-  refused?: () => void
+  /** Called after a refusal with its receipt, for the page to read what the store holds now (a stale revision: someone else's edit came first). */
+  refused?: (receipt: DispatchReceipt) => void
   /** Throw a failure to the caller (a dialog that shows it in place) instead of a toast. */
   raise?: boolean
+}
+
+/** What became of several tickets' edits: the keys done (or holding the value already, which needs no operation), and the others with why. */
+export interface EditsOutcome {
+  done: string[]
+  failed: Array<{ key: string; words: string }>
+}
+
+/** How `editTickets` shows what it did. */
+export interface EditsOptions {
+  /** Shows a ticket an edit answered with, once the gate takes it (a list's row patched, a cache's). */
+  apply?: (t: DispatchTicket) => void
+  /** The toast's title once every edit is done, from the keys; none when the page shows what changed. */
+  done?: (keys: string[]) => string
+  /** Called after a refusal, for the page to read what the store holds now. */
+  refused?: () => void
 }
 
 /** A failed operation in words: a refusal's (the close policy's in its own words), else the error's. */
@@ -59,7 +75,7 @@ export function useDispatchOps(gate: DispatchOrder) {
       if (o.done) toast.add({ title: o.done, description: reply.receipt.repeat ? 'It was done already.' : undefined, icon: 'i-lucide-check', color: 'success' })
       return reply
     } catch (e) {
-      if (e instanceof CommandRefused) o.refused?.()
+      if (e instanceof CommandRefused) o.refused?.(e.receipt as DispatchReceipt)
       if (o.raise) throw e
       toast.add({ title: `${o.what}: not changed`, description: dispatchFailureWords(e), icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
       return null
@@ -68,5 +84,50 @@ export function useDispatchOps(gate: DispatchOrder) {
     }
   }
 
-  return { busy, run }
+  const api = useDispatchApi()
+
+  /**
+   * Edits tickets one after another, one operation each (a pick over the tickets selected is an operation per ticket): each expects the
+   * revision of the ticket shown, or the one an earlier answer of this page carried for it when that is later (a list read before that
+   * answer may still show the older row), so a second pick made on the same ticket is not refused stale_revision by the first. `make`
+   * gives each ticket its edit, null when it holds the value already, which is no operation (the store refuses an edit that changes
+   * nothing). Each answer goes through the page's gate as the ticket's (`ticket:<key>`), where `apply` shows it. One toast says what was
+   * not changed and why, in the refusal's words (the close policy's own), and `done`'s title says what was, when given.
+   */
+  async function editTickets(targets: readonly TicketSummary[], make: (t: TicketSummary) => TicketEdit | null, o: EditsOptions = {}): Promise<EditsOutcome> {
+    const out: EditsOutcome = { done: [], failed: [] }
+    for (const t of targets) {
+      const change = make(t)
+      if (!change) {
+        out.done.push(t.key)
+        continue
+      }
+      const thing = `ticket:${t.key}`
+      try {
+        await run<TicketReply>((body) => api.editTicket(t.key, { ...body, ...change }), {
+          thing,
+          what: t.key,
+          expectedRev: Math.max(t.rev, gate.rev(thing)),
+          apply: (r) => {
+            if (r.ticket) o.apply?.(r.ticket)
+          },
+          rev: (r) => r.ticket?.rev,
+          refused: o.refused,
+          raise: true,
+        })
+        out.done.push(t.key)
+      } catch (e) {
+        out.failed.push({ key: t.key, words: dispatchFailureWords(e) })
+      }
+    }
+    if (out.failed.length === 1 && targets.length === 1) {
+      toast.add({ title: `${out.failed[0]!.key}: not changed`, description: out.failed[0]!.words, icon: 'i-lucide-triangle-alert', color: 'warning' })
+    } else if (out.failed.length) {
+      toast.add({ title: `${out.failed.length} of ${targets.length} not changed`, description: out.failed.map((f) => `${f.key}: ${f.words}`).join(' · '), icon: 'i-lucide-triangle-alert', color: 'warning' })
+    }
+    if (out.done.length && o.done) toast.add({ title: o.done(out.done), icon: 'i-lucide-check', color: 'success' })
+    return out
+  }
+
+  return { busy, run, editTickets }
 }
