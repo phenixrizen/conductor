@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -114,7 +115,9 @@ func head(t *testing.T, dir string) string {
 // A planned run starts at the revision's base, whatever HEAD became since:
 // its row and run.created say the base, its first attempt starts there,
 // and run.created names the ticket and the package's digest. A base that
-// is no commit of the repository is refused before a run exists.
+// is no commit of the repository is refused ErrInvalid before a run
+// exists, a crew whose manifest is the file form too (nothing is read at
+// the base before it is known to be a commit).
 func TestLaunchPlannedStartsAtTheBase(t *testing.T) {
 	dir := newRepo(t)
 	base := head(t, dir)
@@ -160,13 +163,29 @@ func TestLaunchPlannedStartsAtTheBase(t *testing.T) {
 	if s := ledgerOf(t, ld, missing.RunID); s.Found {
 		t.Fatalf("a refused launch left a row: %+v", s.Row)
 	}
+
+	fdir := newRepo(t)
+	commitManifestFile(t, fdir, `{"schema": 1}`)
+	if _, release, err := e.LaunchPlanned(t.Context(), fileCrew(fdir, work("build", "lead")), "", missing); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "not a commit") {
+		release()
+		t.Fatalf("a base not in the repository of a file-form manifest's crew: %v", err)
+	} else {
+		release()
+	}
+	if s := ledgerOf(t, ld, missing.RunID); s.Found {
+		t.Fatalf("a refused launch left a row: %+v", s.Row)
+	}
 }
 
 // A requested run id is taken once: one the engine holds, one whose row
 // the ledger has, and one whose row another ledger handle writes after the
 // engine's own check (afterAdd) and before the run's first transaction are
 // each refused ErrRunExists, before any attempt, the row there untouched,
-// nothing of the refused run recorded or told as forgotten; an id not of
+// nothing of the refused run recorded or told as forgotten, and the
+// browsers, told of it as it launched, told the id changed once the engine
+// let go of it, so they read the run that is the id's. So is a launch whose
+// stop, between the engine's check and its first transaction, found the
+// row there: the refused run is let go, never kept stopped. An id not of
 // the crew's shape is ErrInvalid.
 func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 	dir := newRepo(t)
@@ -218,6 +237,38 @@ func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 			t.Fatalf("the refused run was told as forgotten: %v", *forgotten)
 		}
 	}
+	// changes keeps, for each OnRunChange, the id and whether the engine
+	// held a run of it then (OnRunChange runs under e.mu).
+	type change struct {
+		id   string
+		held bool
+	}
+	var changesMu sync.Mutex
+	changes := func(e *Engine) *[]change {
+		var got []change
+		e.OnRunChange = func(id string) {
+			changesMu.Lock()
+			got = append(got, change{id, e.runs[id] != nil})
+			changesMu.Unlock()
+		}
+		return &got
+	}
+	// toldGone holds that the last change told of id came once the
+	// engine let go of its refused run.
+	toldGone := func(t *testing.T, got *[]change, id string) {
+		t.Helper()
+		changesMu.Lock()
+		defer changesMu.Unlock()
+		var last *change
+		for i := range *got {
+			if (*got)[i].id == id {
+				last = &(*got)[i]
+			}
+		}
+		if last == nil || last.held {
+			t.Fatalf("the last change told of %s: %+v (all: %+v)", id, last, *got)
+		}
+	}
 	recorded := func(t *testing.T, e *Engine) (*Records, *[]string) {
 		rs, _ := newRecords(t)
 		e.RecordEnds(rs, func(runID string, err error) { t.Errorf("%s: %v", runID, err) }, nil)
@@ -234,9 +285,11 @@ func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 	t.Run("the ledger has its row", func(t *testing.T) {
 		e, ld := sqlEngine(t)
 		rs, forgotten := recorded(t, e)
+		got := changes(e)
 		p := planned(t, "api-sweep-0000000b", base)
 		otherRun(t, ld, p.RunID)
 		refused(t, e, ld, p, ledgerOf(t, ld, p.RunID), forgotten)
+		toldGone(t, got, p.RunID)
 		if !e.WaitRecorded(t.Context()) {
 			t.Fatal("the records did not settle")
 		}
@@ -245,9 +298,56 @@ func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 		}
 	})
 
+	t.Run("stopped before its first transaction", func(t *testing.T) {
+		e, ld := sqlEngine(t)
+		rs, forgotten := recorded(t, e)
+		got := changes(e)
+		p := planned(t, "api-sweep-0000000f", base)
+		otherRun(t, ld, p.RunID)
+		before := ledgerOf(t, ld, p.RunID)
+		var stopErr error
+		var heldAfterStop bool
+		e.afterAdd = func(runID string) {
+			// The stop is the run's first transaction: its row is refused,
+			// and the stop lets go of the run itself, whatever the launch
+			// does next.
+			stopErr = e.Stop(t.Context(), runID)
+			_, heldAfterStop = e.Get(runID)
+		}
+		_, release, err := e.LaunchPlanned(t.Context(), c, "", p)
+		release()
+		e.afterAdd = nil
+		if !errors.Is(stopErr, ErrRunExists) || heldAfterStop {
+			t.Fatalf("the stop: %v, the run held after it %v", stopErr, heldAfterStop)
+		}
+		if !errors.Is(err, ErrRunExists) {
+			t.Fatalf("a launch stopped before its first transaction, the id the ledger's: %v", err)
+		}
+		if _, ok := e.Get(p.RunID); ok {
+			t.Fatal("the engine kept the refused run, stopped")
+		}
+		if after := ledgerOf(t, ld, p.RunID); !reflect.DeepEqual(after, before) {
+			t.Fatalf("the row there changed:\n%+v\nwas\n%+v", after, before)
+		}
+		if n := len(e.launcher.(*fakeLauncher).launched()); n != 0 || len(*forgotten) != 0 {
+			t.Fatalf("the refused run: %d sessions, told forgotten %v", n, *forgotten)
+		}
+		toldGone(t, got, p.RunID)
+		if !e.WaitRecorded(t.Context()) {
+			t.Fatal("the records did not settle")
+		}
+		if _, ok, _ := rs.Get(p.RunID); ok {
+			t.Fatal("the refused run's record was written")
+		}
+		// Let go, the id is free in the engine: the same launch is
+		// refused by the ledger again, not by a run kept.
+		refused(t, e, ld, p, before, forgotten)
+	})
+
 	t.Run("written after the engine's check", func(t *testing.T) {
 		e, ld := sqlEngine(t)
 		rs, forgotten := recorded(t, e)
+		got := changes(e)
 		p := planned(t, "api-sweep-0000000c", base)
 		var before ledgerState
 		e.afterAdd = func(runID string) {
@@ -274,6 +374,7 @@ func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 		if _, ok := e.Get(p.RunID); ok || len(*forgotten) != 0 {
 			t.Fatalf("the refused run: held %v, told forgotten %v", ok, *forgotten)
 		}
+		toldGone(t, got, p.RunID)
 		if !e.WaitRecorded(t.Context()) {
 			t.Fatal("the records did not settle")
 		}
@@ -307,9 +408,11 @@ func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 
 // The package is the one its digest names, as given: bytes whose SHA-256
 // is not the digest, a package that is not the launch of the run, one of
-// another version, one that is not JSON, one naming an attachment file not
-// of the derived shape and one past the bound are each ErrInvalid with no
-// run made; the package taken is kept byte for byte.
+// another version, one that is not JSON, one with a field the engine's
+// reading does not name, one naming an attachment file not of the derived
+// shape, one past the bound and one whose plan was approved at another
+// base than the one given are each ErrInvalid with no run made; the
+// package taken is kept byte for byte.
 func TestThePackageIsCheckedAgainstItsDigest(t *testing.T) {
 	dir := newRepo(t)
 	base := head(t, dir)
@@ -326,6 +429,18 @@ func TestThePackageIsCheckedAgainstItsDigest(t *testing.T) {
 		return b
 	}
 	good := planned(t, id, base)
+	// unknown is the package with a field of the ticket's under a name the
+	// engine's reading does not have, as a builder that named it otherwise
+	// would write it.
+	unknown := func() []byte {
+		var m map[string]any
+		if err := json.Unmarshal(good.Package, &m); err != nil {
+			t.Fatal(err)
+		}
+		m["ticket"].(map[string]any)["acceptanceCriteria"] = "It logs in."
+		b, _ := json.Marshal(m)
+		return b
+	}()
 	for _, tc := range []struct {
 		name  string
 		p     Planned
@@ -336,6 +451,8 @@ func TestThePackageIsCheckedAgainstItsDigest(t *testing.T) {
 		{"another run's launch", planned(t, "api-sweep-0000000b", base), "not of"},
 		{"another version", withPackage(id, base, edit(func(p *Package) { p.Version = 2 })), "version 2"},
 		{"not JSON", withPackage(id, base, []byte("{")), "cannot be read"},
+		{"a field not read", withPackage(id, base, unknown), "unknown field"},
+		{"another base", withPackage(id, base, edit(func(p *Package) { p.Plan.Base = strings.Repeat("1", 40) })), "approved at the base"},
 		{"no ticket", withPackage(id, base, edit(func(p *Package) { p.Ticket.ID = "" })), "ticket.id"},
 		{"a display name as a file", withPackage(id, base, edit(func(p *Package) { p.Attachments[0].File = "Spec.png" })), "derived name"},
 		{"a file ending in a dot", withPackage(id, base, edit(func(p *Package) { p.Attachments[0].File = "01-spec." })), "derived name"},
@@ -574,4 +691,93 @@ func TestAnOrdinaryLaunchNeverOverwritesAPlannedRun(t *testing.T) {
 	waitAttempt(t, e2, again.ID, "build", ledger.AttemptRunning)
 	stopRun(t, e2, again.ID)
 	untouched("the continuation after the refusal")
+}
+
+// A managed run takes no change before its launch is recorded: a command
+// given while the engine holds the run and before its first transaction
+// (afterAdd) is refused ErrTaskState, nothing of it written, and the
+// launch's run.created is the run's first event, its tasks dispatched as
+// the launch armed them; so for a continuation, before its history is
+// installed.
+func TestACommandWaitsForTheLaunchToBeRecorded(t *testing.T) {
+	dir := newRepo(t)
+	c := repoCrew(dir, work("build", "lead"), work("docs", "writer"))
+	e, ld := sqlEngine(t)
+	var cmdErr error
+	e.afterAdd = func(runID string) {
+		_, cmdErr = e.Cancel(t.Context(), runID, "admin", Command{ID: "c1"}, "docs")
+	}
+	run := launchManaged(t, e, c)
+	e.afterAdd = nil
+	if !errors.Is(cmdErr, ErrTaskState) {
+		t.Fatalf("a command before the launch was recorded: %v", cmdErr)
+	}
+	accepted := func(events []ledger.EventRow) bool {
+		return slices.ContainsFunc(events, func(ev ledger.EventRow) bool { return strings.HasPrefix(ev.Kind, "command.") })
+	}
+	got := ledgerOf(t, ld, run.ID)
+	if len(got.Events) == 0 || got.Events[0].Kind != "run.created" || accepted(got.Events) {
+		t.Fatalf("the run's events: %+v", got.Events)
+	}
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+
+	cmdErr = nil
+	e.afterAdd = func(runID string) {
+		_, cmdErr = e.Cancel(t.Context(), runID, "admin", Command{ID: "c2"}, "docs")
+	}
+	next, err := e.ContinueRun(t.Context(), run.ID, "")
+	e.afterAdd = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(cmdErr, ErrTaskState) {
+		t.Fatalf("a command before the continuation was recorded: %v", cmdErr)
+	}
+	if got := ledgerOf(t, ld, next.ID); accepted(got.Events) || len(got.Events) == 0 || got.Events[0].Kind != "run.continued" {
+		t.Fatalf("the continuation's events: %+v", got.Events)
+	}
+	waitAttempt(t, e, next.ID, "docs", ledger.AttemptRunning)
+	stopRun(t, e, next.ID)
+}
+
+// A launch whose first transaction fails for a reason of the ledger's own
+// (not an id another run has), its stop failing too, is let go as on any
+// failed launch: told as forgotten, so the browsers drop it, and its
+// record written.
+func TestALaunchWhoseFirstTransactionFailsIsForgotten(t *testing.T) {
+	e, _, l := managedEngine(t)
+	rs, _ := newRecords(t)
+	e.RecordEnds(rs, func(runID string, err error) { t.Errorf("%s: %v", runID, err) }, nil)
+	var mu sync.Mutex
+	var forgotten []string
+	e.OnForget = func(r Run) {
+		mu.Lock()
+		forgotten = append(forgotten, r.ID)
+		mu.Unlock()
+	}
+	l.mu.Lock()
+	l.failOn = "run.created,run.stopped"
+	l.mu.Unlock()
+	_, release, err := e.LaunchNamed(t.Context(), repoCrew(newRepo(t), work("build", "lead")), "")
+	release()
+	if err == nil || errors.Is(err, ErrRunExists) {
+		t.Fatalf("a launch the ledger failed: %v", err)
+	}
+	mu.Lock()
+	gone := slices.Clone(forgotten)
+	mu.Unlock()
+	if len(gone) != 1 {
+		t.Fatalf("told forgotten: %v", gone)
+	}
+	if _, ok := e.Get(gone[0]); ok {
+		t.Fatal("the engine kept the failed run")
+	}
+	if !e.WaitRecorded(t.Context()) {
+		t.Fatal("the records did not settle")
+	}
+	if _, ok, _ := rs.Get(gone[0]); !ok {
+		t.Fatal("the failed run's record was not written")
+	}
 }

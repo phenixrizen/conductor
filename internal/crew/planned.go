@@ -3,6 +3,7 @@ package crew
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -44,14 +45,16 @@ type Planned struct {
 // LaunchPlanned launches c, a crew with tasks, as LaunchNamed does, under
 // p's run id, at p's base, with p's package: the id must be one of c's
 // (ValidRunID, c's id before its last dash) and the package one whose
-// SHA-256 is p.Digest and whose launch names the id, else ErrInvalid; the
-// base must be a commit of c's repository. An id the engine holds, or one
-// whose row the ledger has (found by the run's first transaction, the
-// insert being the check), is refused with ErrRunExists before any attempt
-// is made, and the run there is left as it was: a planned id is never
-// minted again. The run's row keeps the ticket's id and the package, its
-// run.created names the ticket's key and the digest, and its read says
-// which ticket and revision it was launched from (Run.Ticket).
+// SHA-256 is p.Digest, whose launch names the id and whose plan names the
+// base, else ErrInvalid; the base must be a commit of c's repository,
+// checked before anything is read at it (ErrInvalid). An id the engine
+// holds, or one whose row the ledger has (found by the run's first
+// transaction, the insert being the check), is refused with ErrRunExists
+// before any attempt is made, and the run there is left as it was: a
+// planned id is never minted again. The run's row keeps the ticket's id
+// and the package, its run.created names the ticket's key and the digest,
+// and its read says which ticket and revision it was launched from
+// (Run.Ticket).
 func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Planned) (*Run, func(), error) {
 	noop := func() {}
 	if err := ValidateLabel(label); err != nil {
@@ -79,11 +82,21 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 	if pkg.p.Launch.Run != p.RunID {
 		return nil, noop, invalidf("the package is the launch of run %s, not of %s", quote(pkg.p.Launch.Run), quote(p.RunID))
 	}
+	// The base is the revision's: the one its package was built at, its
+	// references' objects resolved there.
+	if pkg.p.Plan.Base != p.Base {
+		return nil, noop, invalidf("the package's plan was approved at the base %s, not at %s", quote(pkg.p.Plan.Base), quote(p.Base))
+	}
+	// A commit of the repository before anything is read at it (prepare
+	// reads a file-form manifest there, whose failure is git's). A cwd
+	// that is no absolute path is prepare's to refuse.
+	if filepath.IsAbs(c.Cwd) {
+		if err := checkCommit(ctx, c.Cwd, p.Base); err != nil {
+			return nil, noop, err
+		}
+	}
 	prep, err := e.prepare(ctx, c, p.Base)
 	if err != nil {
-		return nil, noop, err
-	}
-	if err := checkCommit(ctx, c.Cwd, p.Base); err != nil {
 		return nil, noop, err
 	}
 	r, err := e.addRun(c, prep, label, p.RunID, pkg)

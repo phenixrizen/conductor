@@ -442,7 +442,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
-	err := e.transact(ctx, r, func() tx {
+	err := e.transactFirst(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
 		// The prerequisites run again in the continuation, at its base,

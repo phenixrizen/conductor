@@ -737,12 +737,42 @@ func ev(kind string, payload map[string]any) tx {
 // commit after it. A change that sets the run's outcome reports the end
 // once committed. Nothing is written for a change that changed nothing.
 func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo func()) error {
+	return e.commit(ctx, r, false, mutate, undo)
+}
+
+// transactFirst is transact for a change that may be a managed run's first
+// transaction: its launch's (run.created), its continuation's
+// (run.continued) and its stop's, a run stopped before its launch was
+// recorded. Every other change of a run whose row is not yet the ledger's
+// (unrecorded) is refused (errLaunching) before it is made: a command
+// taken before run.created would dispatch tasks before the prerequisites
+// were armed, or before a continuation's history was installed.
+func (e *Engine) transactFirst(ctx context.Context, r *run, mutate func() tx, undo func()) error {
+	return e.commit(ctx, r, true, mutate, undo)
+}
+
+// errLaunching refuses a change of a managed run whose launch is not
+// recorded yet (transactFirst): a conflict with the run's state, as a
+// command on a task not in a state for it is.
+var errLaunching = fmt.Errorf("%w: the run's launch is not recorded yet, and it takes no change before it is", ErrTaskState)
+
+// commit is transact, and transactFirst when first is set.
+func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
 	}
 	r.txMu.Lock()
 	defer r.txMu.Unlock()
 	e.mu.Lock()
+	if r.unrecorded() && !first {
+		e.mu.Unlock()
+		return errLaunching
+	}
+	if r.foreign {
+		// Its id is another run's: nothing of it is written again.
+		e.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrRunExists, r.id)
+	}
 	t := mutate()
 	snap := r.drain()
 	pending, pendingMore := r.pendingEvents, r.pendingMore
@@ -758,9 +788,10 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	}
 	if r.unrecorded() {
 		// The run's first transaction, or one after a first that the
-		// ledger refused: it writes the run's row first, with an insert
-		// that refuses an id the ledger has, so nothing of it (an event, a
-		// row of its own) lands on another run's row.
+		// ledger refused for another reason: it writes the run's row
+		// first, with an insert that refuses an id the ledger has, so
+		// nothing of it (an event, a row of its own) lands on another
+		// run's row.
 		if snap.run == nil {
 			row := r.runRow(r.crewJSON)
 			snap.run = &row
@@ -788,6 +819,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	r.committing = false
 	if err != nil {
+		if snap.create && errors.Is(err, ErrRunExists) {
+			r.foreign = true
+		}
 		snap.undo(r)
 		r.pendingEvents, r.pendingMore = events, more
 		if undo != nil {
@@ -1215,7 +1249,7 @@ func (e *Engine) noteEndLater(r *run) {
 // dispatched once they passed, at once without any. An error is the
 // launch's.
 func (e *Engine) startManaged(ctx context.Context, r *run) error {
-	if err := e.transact(ctx, r, func() tx {
+	if err := e.transactFirst(ctx, r, func() tx {
 		r.markRun()
 		for _, t := range r.tasks {
 			r.markTask(t)
@@ -1240,7 +1274,7 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 // told once it is committed. The caller does not hold e.mu; the run is
 // stopped. The error is the ledger's refusal: the stop stays pending.
 func (e *Engine) recordStop(r *run) error {
-	return e.transact(context.Background(), r, func() tx {
+	return e.transactFirst(context.Background(), r, func() tx {
 		n := 0
 		for _, t := range r.tasks {
 			if a := t.active(); a != nil {

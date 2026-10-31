@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // A launch package (docs/plans/dispatch-evidence.md, Program item DS2): what
@@ -213,12 +214,14 @@ func packageDigest(raw []byte) string {
 }
 
 // readPackage reads a package's bytes: at most ledger.MaxPackage of them,
-// a JSON object of PackageVersion whose header (the ticket, the plan
+// one JSON object of PackageVersion whose header (the ticket, the plan
 // revision, the launch) is whole and whose parts are within Dispatch's
-// bounds, each attachment's file a derived name, distinct. The parts the
-// engine does not read are kept, in raw, as they are: the package is
-// Dispatch's record, and a later field of its is no reason to refuse a
-// run. An error matches ErrInvalid.
+// bounds, each attachment's file a derived name, distinct. It is decoded
+// strictly (store.DecodeStrict): a field this reading does not name is
+// refused, so a field Dispatch's builder names otherwise is a refused
+// launch, never a part read as empty; a field added later comes with a
+// new PackageVersion, which a version this engine does not read is
+// refused as. An error matches ErrInvalid.
 func readPackage(raw []byte) (*runPackage, error) {
 	if len(raw) == 0 {
 		return nil, invalidf("the package is empty")
@@ -226,8 +229,19 @@ func readPackage(raw []byte) (*runPackage, error) {
 	if len(raw) > ledger.MaxPackage {
 		return nil, invalidf("the package is %d bytes, more than %d", len(raw), ledger.MaxPackage)
 	}
+	// The version first, so a package of another one says so rather
+	// than naming a field of it.
+	var v struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, invalidf("the package cannot be read: %v", err)
+	}
+	if v.Version != PackageVersion {
+		return nil, invalidf("the package is version %d: this Conductor reads version %d", v.Version, PackageVersion)
+	}
 	var p Package
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := store.DecodeStrict(raw, &p); err != nil {
 		return nil, invalidf("the package cannot be read: %v", err)
 	}
 	if err := p.validate(); err != nil {

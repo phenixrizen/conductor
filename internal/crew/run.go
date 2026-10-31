@@ -430,10 +430,16 @@ type run struct {
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
 	// created says the run's row is in the ledger: its first transaction
-	// committed. Until then every transaction of the run writes the row
-	// first with CreateRun (transact), which refuses an id the ledger has,
-	// and nothing of the run reaches its record or OnForget (abort).
+	// committed. Until then only a change that may be the run's first (its
+	// launch's, its continuation's, its stop's: transactFirst) is written,
+	// with the row first through CreateRun, which refuses an id the ledger
+	// has, and no record of the run is written as it goes (Journal).
 	created bool
+	// foreign says the ledger refused the run's first row as another
+	// run's (ErrRunExists): the id is that run's, so nothing of this one
+	// is written again, recorded or told as forgotten, and it is dropped
+	// (dropForeign) with the browsers told to read the id again.
+	foreign bool
 	// pkg is the launch package of a run launched from a ticket
 	// (LaunchPlanned) or of a continuation of one; nil for any other run.
 	pkg *runPackage
@@ -968,8 +974,16 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 
 	e.mu.Lock()
 	if r.stopping {
-		// Stopped before any start was reserved: the run stays, stopped.
+		foreign := r.foreign
 		e.mu.Unlock()
+		if foreign {
+			// Stopped before its first transaction, and the stop's row
+			// refused as another run's: the run is not this launch's to
+			// keep, stopped or not (dropForeign, which the stop did too).
+			e.dropForeign(r)
+			return nil, fmt.Errorf("%w: %s", ErrRunExists, r.id)
+		}
+		// Stopped before any start was reserved: the run stays, stopped.
 		return nil, ErrRunStopped
 	}
 	var starts []*member
@@ -1758,6 +1772,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 		// the stop waits for as long as its context lasts.
 		if err := e.recordStop(r); err != nil {
 			errs = append(errs, fmt.Errorf("the ledger could not record the stop: %w", err))
+			// A stop that was the run's first transaction and found the
+			// id another run's: the run goes, whoever launched it.
+			e.dropForeign(r)
 		}
 		e.waitTrees(ctx, r)
 		return errors.Join(errs...)
@@ -1793,12 +1810,26 @@ func (e *Engine) abort(r *run) {
 }
 
 // unrecorded reports whether r is a managed run the ledger has no row of
-// as its own: its first transaction never committed, refused, or refused
-// because the id is another run's (ErrRunExists). Nothing of it is
-// recorded or told as forgotten: its id may be that other run's, whose
-// record and links are not this one's to write or drop. The caller holds
-// e.mu.
+// as its own: its first transaction not committed yet, or refused. Until
+// it commits, the run takes no change but one that may be its first
+// (transactFirst) and no record of it is written as it goes (Journal):
+// its id may be another run's. The caller holds e.mu.
 func (r *run) unrecorded() bool { return r.managed && !r.created }
+
+// dropForeign forgets r when the ledger refused its first row as another
+// run's (foreign), at once: Get no longer shows it, a continuation of the
+// run whose id it is is not held up by it, and nothing of it is recorded or
+// told as forgotten (forget). Nothing for any other run; a run forgotten
+// already is not forgotten again. The caller holds neither lock.
+func (e *Engine) dropForeign(r *run) {
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r.foreign {
+		e.forget(r)
+	}
+}
 
 // evict forgets the oldest runs with nothing running until there is room for
 // one more. A run with a member starting or a live session stays, and so does
@@ -1866,7 +1897,7 @@ func (e *Engine) ForgetForTest(runID string) {
 // record, so the mark is never written over by it. The caller holds endMu
 // and e.mu, as the forget sites do.
 func (e *Engine) journalForgotten(r *run) {
-	if e.journal == nil || r.unrecorded() {
+	if e.journal == nil || r.foreign {
 		return
 	}
 	snap := r.snapshot(false, true)
@@ -1874,9 +1905,16 @@ func (e *Engine) journalForgotten(r *run) {
 	e.journal(snap)
 }
 
-// forget drops r and the index of its sessions, and tells OnForget. The
-// caller holds e.mu.
+// forget drops r and the index of its sessions, and tells OnForget; a run
+// the engine holds no more (dropped already) is left as it is. A run whose
+// first row the ledger refused as another's (foreign) is not told as
+// forgotten: its id, links and record are that other run's. The browsers,
+// told of it as it launched (touch), are told the id changed once it is
+// gone, and read it again. The caller holds e.mu.
 func (e *Engine) forget(r *run) {
+	if e.runs[r.id] != r {
+		return
+	}
 	delete(e.runs, r.id)
 	e.held.Delete(r.id)
 	e.order = slices.DeleteFunc(e.order, func(o *run) bool { return o == r })
@@ -1897,7 +1935,11 @@ func (e *Engine) forget(r *run) {
 	if r.teardownCancel != nil {
 		r.teardownCancel()
 	}
-	if e.OnForget != nil && !r.unrecorded() {
+	if r.foreign {
+		r.touch()
+		return
+	}
+	if e.OnForget != nil {
 		e.OnForget(r.snapshot(false, false))
 	}
 }
