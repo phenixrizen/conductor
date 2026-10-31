@@ -11,10 +11,20 @@ import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatc
 // started this); a row that cannot act is disabled with its words. What the
 // other palette specs cover already (digits, verbs that ask, the editor's
 // rows, Touched, the pill) is not repeated here.
-// Each test walks one page or several through twenty to forty palette rows, every step under its own expect bound (15 s, 30 s for
-// a page to draw): the test's timeout only bounds a hang. At a load average of 110 the walk of the other pages took the config's
-// whole 120 s with every step passing (#281), so these take three times that.
-test.describe.configure({ mode: 'serial', timeout: 360_000 })
+// Each test walks one page or several through twenty to forty palette steps. A fixed timeout is spent by such a walk on a loaded
+// box with every step passing (#281: the walk of the other pages took the config's whole 120 s at a load average of 110), so
+// each step raises the test's timeout by the caps of its own waits as it takes them (budget below), the way examples.spec.ts
+// adds its handoff's caps: the test's timeout is their sum, and the config's 120 s above it, for the waits between the steps.
+test.describe.configure({ mode: 'serial' })
+
+/** The cap of every wait a palette step makes: the config's expect bound, and the actions' (a fill, a click, a read). */
+const STEP_MS = 15_000
+test.use({ actionTimeout: STEP_MS })
+/** Raises the running test's timeout by the caps of `waits` waits, as a step is about to make them. */
+function budget(waits: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + waits * STEP_MS)
+}
 
 const sessions: string[] = []
 const runs: string[] = []
@@ -43,6 +53,7 @@ function paletteState(page: Page): Promise<'gone' | 'closing' | 'open'> {
  * focus was by then, a fading palette's or the page's: so the input takes the focus first, and a closing palette is only waited for.
  */
 async function closePalette(page: Page) {
+  budget(1)
   if ((await paletteState(page)) === 'open') {
     const inInput = await page.evaluate(() => {
       const input = document.querySelector<HTMLElement>('[data-palette] input[data-palette-input]')
@@ -62,6 +73,7 @@ async function closePalette(page: Page) {
 async function openPalette(page: Page) {
   const palette = page.locator('[data-palette]')
   await closePalette(page)
+  budget(2)
   await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
   await page.keyboard.press('Alt+/')
   await expect(palette).toBeVisible()
@@ -69,6 +81,7 @@ async function openPalette(page: Page) {
 }
 /** Runs the row `key` with a click, after a query that keeps it in the list. */
 async function runRow(page: Page, key: string, query = '') {
+  budget(3) // the line, the row, the click
   const palette = await openPalette(page)
   if (query) await palette.locator('input[data-palette-input]').fill(query)
   const row = palette.locator(`[data-palette-row="${key}"]`)
@@ -78,6 +91,7 @@ async function runRow(page: Page, key: string, query = '') {
 }
 /** Focuses the row `key` from the keyboard (↓ until it is the focused row) and presses Enter: what a field-on-Enter row needs. */
 async function enterRow(page: Page, key: string, query = '') {
+  budget(3) // the line, the row, its focus
   const palette = await openPalette(page)
   if (query) await palette.locator('input[data-palette-input]').fill(query)
   const row = palette.locator(`[data-palette-row="${key}"]`)
@@ -89,6 +103,7 @@ async function enterRow(page: Page, key: string, query = '') {
 }
 /** The switch state of the row `key` as the palette shows it now. */
 async function switchOf(page: Page, key: string, query = ''): Promise<string | null> {
+  budget(2) // the line, the read
   const palette = await openPalette(page)
   if (query) await palette.locator('input[data-palette-input]').fill(query)
   const state = await palette.locator(`[data-palette-row="${key}"] [data-palette-switch]`).getAttribute('data-palette-switch')
@@ -281,6 +296,7 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   const act = async (name: string, id: string) => {
+    budget(5) // the line, the row, its focus, its actions, the action's click
     const palette = await openPalette(page)
     await palette.locator('input[data-palette-input]').fill(name)
     const row = palette.locator(`[data-palette-row="session:${id}"]`)
@@ -342,6 +358,7 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   const verb = async (line: string) => {
+    budget(2) // the line, the row
     const palette = await openPalette(page)
     await palette.locator('input[data-palette-input]').fill(line)
     const row = palette.locator('[data-palette-row^="verb:"]').first()
@@ -449,6 +466,7 @@ test("the Dispatch pages' rows (#409): go dispatch; the projects page's New proj
 
   // A ticket's row: Set status… opens the picker and sets it; Assign to me adds the name as a person.
   const ticketRow = async () => {
+    budget(5) // the line, the row, its focus, its actions, the action's click
     const p = await openPalette(page)
     await p.locator('input[data-palette-input]').fill(`${key}-1`)
     const row = p.locator(`[data-palette-row="ticket:${key}-1"]`)

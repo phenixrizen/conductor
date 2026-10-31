@@ -64,10 +64,13 @@ describe('the needs-you pill', () => {
     expect(cursor.shown.value?.id).toBe('a')
     vi.advanceTimersByTime(1)
     expect(cursor.shown.value).toBeNull()
-    for (const bad of [0, -5, Number.NaN, '600000', null]) {
+    // Each still shows a millisecond before PILL_MS (a zero delay would have hidden it) and is gone at PILL_MS.
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, '600000', null]) {
       scope.conductorPillMs = bad
       cursor.step(1)
-      vi.advanceTimersByTime(PILL_MS)
+      vi.advanceTimersByTime(PILL_MS - 1)
+      expect(cursor.shown.value, String(bad)).not.toBeNull()
+      vi.advanceTimersByTime(1)
       expect(cursor.shown.value, String(bad)).toBeNull()
     }
   })

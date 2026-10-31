@@ -130,9 +130,11 @@ add its rule here.
   bound; a second press on a clock only hides the first one's loss, and a
   toggle pressed again closes what was only slow to open.
 - A test's timeout bounds a hang, not its steps. A long walk whose every
-  step has its own expect bound needs a timeout above what the walk takes
-  under load (`palette-rows.spec.ts`: three times the config's), never one
-  that a loaded box spends with every step passing.
+  step has its own bound is spent by a loaded box with every step passing,
+  whatever fixed timeout it has: each step raises the test's timeout by
+  its own waits' caps as it takes them (`testInfo.setTimeout`, the
+  `budget` of `palette-rows.spec.ts`), with the config's timeout above
+  their sum, never a multiple of the config's.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
