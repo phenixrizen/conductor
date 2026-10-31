@@ -169,7 +169,8 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 // The ticket is found, then commented on, in two transactions: a link
 // removed between them leaves the comment on the ticket the run was
 // linked to a moment before, as a comment sent a moment earlier would
-// have been.
+// have been. A resend of an operation goes where the operation went
+// (sessionCommentTarget), not where the run's link is now.
 func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
 	if !ok {
@@ -198,15 +199,52 @@ func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
+	op := dispatch.Op{Actor: agentActor(member), ID: body.OpID}
+	key, ok := s.sessionCommentTarget(ctx, w, ds, run, op)
+	if !ok {
+		return
+	}
+	rc, err := ds.AddComment(ctx, op, key, body.Body)
+	s.writeOp(w, "comment", rc, err, true, "comment", commentAfter(ctx, ds, key, ""))
+}
+
+// sessionCommentTarget is the key of the ticket a session's comment goes
+// to. An operation id the member used before keeps the target it had: a
+// comment that committed is resent to the ticket it went to (OpTicket,
+// from the changes log), wherever the run's link is now and whether that
+// ticket is live, so the store answers its receipt, or op_conflict for
+// other content, and never a comment on the run's next ticket or
+// no_ticket; an operation refused before, which names no ticket, answers
+// its refusal again, as the store answers a repeat, the route having
+// answered. A new operation goes to the live ticket the run is linked to.
+// ok is false when the route has answered.
+func (s *Server) sessionCommentTarget(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, run string, op dispatch.Op) (key string, ok bool) {
+	key, found, err := ds.OpTicket(ctx, op.Actor, op.ID)
+	if err != nil {
+		s.dispatchError(w, "ticket", err)
+		return "", false
+	}
+	if found {
+		return key, true
+	}
+	rc, found, err := ds.Receipt(ctx, op.Actor, op.ID)
+	if err != nil {
+		s.dispatchError(w, "ticket", err)
+		return "", false
+	}
+	if found && rc.Status != dispatch.StatusDone {
+		rc.Repeat = true
+		s.writeOp(w, "comment", rc, nil, true, "comment", nil)
+		return "", false
+	}
 	tk, found, err := ds.RunTicket(ctx, run)
 	if err != nil {
 		s.dispatchError(w, "ticket", err)
-		return
+		return "", false
 	}
 	if !found || !tk.DeletedAt.IsZero() {
 		noTicket(w, run)
-		return
+		return "", false
 	}
-	rc, err := ds.AddComment(ctx, dispatch.Op{Actor: agentActor(member), ID: body.OpID}, tk.Key, body.Body)
-	s.writeOp(w, "comment", rc, err, true, "comment", commentAfter(ctx, ds, tk.Key, ""))
+	return tk.Key, true
 }

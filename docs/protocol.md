@@ -2646,7 +2646,11 @@ which `conductor task ticket` and the MCP tools `ticket_read` and
 live ticket both answer `404 no_ticket`. The comment is a `comment.add`
 of the actor `agent:<member>`, its receipts kept under that actor, apart
 from the admin's (`GET /api/dispatch/ops/{opId}` reads none of them): the
-same `opId` sent again answers its receipt. An agent reads its ticket and
+same `opId` sent again answers its receipt, sent to the ticket the
+comment went to wherever the run's link is now and whether that ticket
+is live, so a resend after the link moved or the ticket's delete answers
+the receipt (or `op_conflict` for other content), never a comment on
+another ticket or `404 no_ticket`. An agent reads its ticket and
 comments on it, nothing more: no route of its creates, edits, links or
 closes a ticket. The ticket is found and then commented on in two
 transactions, so a link removed between them leaves the comment on the

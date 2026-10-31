@@ -2787,6 +2787,64 @@ func TestDispatchSessionTicketIsReadWhereItsLinkIs(t *testing.T) {
 	}
 }
 
+// A comment's resend goes where the comment went, not where the run's
+// link is now: after the link moved to another ticket, after it was
+// removed, and after the first ticket's delete, the same opId and body
+// answer the receipt, a repeat, with nothing written to either ticket,
+// and other content under it op_conflict. A refused comment's resend
+// answers its refusal again, though the run's ticket changed since.
+func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Resent")
+	comment := "/api/sessions/" + sid + "/ticket/comments"
+	e.newDispatchProject(t, "RSN", nil)
+	a := e.newDispatchTicket(t, "RSN", "A", nil)["key"].(string)
+	b := e.newDispatchTicket(t, "RSN", "B", nil)["key"].(string)
+	link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	op, refused := opID(), opID()
+	if c := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "on A"}, http.StatusCreated, ""), "comment"); c["n"] != 1.0 {
+		t.Fatalf("the first comment: %v", c)
+	}
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": ""}, http.StatusConflict, "invalid")
+	comments := func(key string) int {
+		t.Helper()
+		cs, err := ds.Comments(ctx, key, 0, dispatch.MaxCommentPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	resend := func(when string) {
+		t.Helper()
+		out := e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "on A"}, http.StatusOK, "")
+		if rc := entityOf(t, out, "receipt"); rc["status"] != "done" || rc["repeat"] != true {
+			t.Fatalf("%s: the resend: %v", when, out)
+		}
+		if c, _ := out["comment"].(map[string]any); c["body"] != "on A" || c["n"] != 1.0 {
+			t.Fatalf("%s: the resend's comment: %v", when, out)
+		}
+		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "other"}, http.StatusConflict, "op_conflict")
+		if out := e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": ""}, http.StatusConflict, "invalid"); entityOf(t, out, "receipt")["repeat"] != true {
+			t.Fatalf("%s: the refusal's resend: %v", when, out)
+		}
+		if na, nb := comments(a), comments(b); na != 1 || nb != 0 {
+			t.Fatalf("%s: %d comments on A and %d on B", when, na, nb)
+		}
+	}
+	done(ds.RemoveLink(ctx, adminOp(""), a, link))
+	link = done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	resend("the link moved to B")
+	done(ds.RemoveLink(ctx, adminOp(""), b, link))
+	resend("the link removed")
+	done(ds.DeleteTicket(ctx, adminOp(""), a))
+	resend("A deleted")
+}
+
 // sessionReadOfTheLargest reads the largest ticket through its session's
 // route: the ticket's run link in place of its last external link (a
 // ticket holds fifty), its milestone's description at its bound, the
