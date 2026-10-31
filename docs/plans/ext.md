@@ -548,7 +548,9 @@ type ContinuityStore interface {
 	// data directory now holds or no longer holds, with its bytes as they
 	// are when it is delivered; each epoch begins with a replay of the whole
 	// state (C6). Called in order, from one goroutine of the store's own,
-	// with a context that ends after DeliveryWait.
+	// with a context that ends after DeliveryWait. A nil answer
+	// acknowledges the doc; an error, a panic or the context's end has the
+	// document delivered again, whole, as it is then (C6).
 	Saved(ctx context.Context, d Doc) error
 	Deleted(ctx context.Context, d Doc) error
 	// Restore writes this device's latest copy as an archive of `conductor
@@ -795,13 +797,17 @@ func extCall[T any](s *Server, kind, name string, wait time.Duration, fallback T
 const extInFlight = 16
 ```
 
-Queue-fed calls (`Notify`, `NoteTouch`, `Resolved`; `Saved` and `Deleted`
-through the sync adapter's pending set, C6) go
-through `extQueue`: one ring per provider and kind, filled without waiting
-(a full ring drops its oldest, the first drop and every hundredth logged,
-as a webhook's queue does), drained in order by one goroutine of its own,
-each call with a context that ends after `DeliveryWait`, its panic
-recovered. A provider that ignores its context holds only its own queue.
+Queue-fed calls (`Notify`, `NoteTouch`) go through `extQueue`: one ring
+per provider and kind, filled without waiting (a full ring drops its
+oldest, the first drop and every hundredth logged, as a webhook's queue
+does), drained in order by one goroutine of its own, each call with a
+context that ends after `DeliveryWait`, its panic recovered. Two kinds
+never go through a ring, because a call they lose is never made again:
+`Saved` and `Deleted` are fed from the sync adapter's pending set (C6),
+and `Resolved` from the router's resolutions (C5), each drained the same
+way (one goroutine, in order, `DeliveryWait`, panic recovered) and
+neither dropping an entry; each is bounded by what it holds, not by
+dropping. A provider that ignores its context holds only its own queue.
 `Server.Shutdown` ends the goroutines and waits for them as it waits for
 its others (`track`).
 
@@ -1008,9 +1014,11 @@ ids, each `outstanding` or `resolved`, at most 64 per session (the
 oldest resolved forgotten first), forgotten with the session. A routed id
 is resolved only when the session neither shows it nor keeps it (below),
 and a session shows again only a question it kept, so a resolved id never
-returns and forgetting it routes nothing twice; the outstanding ones are
-at most three (the one shown and the two a session keeps), never
-forgotten. An id's
+returns and forgetting it routes nothing twice; an id resolved while
+still shown (answered in the terminal, below) becomes forgettable only
+once its session neither shows nor keeps it, so the ids not yet
+forgettable are at most three per session (the one shown and the two a
+session keeps), never forgotten. An id's
 lifecycle is the router's own, never inferred from the id being new: a
 question an agent asked and the work set aside comes back at the turn's
 done with its first id (`TestAQuestionSetAsideByWorkShowsAgainAtTheDone`),
@@ -1028,22 +1036,63 @@ the set does not hold, the worker adds it as outstanding, builds the
   a line. A person's answer that came first wins and the route's is
   refused (`ErrQuestionAnswered`, logged at debug).
 
-The same worker, serialised per session, tells `Resolved` once per
-outstanding id and marks it resolved, when the change it reads shows that
-the question no longer waits: when the session neither shows it nor keeps
-it (set aside in its turn, or held over by a held turn). For a server
-session that is `Local.Kept()`, new: the ids of the questions the session
-keeps without showing them (`own` while set aside, `heldOver`), at most
-two, read under its lock. For a hosted session it is the host's own
-`Local.Kept()`, which the host sends with its attention (`kept`, below),
-so a question set aside and shown again at the done is one routed
-question, told `Resolved` once, at its real end, on either kind of
-session and however many questions were routed between. The router
+Shown is not unanswered. A question answered by keys typed in the
+terminal stays on screen, with its id and `needs_input`, until the
+program redraws (`consumeLocked`; `attentionLocked` marks it
+`Answered: "terminal"` at once, as
+`TestAQuestionAnsweredByKeysInTheTerminalReadsAnsweredAtOnce` shows, and
+a host sends the mark as `answered`), and the program may stay quiet
+after. So a shown question so marked no longer waits: an id the set does
+not hold that is first seen so marked is added as resolved and never
+routed (nor told, since `Route` never had it), and an outstanding id that
+reads so is resolved at once, without waiting for the screen.
+
+The same worker, serialised per session, resolves each outstanding id
+once, when the change it reads shows that the question no longer waits:
+when the session shows it answered in the terminal (above), or neither
+shows it nor keeps it (set aside in its turn, or held over by a held
+turn). What a session
+shows and what it keeps are one snapshot, never two reads: `session.Info`
+gains `Kept []string` (`json:"-"`, never on the API), the ids of the
+questions the session keeps without showing them (`own` while set aside,
+`heldOver`), at most two, which `Local.Info()` fills in the same lock
+acquisition as its `Attention` (`attentionLocked`). The router reads one
+`Info` per change and judges from it alone, so a question restored
+between two reads (A kept while B shows, then A shown at the done) can
+never read as neither shown nor kept. For a hosted session the pair is
+the host's `Info`, kept paired to the server: the host's forwarder
+(`noteChange` holding the latest `Info`, `forwardChanges`,
+`onLocalChange`) sends the attention and the `kept` of the one snapshot
+it forwards in one message (`kept`, below), a retry resends the pair it
+holds, never a newer `kept` beside an older attention, and the hub's
+copy stores the two from that one message and answers them from its
+`Info` under one lock. So a question set aside and shown again at the
+done is one routed question, told `Resolved` once, at its real end, on
+either kind of session and however many questions were routed between. The router
 routes a hosted session only when its host's register said `answerAs`
 (the hosts that send `kept`); an older host's questions are routed by no
 one, and the people watching answer them, as on main. When the
-session leaves the registry, each id still outstanding is told with
-`Ended`. `Host.Submit`'s `Input` lands here for server sessions.
+session leaves the registry, each id still outstanding is resolved with
+`Ended`.
+
+*The resolutions drop nothing.* To resolve an id the worker marks it
+`resolving` and appends its `Resolution` to the router's resolutions, a
+first-in first-out list of its own (no ring: nothing is ever dropped
+from it); one goroutine takes the oldest, calls `Resolved` with a
+context that ends after `DeliveryWait`, its panic recovered, and only
+when that call has returned (or its context ended) marks the id resolved
+and lets its entry go: a resolution leaves the list only by being told,
+once. A session that leaves the registry is forgotten, its resolutions
+staying in the list until told. The bound is explicit and drops nothing:
+the router holds at most `maxUnresolved` (1,024) ids routed and not yet
+told, outstanding or `resolving`, server-wide; at the bound a newly shown
+question is not routed (the people watching answer it, the free default
+for that question) and is held as `skipped`, which, like an outstanding
+id, is forgettable only once its session neither shows nor keeps it, so
+it is not routed later either, and is never told; the skips are logged
+at warn once a minute with how many. A `Resolved` that ignores its
+context holds only this router's list, which stops growing at the bound.
+`Host.Submit`'s `Input` lands here for server sessions.
 
 **Hosted sessions** (PR-10): one new host control message, server to host.
 
@@ -1068,9 +1117,10 @@ func (m HostAnswerAsMsg) Valid() bool // the bounds, exactly one of Input and Te
 AnswerAs bool `json:"answerAs,omitempty"` // the host takes answer_as, and sends kept
 // HostAttentionMsg gains, host to server only, from a host that said AnswerAs:
 // the ids of the questions its session keeps without showing them
-// (Local.Kept: the agent's own question set aside, a question held over by
-// a held turn), so the server's router can tell a question set aside from
-// one that ended. An older server ignores it.
+// (Info.Kept: the agent's own question set aside, a question held over by
+// a held turn), from the same Info as the message's attention, so the
+// server's router can tell a question set aside from one that ended. An
+// older server ignores it.
 Kept []string `json:"kept,omitempty"` // at most MaxKept (2), each ValidQuestionID
 const MaxKept = 2
 ```
@@ -1211,6 +1261,28 @@ one path, `Rev` and epoch, each with at most `MaxDocData` bytes at its
 the store renames), so no document is ever cut and only one part is held
 at a time.
 
+*Acknowledged, or pending still.* An entry leaves the pending set only
+when its document is acknowledged whole: `Deleted`, or every part's
+`Saved`, answered nil. A call that errs, panics or outlives
+`DeliveryWait` leaves the entry pending at the head of the set, logged
+at warn once a minute, and the adapter tries it again after a backoff
+(1 s doubling to 5 minutes, reset by a success; its timer from a clock
+the tests drive), with the document as it is then and from its first
+part: a parted document one of whose parts failed is delivered again
+whole, every part of the new delivery read from one open file, so a
+store that assembles a document's parts by path, `Rev` and epoch never
+keeps a torn mix. Delivery stays in order, so nothing behind a failed
+entry is delivered before it; later commits keep marking documents
+pending meanwhile (one entry per document), and past `SyncPending` the
+overflow replay applies as below. Recovery therefore needs no further
+local write: a document that failed once and never changes again is
+delivered when the provider next answers, and a provider whose service
+was down (article 8) receives what waited, bounded, as soon as it is
+back. A replay's `replayed` is an entry of its own, behind every
+document the replay named, so it is told only once each of them has
+been acknowledged in that epoch: a replay with a failed document never
+ends as complete.
+
 *Epochs and replays.* A replay hands the store the whole state: a
 `Doc{Store: "replay"}` that begins a new epoch (a random `Epoch`, which
 every doc after it carries), then every allowlisted data document, every
@@ -1258,7 +1330,15 @@ type Source struct {
 }
 func Write(ctx context.Context, w io.Writer, src Source) (Manifest, error)
 func Fresh(dir string) (bool, error) // holds none of catalog.json, crews/, crews.json, runs/, dispatch/, links/ (hooks/ and restore.lock aside)
-func Reserve(dir string) (release func(), err error) // restore.lock, created exclusively (below)
+// Reservation is restore.lock held: created exclusively by Reserve,
+// removed by Release (below).
+type Reservation struct{ /* the directory, the lock file */ }
+func Reserve(dir string) (*Reservation, error)
+func (r *Reservation) Release()
+// Install checks and installs an archive into the reservation's directory,
+// under the reservation its caller holds: it never takes or lets go of one.
+func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (Manifest, error)
+// Restore is Reserve, Install and Release, for an archive already at hand.
 func Restore(ctx context.Context, r io.ReaderAt, size int64, dir string) (Manifest, error)
 const (
 	MaxFiles    = 100_000
@@ -1268,8 +1348,8 @@ const (
 
 The archive carries `data/` as the data directory holds it: the catalog,
 the crews, the runs' records, the ledger and Dispatch's database (each a
-`VACUUM INTO` snapshot, consistent while the server writes), Dispatch's
-attachment files, a switchyard's `links/` (hashes, never tokens) and
+`VACUUM INTO` snapshot, consistent while the server writes), the
+attachment files Dispatch's snapshot names (below), a switchyard's `links/` (hashes, never tokens) and
 `hooks/`. It leaves out, and lists in `left`: `workbench-token` and its
 lock, `runs/owner.lock`, `restore.lock`, the databases' `-wal`, `-shm` and `-journal` files
 (the snapshot holds what they did), `*.tmp`, `.probe-*`, Dispatch's
@@ -1314,8 +1394,36 @@ mended (it skips a record whose revision is at least the row's, and
 the runs' records (`runs/<id>.json`) first, then snapshots the ledger,
 so a run that finishes or starts between the two is a record that lags
 or is missing beside a newer ledger, which the restored server's first
-`syncRecords` writes from the ledger; then Dispatch's snapshot, then the
-other documents and files, then the manifest.
+`syncRecords` writes from the ledger; then Dispatch's snapshot and the
+attachment files it names, then the other documents and files, then the
+manifest.
+
+**Attachments from the captured database.** A snapshot holds rows, not
+the files they name: after it, an attachment can be removed and a second
+Dispatch store's sweep at open can delete its file (the sequence
+`TestAnAttachmentRemovedAndSweptWhileItOpensIsNotFound` exercises), so a
+walk of `attachments/` would miss a file the snapshot's live row names.
+So `Write` never walks `attachments/`: it reads from the snapshot itself
+(`dispatch.SnapshotHashes(ctx, path)`, new: a read-only connection on the
+snapshot file, the distinct SHA-256 of every attachment row whose
+`deleted_at` is null) the files the captured database requires, and
+copies each of them, verifying as it streams that the bytes hash to the
+name (a file that does not fails the export, naming it). A required file
+that is missing was removed and swept after the snapshot, which a later
+snapshot no longer names (a remove tombstones the row before any sweep
+may take the file, `attachments.go`): `Write` then takes Dispatch's
+snapshot again and copies the files the new one requires that it has not
+copied yet, at most three snapshots, and fails naming the hash if a file
+the last one requires is still missing. Only the last snapshot goes into
+the archive, so every live row it holds has its file there; a file an
+earlier snapshot alone named is an orphan the restored store's first
+sweep deletes (`TestTheSweepDeletesAnOrphanWhateverItsAge`). Files a
+lease alone names (an upload in flight in the source's process) and
+orphans are not copied. `Install` checks the same invariant on the way
+in, for any archive (a provider's among them): before the renames it
+reads the staged `dispatch/dispatch.sqlite`, when there is one, through
+`SnapshotHashes` and refuses an archive missing a file one of its live
+rows names.
 
 **The destination reserved.** `Fresh` is a moment's answer, so a restore
 reserves the data directory for its whole run: `Reserve` creates
@@ -1336,7 +1444,11 @@ places, and a fresh directory may hold other files, so the collision
 check below is what keeps anything the archive holds from being renamed
 over anything.
 
-`Restore` takes the reservation, refuses a data directory that is not
+`Install` runs under a reservation its caller holds and passes in
+(`Restore` takes one for it; `--provider` holds its own, below): it
+refuses a reservation already released, never creates `restore.lock` and
+never removes it, so the reservation is held without a gap for as long
+as its caller holds it. It refuses a data directory that is not
 `Fresh`, then checks the whole archive before it writes a byte: format 1, the manifest within its
 bound, every entry listed with its size and SHA-256 and no other, every
 path relative under `data/`, made of `[A-Za-z0-9._-]` elements (no `..`,
@@ -1411,14 +1523,18 @@ starts its server with its own `dataDir` (`<userData>/conductor` on
 Windows and macOS, `~/.local/share/conductor/data` inside WSL,
 `desktop/src/settings.ts`), which no default of the CLI can know: the
 README's Export and restore names both paths, to be given as
-`--data-dir`, with the app quit. `--provider` takes the reservation and
-checks `Fresh` first, so no server starts while it fetches, then asks the
-sync store
+`--data-dir`, with the app quit. `--provider` takes the reservation
+(`Reserve`) and checks `Fresh` first, so no server starts while it
+fetches, then asks the sync store
 (`local.Fill(extensions()).Continuity`) for its copy (the free default
 answers that there is none, and nothing changes) into a temporary file
 beside the data directory, giving it `RestoreRequest{Dir:
 <dataDir>/ext/<name>, Log}` (made 0700; a provider that needs a sign-in
-keeps it there), then installs it the same way, its checks included: the
+keeps it there), then installs it with `Install` under that same
+reservation, its checks included, and releases it only after the last
+rename or the failure that ends it: one reservation, held continuously
+from before the download to after the install, never let go between
+them and never taken twice: the
 one place a provider's `Restore` is called, with no server running and
 no `Start`, at a person's word. It is the one provider call the
 local-only rule does not bind (article 8, above): `Restore` may stream
@@ -1687,11 +1803,17 @@ taking an answer's keys, resolved once they are written, the first answer
 winning; no timer ends it). The router adds: a question is routed at most
 once per server (the ids routed, kept per session, so a question set
 aside and shown again with its id is not routed twice: an id is resolved
-only when its session neither shows nor keeps it, so the ids the bound
-forgets never show again); a change of a session's attention is never
-lost to the router (a set of dirty session ids, at most one per session,
-nothing dropped), so every routed question is told `Resolved`, however
-busy the other sessions were; a route's answer is
+when its session shows it answered in the terminal or neither shows nor
+keeps it, and is forgotten only once neither, so the ids the bound
+forgets never show again); what a session shows and what it keeps are
+read from one snapshot (`Info`, one lock acquisition; one host message),
+never from two; a change of a session's attention is never lost to the
+router (a set of dirty session ids, at most one per session, nothing
+dropped), and a resolution is never lost after it (the router's
+resolutions drop nothing; past `maxUnresolved` routed and untold ids a
+new question is not routed instead), so every routed question is told
+`Resolved` exactly once, however busy the other sessions were and
+however slow the provider; a route's answer is
 applied at most
 once and only through the claim, so it is refused once a person answered,
 and a person's answer is refused once the route's was taken; a route
@@ -1714,7 +1836,10 @@ commits (the data directory's observer mutex shared by the store and its
 delivery, so a document's docs follow its commits and, within an epoch,
 carry a `Rev` that increases with them; the pending set holds one entry
 per document and drops nothing, and past its bound gives way to a
-replay. Every epoch begins with a replay of the whole state and ends it
+replay; an entry leaves it only when its whole document is acknowledged
+(a failed one is tried again, in order, after a backoff, with no local
+write needed), and `replayed` is told only after every document of its
+replay was acknowledged. Every epoch begins with a replay of the whole state and ends it
 with `replayed`, at each server's start and after an overflow, so a
 store holds every allowlisted document's last state whatever it missed,
 and no `Rev` of one server lifetime is compared with another's. The start-up's own commits are among them (the
@@ -1727,8 +1852,10 @@ plus `ext/<name>/` for a provider's own state and `restore.lock` while a
 restore or a starting server holds it.
 
 **Export and restore.** The route copies the runs' records, then
-snapshots the ledger, then Dispatch, then reads the other documents and
-files, then writes the manifest last; a document written meanwhile
+snapshots the ledger, then Dispatch with the attachment files that
+snapshot's live rows name (a snapshot taken again when one went
+meanwhile), then reads the other documents and files, then writes the
+manifest last, so every live attachment row in the archive has its file; a document written meanwhile
 appears as one version or the other, never torn (the store renames), and
 a run's record is never ahead of its ledger, which the restored server's
 `syncRecords` mends. Restore reserves the data directory
@@ -1828,6 +1955,11 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   `TestRestoreFromProviderEndedShort` (the download failing halfway, and
   ctx cancelled while it waits on the server: the temporary file gone,
   the reservation released, the data directory as before, exit 1),
+  `TestRestoreFromProviderHoldsTheReservation` (seams as the download
+  starts, between the download and the install, and between two of the
+  install's renames: at each, `restore.lock` the same file with the same
+  pid and start time, a `serve` and a second restore refused; removed
+  once, after the last rename),
   `TestRestoreFromProvider` (the default: nothing to restore, nothing
   changed; a fake's archive installed; a fake's partial archive, the
   catalog, a crew and a finished run's record with no database, installed
@@ -1909,12 +2041,29 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     session quiet: once the gate opens, exactly one `Resolved` for it),
     `TestRouteOncePerQuestionSetAsidePastTheBound` (A set aside, 70
     questions routed and answered before A shows again at the done: A
-    not routed again, `Resolved` once at its answer).
+    not routed again, `Resolved` once at its answer),
+    `TestResolvedThroughABlockedConsumer` (a fake whose `Resolved` blocks
+    on a gate at its first call, then 300 routed questions answered, more
+    than any ring would hold: once the gate opens, every one told
+    `Resolved` once, in order, none lost), `TestRouteSkippedAtTheBound`
+    (the consumer held shut and `maxUnresolved` ids untold: the next
+    question not routed, never told, and not routed after the gate opens;
+    nothing past the bound held), `TestRouterNeverResolvesARestoredQuestion`
+    (A set aside while B shows, then A shown again at the done, through a
+    seam just after the router's read of the session: A not resolved,
+    `Resolved` once at its answer), `TestResolvedWhenAnsweredInTheTerminal`
+    (a routed question answered by keys typed in the terminal, the dialog
+    still drawn and the program quiet after: `Resolved` once, with no
+    further output), `TestAnsweredInTheTerminalNeverRouted` (a question
+    consumed before the router's first read: no `Route`, no `Resolved`).
   - PR-10: `TestRoutedAnswerReachesAHostedSession` (a real host agent:
     applied once, the host's attention says so), `TestOlderHostUnsupported`
     (and its questions not routed), `TestHostedSetAsidePastTheBound` (a
     real host agent: A set aside, 70 questions routed between, A shown
     again: not routed again, `Resolved` once at its end),
+    `TestHostedAnsweredInTheTerminalResolved` (a real host agent: a routed
+    question answered in its terminal, the host quiet after: `Resolved`
+    once, from the `answered` mark),
     `TestSwitchyardNeverRoutesAHostedSession` (a switchyard server:
     `Host.Submit` to a hosted session `ErrUnsupported`, no `answer_as`
     sent).
@@ -1930,7 +2079,13 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
     once more and quiet after: once opened, a new epoch's replay, that
     document with its last bytes, nothing missing), `TestSyncPendingOnce`
     (a document saved 100 times while delivery is held: delivered once,
-    its last state), `TestSyncLargeDocInParts` (a 4 MiB run record: four
+    its last state), `TestSyncRetriesAFailedDelivery` (after the replay,
+    the fake fails the one `Saved` of a document never written again, and
+    the third part of a 4 MiB run record: with no further local write,
+    the test's clock past the backoff, both delivered again whole, the
+    record's four parts from one file), `TestSyncReplayedWaitsForEveryDoc`
+    (the fake fails one document of the start-up replay: `replayed` not
+    told until that document is acknowledged), `TestSyncLargeDocInParts` (a 4 MiB run record: four
     parts of one path, `Rev` and epoch whose bytes join to the file),
     `TestSyncEpochAcrossRestarts` (two server lifetimes against one fake
     that keeps its cursor: the second begins with a new epoch's replay, a
@@ -1961,8 +2116,11 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   with a repair, several inputs, a checkpoint, a manifest, a cut file),
   `TestTaskFileContextSection` (the fence longer than the body's
   backticks), `TestContextCutFirst`, `TestEngineAsksContextOutsideTheLock`.
-- `internal/session` (PR-9): `TestKept` (the own question set aside and
-  a held-over one listed, a shown one never, at most two), `TestAnswerAsChoice`,
+- `internal/session` (PR-9): `TestKept` (`Info.Kept`: the own question set aside and
+  a held-over one listed, a shown one never, at most two),
+  `TestKeptReadWithTheAttention` (A set aside and restored while `Info`
+  is read in a loop: every snapshot shows A or keeps it, never neither;
+  `-race -count=30`), `TestAnswerAsChoice`,
   `TestAnswerAsOnlyChoices`, `TestAnswerAsHeldTurn`,
   `TestAnswerAsAgainstAViewer` (the two at once, exactly one written,
   `-count=30`), `TestAnswerAsRecordsTheName`.
@@ -1979,7 +2137,10 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   connection), `TestSwitchyardAnswerAsRefused` (an uplink's register
   says no `answerAs`; a `HostAnswerAs` sent anyway types nothing; no
   `kept` sent), `TestKeptSent` (a question set aside while the screen
-  shows another state: an attention message with only `kept` changed).
+  shows another state: an attention message with only `kept` changed),
+  `TestKeptSentWithItsAttention` (the forwarder held by a seam while A
+  is restored and a retry is due: every attention message's `kept` and
+  shown id from one `Info`, A in one or the other in each).
 - `internal/signal` (PR-10): `TestHostedAnswerAs` (sent only to a host
   that said so), `TestHostedKept` (an attention equal to the shown one
   with a new `kept`: the kept ids taken, nothing recorded).
@@ -1999,7 +2160,8 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
 - `internal/dispatch` (PR-11, PR-12): `TestOnCommitInOrder` (two
   `Apply`s, the first held after its commit by a seam while the second
   commits: queued in commit order, `Rev` increasing); `TestSnapshot`,
-  `TestSnapshotFile`.
+  `TestSnapshotFile`, `TestSnapshotHashes` (live rows' hashes once each,
+  a tombstoned row's left out).
 - `internal/export` (PR-12): `TestRoundTrip` (a data directory with the
   catalog, crews, records, a finished managed run, a Dispatch project with
   a ticket, a comment and an attachment: exported, restored into an empty
@@ -2012,6 +2174,9 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   a run finished and a new run made: restored and served, every managed
   run's record equals its ledger's), `TestReserve` (exclusive; a second
   refused with the file named; released after the renames),
+  `TestInstallUnderItsCallersReservation` (`Install` with a held
+  reservation installs and leaves `restore.lock` in place for its caller
+  to release; with a released one, refused before a byte is written),
   `TestExportKeepsCatalogEnv`, `TestExportResolvesInheritedEnv` (a
   configured agent with an env value, edited so that its saved override
   stores the mask and omits its adapter: exported, restored into a
@@ -2023,7 +2188,15 @@ clock (AGENTS.md, Tests that do not flake), and is proven with
   `TestRestoreNeverRenamesOver` (a fresh directory holding an unrelated
   `config.json`: an archive with `data/config.json` refused before any
   rename, the file as it was; an archive without it installed, the file
-  kept).
+  kept), `TestExportAttachmentSweptAfterTheSnapshot` (through a seam
+  after Dispatch's snapshot, an attachment removed and a second store
+  opened whose sweep deletes its file: the export takes the snapshot
+  again and succeeds; restored and opened, every live attachment opens
+  with its bytes, the removed one not found), `TestExportAttachmentStillMissing`
+  (a live row's file deleted by hand: the export fails naming the hash,
+  after three snapshots), `TestRestoreRefusesAMissingAttachment` (an
+  archive whose database names a file it does not hold: refused before
+  any rename).
 - `internal/opencore` (PR-5, PR-14): `TestModuleKeepsTheRules`,
   `TestEachRuleCatchesItsPlant`, `TestPlatformTagsMatchTheToolchain`;
   PR-14 adds the `entitlements` fixture.
