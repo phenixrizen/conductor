@@ -74,8 +74,8 @@ describe("a tile's terminal narrowed with its cursor above the last row (#221)",
     }
   })
 
-  // 300 terminals driven through their writes: work alone, about 3 s here, which a loaded box running the whole suite stretched past
-  // vitest's 5 s default (twice on 2026-10-30, #281). Nothing in it waits on a clock, so the bound only catches a hang.
+  // 300 terminals driven one after another: CPU work with no wait of the product's in it, about 3.5 s alone and past vitest's
+  // default 5 s when the suite's workers share a loaded machine. Its own bound only catches a hang (#428's checks).
   it(`CI's ${BREAKING.length} breaking histories: broken with no scrollback, the cursor drawn on its row with TILE_SCROLLBACK`, { timeout: 120_000 }, async () => {
     expect(TILE_SCROLLBACK).toBeGreaterThan(0)
     const without: string[] = []

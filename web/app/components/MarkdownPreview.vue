@@ -23,18 +23,23 @@ import { renderMermaidIsolated } from '~/utils/mermaidFrame'
  * link asks the editor to open that file; a `#fragment` link scrolls to
  * its heading in the preview.
  */
-const props = defineProps<{
-  text: string
-  /** The file's folder, which relative links and images resolve against. */
-  dir: string
-  rawUrl?: (path: string) => string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    text: string
+    /** The file's folder, which relative links and images resolve against. */
+    dir: string
+    rawUrl?: (path: string) => string | null
+    /** Whether a relative link opens its file; off where the text has no folder (a Dispatch ticket's), its words kept as words. */
+    relativeLinks?: boolean
+  }>(),
+  { rawUrl: undefined, relativeLinks: true },
+)
 const emit = defineEmits<{ open: [path: string] }>()
 
 const host = ref<HTMLElement | null>(null)
 const colorMode = useColorMode()
 const dark = computed(() => colorMode.value === 'dark')
-const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, rawUrl: props.rawUrl }))
+const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, rawUrl: props.rawUrl, relativeLinks: props.relativeLinks }))
 
 /** Code shiki highlights at most; past it the block stays plain. */
 const HIGHLIGHT_LIMIT = 100_000

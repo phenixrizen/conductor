@@ -5,6 +5,7 @@ import { eventAlert, type RoutedEvent } from '~/utils/events'
 import { formedCrew } from '~/utils/activity'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
+import { asDispatchEvent, dispatchLive } from './useDispatchLive'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
@@ -289,14 +290,19 @@ export function useAttention() {
       const payload = JSON.parse(data.join('\n'))
       if (event === 'snapshot') {
         replaceAll(payload as SessionInfo[])
-        // What changed while the stream was away: every run, once.
+        // What changed while the stream was away: every run, once, and every Dispatch page open.
         runs.readAll().catch(() => {})
+        dispatchLive().snapshot()
       } else if (event === 'session') upsert(payload as SessionInfo)
       else if (event === 'removed') remove((payload as { id: string }).id)
       else if (event === 'run') {
         const r = payload as { id: string; removed?: boolean }
         if (r.removed) runs.remove(r.id)
         else runs.schedule(r.id)
+      } else if (event === 'dispatch') {
+        // Something of Dispatch's changed: the pages it names or touches read again (useDispatchLive).
+        const e = asDispatchEvent(payload)
+        if (e) dispatchLive().event(e)
       } else if (event === 'activity') {
         const { sessionId, ...entry } = payload as SessionActivity
         offerFormedCrew(sessionId, entry)
