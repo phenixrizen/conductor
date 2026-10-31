@@ -368,6 +368,14 @@ type Engine struct {
 	// process has ended and before its end is recorded: a test holds the
 	// watcher there.
 	beforeServiceEnd func(id string)
+	// awaitingStart, when set, runs in a stop that is to stop a service
+	// whose start is under way, before it waits for the executor to hand
+	// the service over (stopService): a test holds the start until then.
+	awaitingStart func(id string)
+	// beforeServe, when set, runs in a service's start once its started
+	// row is committed and before the start is registered on its tree
+	// (t.starting) and its process made: a test lands a stop there.
+	beforeServe func(id string)
 	// beforePrereqEnd, when set, runs as a generation of the prerequisites
 	// ends, after its last commit and before it is counted out: a test
 	// lands an unpause there.
@@ -1631,7 +1639,8 @@ func (r *run) admit(m Member) error {
 // Stop stops a run: no member starts any more, the starts in flight end,
 // every member's session is stopped and, beside them in the same wait,
 // every service of a managed run's live trees (SIGTERM to its group,
-// SIGKILL after the grace or once ctx ends), the handoffs waiting are
+// SIGKILL after the grace or once ctx ends), one being started among them
+// once the executor hands it over, the handoffs waiting are
 // dropped and the run is marked stopped. The worktrees stay. Stopping a
 // stopped run again changes nothing.
 func (e *Engine) Stop(ctx context.Context, runID string) error {
@@ -1676,7 +1685,7 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 		}()
 	}
 	for _, ts := range svcs {
-		wg.Go(func() { ts.svc.Stop(ctx) })
+		wg.Go(func() { e.stopService(ctx, ts) })
 	}
 	wg.Wait()
 	// The handoffs left are dropped; one being typed ends with its session.

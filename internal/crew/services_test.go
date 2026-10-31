@@ -1151,6 +1151,131 @@ func TestAStopEndsTheServicesBeforeItReturns(t *testing.T) {
 	})
 }
 
+// A stop that comes while a service is being started owns it all the same
+// (Codex's review of #441, round 3). Its process made and the executor
+// held before it hands the service over, a stop under a context already
+// ended sees the start under way, waits for the service and kills it
+// before it returns, so no process of the run outlives the stop that
+// returned; the service's end is recorded with its tree's, why the run
+// was stopped, its row finished with its pid. A start the stop came
+// before (held once its row is committed, before it is registered on the
+// tree) makes no process at all: its row is finished with why, and no
+// service.ended follows.
+func TestAStopOwnsAServiceBeingStarted(t *testing.T) {
+	// held is a hold a test opens once, and its opener.
+	held := func(t *testing.T) (<-chan struct{}, func()) {
+		hold, open := make(chan struct{}), false
+		release := func() {
+			if !open {
+				open = true
+				close(hold)
+			}
+		}
+		t.Cleanup(release)
+		return hold, release
+	}
+	m := Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}}
+	t.Run("its process made", func(t *testing.T) {
+		dir := newRepo(t)
+		e, _, l := managedEngine(t)
+		native := e.exec.serve
+		made := make(chan int, 1)
+		hold, release := held(t)
+		e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+			svc, err := native(ctx, s)
+			if err == nil {
+				made <- svc.Result().Process.PID
+			}
+			<-hold
+			return svc, err
+		}
+		awaiting := make(chan string, 1)
+		e.awaitingStart = func(id string) { awaiting <- id }
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		var pid int
+		select {
+		case pid = <-made:
+		case <-time.After(20 * time.Second):
+			t.Fatal("the service's process was not made after 20 s")
+		}
+		if !alive(pid) {
+			t.Fatalf("the service %d is not running as it is handed over", pid)
+		}
+		short, cancel := context.WithCancel(context.Background())
+		cancel()
+		outlived := make(chan bool, 1)
+		go func() {
+			_ = e.Stop(short, run.ID)
+			outlived <- alive(pid)
+		}()
+		select {
+		case live := <-outlived:
+			t.Fatalf("the stop returned before the service being started was handed over (its process alive: %v)", live)
+		case id := <-awaiting:
+			if id != "web" {
+				t.Fatalf("the stop waited for the start of %q", id)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("the stop did not wait for the service being started after 20 s")
+		}
+		release()
+		select {
+		case live := <-outlived:
+			if live {
+				t.Fatalf("the service %d outlived the stop", pid)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("the stop did not return after 20 s")
+		}
+		l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+		waitTreesEnded(t, e, run.ID)
+		if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "the run was stopped" {
+			t.Fatalf("service.ended: %v", p)
+		}
+		if web, ok := rowOf(l.stepRows(run.ID, "build", 1), "web", 1); !ok || web.State != ledger.CheckFinished || web.PID != pid || web.Error != "" {
+			t.Fatalf("the service's row: %+v", web)
+		}
+	})
+	t.Run("its process not made yet", func(t *testing.T) {
+		dir := newRepo(t)
+		e, _, l := managedEngine(t)
+		native := e.exec.serve
+		var served atomic.Int32
+		e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+			served.Add(1)
+			return native(ctx, s)
+		}
+		reached := make(chan struct{}, 1)
+		hold, release := held(t)
+		e.beforeServe = func(string) {
+			reached <- struct{}{}
+			<-hold
+		}
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		select {
+		case <-reached:
+		case <-time.After(20 * time.Second):
+			t.Fatal("the service's start did not reach its process after 20 s")
+		}
+		short, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = e.Stop(short, run.ID)
+		release()
+		l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+		waitTreesEnded(t, e, run.ID)
+		if n := served.Load(); n != 0 {
+			t.Fatalf("%d processes made for a start the stop came before", n)
+		}
+		words := "web was not started: its tree's end had begun"
+		if web, ok := rowOf(l.stepRows(run.ID, "build", 1), "web", 1); !ok || web.State != ledger.CheckFinished || web.PID != 0 || web.Error != words {
+			t.Fatalf("the service's row: %+v", web)
+		}
+		if n := l.count(run.ID, "service.ended"); n != 0 {
+			t.Fatalf("%d service.ended for a service never started", n)
+		}
+	})
+}
+
 // A stop the ledger refuses (its recordStop) has ended the services all
 // the same, before it returns its refusal: the run is stopped, the
 // service's pid is gone, no tree.ended is recorded (the tree is handed

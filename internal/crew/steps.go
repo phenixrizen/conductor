@@ -160,15 +160,18 @@ func (rm resolvedManifest) row() string {
 // and in a worktree through its session's launch (hold). Under e.mu:
 // handed is set once it is handed to endTree, ending once its end begins
 // or the run's stop ends its services (nothing holds it after, and no
-// service is registered on it), ended once its end is recorded, and
-// session names the session its end waits for, one being stopped (set by
-// handTrees, or by the launch's record when the close came during the
-// launch). services are its services in the order they started, each
-// appended the moment its process exists, until its end has recorded
-// theirs (endServices lets go of them); ready is set once its tree.ready
-// is recorded; dead is the first of its services that exited on its own
-// before that, and died is closed with it, for the phase that waits on a
-// probe.
+// service starts on it: startService), ended once its end is recorded,
+// and session names the session its end waits for, one being stopped (set
+// by handTrees, or by the launch's record when the close came during the
+// launch). starting is the service whose start is under way, from before
+// its process is made until the executor hands it over, nil while none is
+// (a tree's services start one at a time): a run's stop that comes
+// meanwhile sees it and waits for it (stopServices). services are its
+// services in the order they started, each appended as the executor hands
+// it over, until its end has recorded theirs (endServices lets go of
+// them); ready is set once its tree.ready is recorded; dead is the first
+// of its services that exited on its own before that, and died is closed
+// with it, for the phase that waits on a probe.
 type tree struct {
 	kind     string // ledger.TreeWorktree | ledger.TreeCheckout
 	dir      string // the worktree or the checkout
@@ -181,9 +184,11 @@ type tree struct {
 	allow    []string
 	a        *attempt
 	busy     sync.WaitGroup
-	// handed, ending, ended, session, services, ready, dead: see above.
+	// handed, ending, ended, session, starting, services, ready, dead:
+	// see above.
 	handed, ending, ended bool
 	session               string
+	starting              *treeService
 	services              []*treeService
 	ready                 bool
 	dead                  *treeService
@@ -205,10 +210,12 @@ type service interface {
 // once its process exists), its handle and its output, as its row keeps it
 // at its end. Under e.mu: stopping is why something is ending it (the
 // tree's end, the run's stop, a start refused), "" while nothing is; ended
-// is set once its end is recorded, or in the change that records it.
-// watched is closed once its watcher has returned (watchService), which
-// starts once its running row's transaction has returned, so its end is
-// never recorded before its start.
+// is set once its end is recorded, or in the change that records it; row
+// and svc are set as the executor hands it over. started is closed then,
+// or once its start has failed (svc nil), and svc is read without e.mu
+// after it (stopService). watched is closed once its watcher has returned
+// (watchService), which starts once its running row's transaction has
+// returned, so its end is never recorded before its start.
 type treeService struct {
 	ch       Check
 	row      ledger.CheckRow
@@ -216,6 +223,7 @@ type treeService struct {
 	log      *bytes.Buffer
 	stopping string
 	ended    bool
+	started  chan struct{}
 	watched  chan struct{}
 }
 
@@ -812,21 +820,26 @@ func stepPayload(a *attempt, t *tree, phase, id string, k int, more map[string]a
 }
 
 // startService starts one of t's services, its receipt a row of phase
-// service: put started before anything runs (step.started); the process
-// started through the tree's executor (treeExec.serve) with the tree's
-// environment, under r.teardown and never the attempt's context, whose end
-// would kill the service's group at the attempt's close before the tree's
-// end could ask it to stop (a service ends by Stop, from endTree or the
-// run's stop, and by its context only at the shutdown's cut-off); its
-// handle on the tree under e.mu the moment it exists; then its row running
-// with its pid, group and start time (step.running), committed before the
-// next service starts, and the service watched from then on
-// (watchService), so its end is recorded after its start. A tree whose
-// end has begun has the new service stopped at once, and a running row the
-// ledger refuses stops it and reaps it: either fails the tree at the
-// service, whose end the tree's end records. A command that cannot start
-// is the service's failure, its row finished with why. The error is the
-// failure's words.
+// service: put started before anything runs (step.started); the start
+// registered on the tree (t.starting) under e.mu before its process is
+// made, unless the tree's end has begun (its end, or the run's stop),
+// when none is made and the row is finished with why, so a run's stop
+// either sees the start under way, and waits for it, or comes first and
+// is never outrun by it (stopServices: Codex's review of #441, round 3);
+// the process started through the tree's executor (treeExec.serve) with
+// the tree's environment, under r.teardown and never the attempt's
+// context, whose end would kill the service's group at the attempt's
+// close before the tree's end could ask it to stop (a service ends by
+// Stop, from endTree or the run's stop, and by its context only at the
+// shutdown's cut-off); its handle on the tree under e.mu as the executor
+// hands it over (started); then its row running with its pid, group and
+// start time (step.running), committed before the next service starts,
+// and the service watched from then on (watchService), so its end is
+// recorded after its start. A tree whose end began meanwhile has the new
+// service stopped at once, and a running row the ledger refuses stops it
+// and reaps it: either fails the tree at the service, whose end the
+// tree's end records. A command that cannot start is the service's
+// failure, its row finished with why. The error is the failure's words.
 func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, ch Check) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%s was not started: %w", ch.ID, err)
@@ -846,29 +859,42 @@ func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, 
 		}
 		return fmt.Errorf("the ledger could not record the service %s: %w", ch.ID, err)
 	}
-	var p proc.Process
+	if e.beforeServe != nil {
+		e.beforeServe(ch.ID)
+	}
 	log := &bytes.Buffer{}
+	ts := &treeService{ch: ch, row: row, log: log, started: make(chan struct{}), watched: make(chan struct{})}
+	e.mu.Lock()
+	ending := t.ending
+	if !ending {
+		t.starting = ts
+	}
+	e.mu.Unlock()
+	if ending {
+		return e.serviceNotRun(r, a, t, row, ch.ID+" was not started: its tree's end had begun")
+	}
+	var p proc.Process
 	env := t.env(r.id)
 	svc, err := e.exec.serve(r.teardown, proc.Spec{Argv: slices.Clone(ch.Argv), Dir: t.cwd, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject),
 		Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: func(started proc.Process) { p = started }})
 	if err != nil {
-		words := fmt.Sprintf("%s could not run: %s", ch.ID, session.CleanMessage(err.Error()))
-		fin := row
-		fin.State, fin.FinishedAt, fin.Error = ledger.CheckFinished, time.Now().UTC(), words
-		_ = e.transact(context.Background(), r, func() tx {
-			out := ev("step.finished", stepPayload(a, t, ledger.PhaseService, ch.ID, k, map[string]any{"exit": -1, "error": words}))
-			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
-			return out
-		}, nil)
-		return errors.New(words)
+		e.mu.Lock()
+		t.starting = nil
+		close(ts.started)
+		e.mu.Unlock()
+		return e.serviceNotRun(r, a, t, row, fmt.Sprintf("%s could not run: %s", ch.ID, session.CleanMessage(err.Error())))
 	}
 	running := row
 	running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
-	ts := &treeService{ch: ch, row: running, svc: svc, log: log, watched: make(chan struct{})}
 	e.mu.Lock()
+	ts.row, ts.svc = running, svc
+	t.starting = nil
 	t.services = append(t.services, ts)
-	ending := t.ending
-	if ending {
+	close(ts.started)
+	// The tree's end, or the run's stop (which marked it stopping), began
+	// while the executor made the process.
+	ending = t.ending
+	if ending && ts.stopping == "" {
 		ts.stopping = "its tree's end had begun as it started"
 	}
 	e.mu.Unlock()
@@ -897,6 +923,20 @@ func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, 
 		return fmt.Errorf("the ledger could not record the service %s: %w", ch.ID, err)
 	}
 	return nil
+}
+
+// serviceNotRun finishes the row of a service of t whose process was never
+// made, or could not start, with words (step.finished, exit -1), and
+// returns them as the service's failure.
+func (e *Engine) serviceNotRun(r *run, a *attempt, t *tree, row ledger.CheckRow, words string) error {
+	fin := row
+	fin.State, fin.FinishedAt, fin.Error = ledger.CheckFinished, time.Now().UTC(), words
+	_ = e.transact(context.Background(), r, func() tx {
+		out := ev("step.finished", stepPayload(a, t, ledger.PhaseService, row.ID, row.K, map[string]any{"exit": -1, "error": words}))
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+		return out
+	}, nil)
+	return errors.New(words)
 }
 
 // watchService waits for a service of t to end. One that nothing is ending
@@ -1986,13 +2026,17 @@ func (e *Engine) endServices(ctx context.Context, r *run, t *tree, why string) {
 
 // stopServices ends the services of r's live trees, as a stop does before
 // it records the run stopped: each tree not ended is marked ending first,
-// so no service is registered on it after (one starting stops itself at
-// once), and each service nothing ends yet is marked stopping for the
-// run's stop (stopFor); their stops follow under the stop's context,
-// beside the sessions'. Their ends are recorded by their trees' ends
-// (endServices), once recordStop hands the trees over; a stop the ledger
-// refuses hands none, and leaves no service running all the same. It
-// returns the services to stop. The caller holds e.mu.
+// so no service starts on it after (startService), each service nothing
+// ends yet is marked stopping for the run's stop (stopFor), and so is the
+// one whose start is under way (t.starting), its process made or being
+// made and not yet handed over; their stops follow under the stop's
+// context, beside the sessions', the one starting's once its start hands
+// it over (stopService), so the stop returns under no process of its
+// trees, whatever its context says (Codex's review of #441, round 3).
+// Their ends are recorded by their trees' ends (endServices), once
+// recordStop hands the trees over; a stop the ledger refuses hands none,
+// and leaves no service running all the same. It returns the services to
+// stop. The caller holds e.mu.
 func (r *run) stopServices() []*treeService {
 	var svcs []*treeService
 	for _, tk := range r.tasks {
@@ -2006,10 +2050,39 @@ func (r *run) stopServices() []*treeService {
 					ts.stopFor("the run was stopped")
 					svcs = append(svcs, ts)
 				}
+				if ts := t.starting; ts != nil {
+					// Nothing else ends it: it has no handle yet.
+					if ts.stopping == "" {
+						ts.stopping = "the run was stopped"
+					}
+					svcs = append(svcs, ts)
+				}
 			}
 		}
 	}
 	return svcs
+}
+
+// stopService stops ts for the run's stop under ctx (Stop: SIGTERM to its
+// group, SIGKILL after the grace or once ctx ends) and returns once its
+// process is reaped. One whose start is under way (t.starting) is waited
+// for until the executor hands it over, whatever ctx says: the executor
+// returns once the process exists, and a stop that returned before then
+// would leave the process to its start, which stops it alone after a
+// whole grace (Codex's review of #441, round 3). One whose start failed
+// has nothing to stop.
+func (e *Engine) stopService(ctx context.Context, ts *treeService) {
+	select {
+	case <-ts.started:
+	default:
+		if e.awaitingStart != nil {
+			e.awaitingStart(ts.ch.ID)
+		}
+		<-ts.started
+	}
+	if ts.svc != nil {
+		ts.svc.Stop(ctx)
+	}
 }
 
 // teardownReserve is what the server's shutdown keeps after the
