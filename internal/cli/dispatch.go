@@ -100,12 +100,22 @@ func (l lostReply) Unwrap() error { return l.err }
 
 // askTwice runs send, and once more when its reply was lost and ctx is
 // still live: what the workbench does with a write (sendCommand). A
-// second loss is the error.
-func askTwice(ctx context.Context, send func() error) error {
-	err := send()
+// second loss is the error. Each attempt sends with the context it is
+// handed: with ctx's deadline, the first has half of what is left of it,
+// so a first reply left unanswered leaves the resend the other half (a
+// budget no longer than one request's own timeout, ticket_comment's 60 s
+// beside the session client's, would otherwise go to the first whole);
+// the resend has the rest of ctx.
+func askTwice(ctx context.Context, send func(context.Context) error) error {
+	first, cancel := ctx, context.CancelFunc(func() {})
+	if deadline, ok := ctx.Deadline(); ok {
+		first, cancel = context.WithTimeout(ctx, time.Until(deadline)/2)
+	}
+	err := send(first)
+	cancel()
 	var lost lostReply
 	if errors.As(err, &lost) && ctx.Err() == nil {
-		err = send()
+		err = send(ctx)
 	}
 	return err
 }
@@ -499,7 +509,7 @@ func (w *dispatchWrite) send(ctx context.Context, c *apiClient, stdout io.Writer
 	}
 	w.body["opId"] = newOpID()
 	var out dispatchReply
-	if err := askTwice(ctx, func() error {
+	if err := askTwice(ctx, func(ctx context.Context) error {
 		return c.doLimit(ctx, http.MethodPost, w.path, w.body, &out, maxDispatchReply)
 	}); err != nil {
 		return 1, err
@@ -998,7 +1008,7 @@ func commentOnSessionTicket(ctx context.Context, c *crewClient, text string) (*d
 	var out struct {
 		Comment *dispatch.Comment `json:"comment"`
 	}
-	err := askTwice(ctx, func() error { return c.into(ctx, http.MethodPost, "/ticket/comments", body, &out) })
+	err := askTwice(ctx, func(ctx context.Context) error { return c.into(ctx, http.MethodPost, "/ticket/comments", body, &out) })
 	return out.Comment, err
 }
 

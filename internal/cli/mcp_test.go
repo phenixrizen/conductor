@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // mcpRun feeds lines to the MCP server and returns its replies, one per request.
@@ -297,5 +299,52 @@ func TestMcpTicketCommentWithoutTheCommentRead(t *testing.T) {
 	text, err := s.call(t.Context(), "ticket_comment", json.RawMessage(`{"body":"seen"}`))
 	if err != nil || text != "commented on your ticket" {
 		t.Fatalf("ticket_comment with no comment read: %q %v", text, err)
+	}
+}
+
+// ticket_comment's first reply left unanswered leaves its resend time
+// within the tool's budget: the first post held until the client gives it
+// up, at half of what the budget had left (askTwice), the same operation
+// is sent once more and its reply answers the tool. The budget here is
+// the caller's deadline, under the tool's own 60 s, which equal the
+// session client's timeout on one request.
+func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		opIDs []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/ticket/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			OpID string `json:"opId"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		opIDs = append(opIDs, body.OpID)
+		n := len(opIDs)
+		mu.Unlock()
+		if n == 1 {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"`+body.OpID+`","intent":"comment.add","status":"done","rev":1,"id":"c1"},"comment":{"id":"c1","n":1,"author":"agent:a","by":"a","body":"seen"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "agent-tok")}
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	text, err := s.call(ctx, "ticket_comment", json.RawMessage(`{"body":"seen"}`))
+	if err != nil || text != "comment #1 on your ticket" {
+		t.Fatalf("ticket_comment after a stalled reply: %q %v", text, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opIDs) != 2 || opIDs[0] == "" || opIDs[0] != opIDs[1] {
+		t.Fatalf("the comment's posts: %q", opIDs)
 	}
 }
