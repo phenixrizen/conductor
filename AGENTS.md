@@ -167,6 +167,12 @@ add its rule here.
   Close returns only once nothing it started can still write: the ledger's
   wait could try for the lock once more after Close and make `owner.lock`
   again; its tries are made under the ledger's lock now.
+- What a test finds left behind has an owner: find it before judging.
+  A swap file still there after `:q` named another Vim, still running,
+  in the banner of the next open; it was a Neovim the page had asked for
+  a tab left before the Neovim opened, which nothing closed (2026-10-31,
+  #429's review). The pid in the file, the frames the page sent and the
+  processes still alive say whose it is; a longer wait would only hide it.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
