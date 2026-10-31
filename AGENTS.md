@@ -159,6 +159,14 @@ add its rule here.
   its processes (`endRuns` in `internal/crew`); anything else a test leaves
   running is ended the same way, before the cleanup that removes what it
   writes to.
+- Servers over one data directory hand its owner lock on: a later one
+  waits for it and takes it when the first ends. End the later ones first
+  (cleanups run last in, first out, so `serve` registers each one's end
+  after the first's), or the later one opens the ledger as its owner while
+  `t.TempDir` removes it (`data/runs: directory not empty`, #281). And a
+  Close returns only once nothing it started can still write: the ledger's
+  wait could try for the lock once more after Close and make `owner.lock`
+  again; its tries are made under the ledger's lock now.
 - Check what must last again after a redraw the test causes. A check made
   only as a view first appears races the page's own redraws (a clock
   tick, a live update): the run page's graph dropped a task's needs edge
