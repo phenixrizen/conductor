@@ -99,12 +99,15 @@ export interface ViewQuery {
   group?: string
 }
 
+/** What a saved view shows its tickets as: a list, a board or a roadmap. */
+export type ViewKind = 'list' | 'board' | 'roadmap'
+
 export interface DispatchView {
   id: string
   /** '' for a view of every project. */
   projectId: string
   name: string
-  kind: 'list' | 'board' | 'roadmap'
+  kind: ViewKind
   query: ViewQuery
   createdAt: string
   updatedAt: string
@@ -355,6 +358,26 @@ export interface TicketEdit {
   remove?: { assignees?: string[]; labels?: string[] }
 }
 
+/** A saved view made (POST /api/dispatch/views): of the project with the key, or of every project without one. */
+export interface NewView {
+  project?: string
+  name: string
+  kind: ViewKind
+  query: ViewQuery
+}
+
+/** A saved view's edit: each field given is set; its project never changes. */
+export interface ViewEdit {
+  name?: string
+  kind?: ViewKind
+  query?: ViewQuery
+}
+
+export interface ViewReply {
+  receipt: DispatchReceipt
+  view: DispatchView | null
+}
+
 export interface ProjectReply {
   receipt: DispatchReceipt
   project: DispatchProject | null
@@ -383,6 +406,11 @@ export function useDispatchApi() {
     editTicket: (key: string, body: OpBody & TicketEdit) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/edit`, { method: 'POST', body }),
     /** A page of a ticket's history after the change `after` (its seq; 0 from the start), oldest first. */
     history: (key: string, after = 0) => request<HistoryPage>(`/api/dispatch/tickets/${enc(key)}/history` + (after ? `?after=${after}` : '')),
+    /** The saved views a project's pages offer, by name: the project's own and every project's. */
+    views: (project: string) => request<{ views: DispatchView[] }>(`/api/dispatch/views?project=${enc(project)}`).then((r) => r.views ?? []),
+    createView: (body: OpBody & NewView) => request<ViewReply>('/api/dispatch/views', { method: 'POST', body }),
+    editView: (id: string, body: OpBody & ViewEdit) => request<ViewReply>(`/api/dispatch/views/${enc(id)}/edit`, { method: 'POST', body }),
+    deleteView: (id: string, body: OpBody) => request<ViewReply>(`/api/dispatch/views/${enc(id)}/delete`, { method: 'POST', body }),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
   }

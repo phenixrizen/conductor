@@ -146,10 +146,13 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
-- A run's log is not its ledger. The engine notes a change in the run's
-  log inside the change and commits its rows and events after it, outside
-  the lock: a test that saw the note and reads the ledger at once can read
-  it before the commit. Wait on the ledger for what the ledger must hold.
+- A run's log is not its ledger, and neither is the rest of the engine's
+  view. The engine makes a change (its log line, a task's state, an
+  attempt's) inside the change and commits its rows and events after it,
+  outside the lock: a test that saw the change in the view (a log line,
+  `waitTask`, `attemptFailed`) and reads the ledger at once can read it
+  before the commit. Wait on the ledger for what the ledger must hold
+  (`attemptWhen`, `taskWhen`), every row and event the test then reads.
   A message sent from inside a step is not the step done: the session
   sends a viewer its welcome inside `AttachWith`, before the host's peer
   holds the subscription (`awaitSub` in `internal/hostagent` waits for it).
@@ -178,6 +181,15 @@ add its rule here.
   edge on arrival failed only when the page's 5 s tick came first. Switch
   a mode or toggle a setting, then check again, so a bug that only a
   redraw shows fails every run.
+- Mark what you read with what you saw before reading it. A poll that
+  records a file's time (a version, a cursor) after its read can record a
+  change the read never saw, and no later poll sees a change: the
+  certificate files' check read a certificate whose key was not yet
+  written, failed, then stat'd the pair and recorded the key's time
+  (#281). Take the mark first and record it only for a read that loaded;
+  a test changes the thing between the read and the record through a
+  seam (`afterRead` in `internal/certs`), and pokes or calls each check
+  itself instead of racing a ticker.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

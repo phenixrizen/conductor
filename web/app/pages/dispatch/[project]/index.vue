@@ -1,18 +1,23 @@
 <script setup lang="ts">
-import type { ProjectRead, TicketSummary } from '~/composables/useDispatch'
+import type { DispatchTicket, DispatchView, Horizon, ProjectRead, TicketEdit, TicketStatus, TicketSummary, ViewKind } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
+import type { PageGroup } from '~/composables/usePalette'
 import { ApiError } from '~/composables/useApi'
 import { listWatch } from '~/composables/useDispatchLive'
 import { DISPATCH_SHORTCUTS } from '~/composables/useShortcuts'
-import { TRACKERS, ticketPath, validProjectKey } from '~/utils/dispatch'
+import { PICK_KEYS, PICK_WORDS, TRACKERS, listKeepSelected, listToggle, moveEdit, newestRows, patchRows, pickEdit, ticketSummaryOf, targetWords, ticketPath, validProjectKey, withMoves, type CardMove, type PickField } from '~/utils/dispatch'
 import { apiQuery, filterFromURL, filterNarrows, filterToURL, type DispatchFilter } from '~/utils/dispatchQuery'
+import { serially } from '~/utils/dispatchOrder'
 
-// A project's page (docs/plans/dispatch.md, PR-8): its tickets as a list, filtered and sorted on the server, the filter in the link
-// (utils/dispatchQuery.ts), pages of 200; New ticket; the board and the roadmap as tabs, which come with the next change. The project and
-// the list are read through the page's ordering gate, the list by its filter (a filter changed is a new list, the old one's late pages
+// A project's page (docs/plans/dispatch.md, PR-8 and PR-9): its tickets as a list, a board or a roadmap, filtered and sorted on the server,
+// the filter in the link (utils/dispatchQuery.ts), pages of 200; the saved views as chips (DispatchViewsBar.vue); New ticket. The project
+// and the list are read through the page's ordering gate, the list by its filter (a filter changed is a new list, the old one's late pages
 // dropped), as the page opens and again after the window on any dispatch event of the project, and on a snapshot, which forgets what the
 // gate knew (a store restored from a backup). A read that fails is asked again as a re-read is, the first and a filter's among them.
-// Nothing polls.
+// Nothing polls. The keys (Owner decisions, 10): J K move through the list, Enter opens, X selects, C makes a ticket, S P A L M O pick the
+// status, priority, assignees, labels, milestone and owner of the tickets selected or the one focused, each one operation per ticket;
+// a card of the board or the roadmap moves by drag and drop or by ← →. The page's group in the palette offers the views, New ticket and
+// what the selection can be set to.
 
 const route = useRoute()
 const router = useRouter()
@@ -30,7 +35,7 @@ const tickets = ref<TicketSummary[]>([])
 const total = ref(0)
 /** The cursor of the page after those shown, '' when they are all. */
 const next = ref('')
-/** How many pages of the list are shown: a re-read reads them all again. */
+/** How many pages of the list are shown: a re-read reads them all again. Back from a ticket by Escape, as many as were (backPages). */
 const pages = ref(1)
 /** The list (a thing of the gate: its project and its filter) whose tickets are shown. */
 const shownThing = ref('')
@@ -42,10 +47,9 @@ const newOpen = ref(false)
 
 useHead({ title: computed(() => (projectRead.value ? `${projectRead.value.project.name} · Dispatch` : project.value)) })
 
-// The view, in the link (?view=) and kept per browser as the run page keeps its own: the list now, the board and the roadmap with the
-// next change.
+// The view, in the link (?view=) and kept per browser as the run page keeps its own: the list, the board or the roadmap.
 const VIEW_KEY = 'conductor.dispatchView'
-type DispatchViewKind = 'list' | 'board' | 'roadmap'
+type DispatchViewKind = ViewKind
 function isView(v: unknown): v is DispatchViewKind {
   return v === 'list' || v === 'board' || v === 'roadmap'
 }
@@ -91,6 +95,21 @@ const query = computed(() => apiQuery(project.value, filter.value, names.value))
 const listThing = computed(() => `list:${project.value}?${query.value ?? 'nothing'}`)
 /** The tickets shown are the filter's. */
 const listed = computed(() => shownThing.value === listThing.value)
+
+// Back from a ticket by Escape (its page sets backFocus): the list is read as deep as it was shown when the ticket was opened, so a ticket
+// opened after More is listed again and its row focused (the watch of backFocus below). Kept as the page goes, for the project and the
+// filter of the link; taken only by a way back to that list, and forgotten once its focus is given.
+const backFocus = useState<string>('dispatchBackFocus', () => '')
+const backPages = useState<{ project: string; filter: string; pages: number } | null>('dispatchBackPages', () => null)
+const filterWords = computed(() => JSON.stringify(filterToURL(filter.value)))
+/** How many pages a list read afresh starts with: those shown before the ticket, on the way back to the same list; else one. */
+function startPages(): number {
+  const b = backPages.value
+  const back = backFocus.value.startsWith(`${project.value}-`) && b?.project === project.value && b.filter === filterWords.value
+  return back ? b.pages : 1
+}
+pages.value = startPages()
+onBeforeUnmount(() => (backPages.value = { project: project.value, filter: filterWords.value, pages: pages.value }))
 
 /** A page's size: the most the store lists at once. */
 const PAGE = 200
@@ -154,7 +173,8 @@ async function readList(): Promise<void> {
         return { all, count, cursor }
       },
       (r) => {
-        tickets.value = r.all
+        // A row read before an edit's answer this page applied shows that answer, the newer revision, until a later read has it.
+        tickets.value = newestRows(r.all, latest)
         total.value = r.count
         next.value = r.cursor
         shownThing.value = thing
@@ -201,14 +221,24 @@ onMounted(() => {
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, load)
 
-// The live events read the page again; its first read is made once it is subscribed to them (useDispatchLive's `first`).
-const live = useDispatchLive({ ...listWatch(() => project.value, reload), reset: () => gate.reset() }, load)
+// The live events read the page again; its first read is made once it is subscribed to them (useDispatchLive's `first`). A snapshot
+// forgets the revisions this page's edits were answered with too: the store may have been restored from a backup.
+const live = useDispatchLive(
+  {
+    ...listWatch(() => project.value, reload),
+    reset: () => {
+      gate.reset()
+      latest.clear()
+    },
+  },
+  load,
+)
 
 // Another filter is another list: the old one's late pages are dropped, and the new one is read from its first page, through the live
 // store (DispatchLive.ask), so that a read that fails is asked again after the window, doubled, as a re-read is, with no further event.
 watch(listThing, (_, before) => {
   gate.drop(before)
-  pages.value = 1
+  pages.value = startPages()
   live.ask(async () => {
     try {
       await readList()
@@ -247,13 +277,220 @@ const labelsById = computed(() => new Map((projectRead.value?.labels ?? []).map(
 const milestonesById = computed(() => new Map((projectRead.value?.milestones ?? []).map((m) => [m.id, m])))
 const narrows = computed(() => filterNarrows(filter.value))
 
-// The list's keys (Owner decisions, 10): J and K move the focus, Escape leaves the list; Enter opens a focused row, as a link does.
+// ---------------------------------------------------------------------------
+// Edits from the list, the board, the roadmap and the pickers: one operation per ticket, one after another.
+
+const ops = useDispatchOps(gate)
+/**
+ * By key, the ticket as the last edit of this page answered with it: a list read sent before that answer and served after it shows the
+ * older row, so the row shown and the next edit's base are the newer of the two by revision (newestRows). Forgotten on a snapshot.
+ */
+const latest = new Map<string, TicketSummary>()
+
+/** A ticket an edit answered with: kept as the latest known, and shown in its row when its revision is the row's or later. */
+function showTicket(t: DispatchTicket) {
+  const s = ticketSummaryOf(t)
+  const known = latest.get(s.key)
+  if (!known || s.rev >= known.rev) latest.set(s.key, s)
+  tickets.value = patchRows(tickets.value, s)
+}
+
+/** A ticket as the page knows it now: its row, or the newer answer of an edit. */
+function current(key: string): TicketSummary | undefined {
+  const row = tickets.value.find((t) => t.key === key)
+  const known = latest.get(key)
+  return row && (!known || row.rev >= known.rev) ? row : (known ?? row)
+}
+
+/** The page is gone: a ticket's read after an edit that fails is not asked again for it. */
+let gone = false
+onBeforeUnmount(() => (gone = true))
+/**
+ * The page was left before it showed what one of its edits did (editTickets' `stranded`): the edits queued behind are not made on what
+ * it shows, which may not be the store's, and each says it was not sent, rather than being taken for no change and said done.
+ */
+let stranded = false
+
+/**
+ * The page's edits, one after another (serially): each is made when it is sent, against the tickets as the edits before it left them, so a
+ * card moved twice in a row, or moved back, ends where it was put last; editTickets reads a ticket again after an answer that showed
+ * nothing of it, and after a failure, before the next edit is made. Refused, the page is read again once for the batch, through the live
+ * store, so that a read that fails is asked again. The page left, the edits queued are made while it shows what the ones before did; once
+ * it was left before it showed that, none is sent.
+ */
+const editQueue = serially(async (keys: readonly string[], make: (t: TicketSummary) => TicketEdit | null, done?: (keys: string[]) => string) => {
+  const targets = keys.map(current).filter((t): t is TicketSummary => !!t)
+  const out = await ops.editTickets(targets, make, { apply: showTicket, refused: () => live.ask(reload), left: () => gone, stranded: () => stranded, done })
+  if (out.stranded) stranded = true
+  return out
+})
+
+// The board's and the roadmap's moves: a card is shown in the column it was moved to until the store answers; refused (a move to Done
+// the close policy refuses, in its own words), its entry goes and the card snaps back.
+const moves = ref(new Map<string, CardMove & { n: number }>())
+let moveN = 0
+/** The tickets as the views show them: each card moved in its new column until the store answers. */
+const shown = computed(() => withMoves(tickets.value, moves.value))
+
+async function move(key: string, to: CardMove) {
+  if (archived.value) return
+  const n = ++moveN
+  moves.value = new Map(moves.value).set(key, { ...to, n })
+  try {
+    await editQueue([key], (t) => moveEdit(t, to))
+  } finally {
+    if (moves.value.get(key)?.n === n) {
+      const next = new Map(moves.value)
+      next.delete(key)
+      moves.value = next
+    }
+  }
+}
+
+// The selection (X on a focused row of the list), kept to the rows still listed.
+const selected = ref(new Set<string>())
+watch(tickets, (rows) => {
+  if (selected.value.size) selected.value = listKeepSelected(selected.value, rows.map((t) => t.key))
+})
+/** The tickets selected, in the list's order. */
+const selectedKeys = computed(() => shown.value.map((t) => t.key).filter((k) => selected.value.has(k)))
+function toggleSelected(key: string) {
+  selected.value = listToggle(selected.value, key)
+}
+function clearSelection() {
+  selected.value = new Set()
+}
+
+// The pickers (S P A L M O): the field of the tickets selected, or of the one focused.
+const pickerOpen = ref(false)
+const pickerField = ref<PickField>('status')
+const pickerKeys = ref<string[]>([])
+const pickerTickets = computed(() => pickerKeys.value.map(current).filter((t): t is TicketSummary => !!t))
+function openPicker(field: PickField, keys: readonly string[]) {
+  if (!keys.length || archived.value || !projectRead.value) return
+  pickerField.value = field
+  pickerKeys.value = [...keys]
+  pickerOpen.value = true
+}
+/** A pick: one operation per ticket, those already holding it left alone; several tickets say what was set in one toast. */
+function picked(value: string | number, adds: boolean) {
+  const field = pickerField.value
+  const keys = [...pickerKeys.value]
+  void editQueue(keys, (t) => pickEdit(field, t, value, adds), keys.length > 1 ? (done) => `${PICK_WORDS[field].title} set on ${targetWords(done)}` : undefined)
+}
+
+// ---------------------------------------------------------------------------
+// The keys (Owner decisions, 10): plain keys, which pause in a text field and a terminal as every page key does (defineShortcuts), and
+// while a dialog is open. The letter that completes one of the layout's G chords (G C, G S, G A) is the chord's.
+
 useShortcutsModal().registerPage(DISPATCH_SHORTCUTS)
-const list = useTemplateRef<{ step: (delta: 1 | -1) => void; leave: () => void }>('list')
+const list = useTemplateRef<{ step: (delta: 1 | -1) => void; leave: () => void; focusKey: (key: string) => void; focus: string | null }>('list')
+const lastChord = useState<number>('lastChordAt', () => 0)
+/** A dialog, a menu (a chip's) or a list of choices (a filter's) is open: its keys are its own. A tooltip shown is none of them. */
+function overlaid(): boolean {
+  return !!document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')
+}
+function paused(): boolean {
+  return Date.now() - lastChord.value <= 150 || pickerOpen.value || newOpen.value || overlaid()
+}
+/** The ticket the keys act on: the card or row with the focus, else the list's roving focus. */
+function focusedKey(): string | null {
+  const el = document.activeElement?.closest('[data-ticket-row], [data-ticket-key]')
+  const key = el?.getAttribute('data-ticket-row') ?? el?.getAttribute('data-ticket-key')
+  if (key) return key
+  return view.value === 'list' ? (list.value?.focus ?? null) : null
+}
+/** The tickets a letter acts on: those selected (in the list), else the focused one. */
+function targets(): string[] {
+  if (view.value === 'list' && selectedKeys.value.length) return selectedKeys.value
+  const key = focusedKey()
+  return key ? [key] : []
+}
+function pick(field: PickField) {
+  if (paused()) return
+  const keys = targets()
+  if (!keys.length) {
+    toast.add({ title: 'No ticket to set', description: 'J and K move through the list, X selects; on the board, Tab to a card.', icon: 'i-lucide-info', color: 'neutral' })
+    return
+  }
+  openPicker(field, keys)
+}
 defineShortcuts({
-  j: () => list.value?.step(1),
-  k: () => list.value?.step(-1),
-  escape: () => list.value?.leave(),
+  j: () => !paused() && list.value?.step(1),
+  k: () => !paused() && list.value?.step(-1),
+  x: () => {
+    if (paused() || view.value !== 'list') return
+    const key = list.value?.focus ?? null
+    if (key) toggleSelected(key)
+  },
+  c: () => {
+    if (!paused() && projectRead.value && !archived.value) newOpen.value = true
+  },
+  ...Object.fromEntries(Object.entries(PICK_KEYS).map(([letter, field]) => [letter, () => pick(field)])),
+  escape: () => {
+    // A dialog's or a menu's Escape is its own.
+    if (overlaid()) return
+    if (selected.value.size) clearSelection()
+    else list.value?.leave()
+  },
+})
+
+// Back from a ticket by Escape (its page sets this): the focus returns to its row or card once the view shows the list read for the
+// filter, as many pages as were shown (startPages), a card's folded column (the roadmap's Not planned) unfolded first; a ticket the
+// filter leaves out is not waited for.
+const cards = useTemplateRef<{ focusCard: (key: string) => Promise<boolean> }>('cards')
+watch(
+  [shown, view, listed],
+  () => {
+    const key = backFocus.value
+    if (!key || !key.startsWith(`${project.value}-`) || !listed.value) return
+    backFocus.value = ''
+    backPages.value = null
+    if (!shown.value.some((t) => t.key === key)) return
+    if (view.value === 'list') list.value?.focusKey(key)
+    else void cards.value?.focusCard(key)
+  },
+  { flush: 'post' },
+)
+
+// ---------------------------------------------------------------------------
+// The saved views (DispatchViewsBar.vue): a chip applies a view, its filter written to the link and its kind shown.
+
+const bar = useTemplateRef<{ views: DispatchView[]; openSave: () => void; apply: (v: DispatchView) => void }>('bar')
+/** The link takes the view's filter and kind first; the kind is shown once the link has it, so the view's own watch keeps the filter. */
+async function applyView(f: DispatchFilter, kind: ViewKind) {
+  await router.replace({ query: { ...(kind !== 'list' ? { view: kind } : {}), ...filterToURL(f) } })
+  view.value = kind
+}
+
+// ---------------------------------------------------------------------------
+// The page's group in the command palette: New ticket, the views, the saved views, and what the selection can be set to.
+
+const palette = usePalette()
+const VIEW_WORDS: Record<ViewKind, { label: string; icon: string }> = {
+  list: { label: 'Show the list', icon: 'i-lucide-list' },
+  board: { label: 'Show the board', icon: 'i-lucide-square-kanban' },
+  roadmap: { label: 'Show the roadmap', icon: 'i-lucide-map' },
+}
+palette.registerPage((): PageGroup => {
+  // The selection is the list's, as its bar is.
+  const n = view.value === 'list' ? selectedKeys.value.length : 0
+  const rows: PageGroup['rows'] = []
+  if (n) {
+    for (const [letter, field] of Object.entries(PICK_KEYS)) {
+      rows.push({ key: `page:selection:${field}`, label: `${PICK_WORDS[field].set} ${n} selected…`, detail: selectedKeys.value.join(', '), icon: PICK_WORDS[field].icon, kbds: [letter.toUpperCase()], disabled: archived.value, run: () => void nextTick(() => openPicker(field, selectedKeys.value)) })
+    }
+    rows.push({ key: 'page:selection:clear', label: `Clear the selection of ${n}`, icon: 'i-lucide-x', kbds: ['escape'], run: clearSelection })
+  }
+  rows.push({ key: 'page:new-ticket', label: `New ticket in ${project.value}`, icon: 'i-lucide-ticket-plus', kbds: ['C'], disabled: !projectRead.value || archived.value, run: () => void nextTick(() => (newOpen.value = true)) })
+  for (const kind of ['list', 'board', 'roadmap'] as const) {
+    if (kind !== view.value) rows.push({ key: `page:view:${kind}`, label: VIEW_WORDS[kind].label, icon: VIEW_WORDS[kind].icon, run: () => (view.value = kind) })
+  }
+  for (const v of bar.value?.views ?? []) {
+    rows.push({ key: `page:saved-view:${v.id}`, label: `Saved view: ${v.name}`, detail: `${v.projectId ? `a ${v.kind} of ${project.value}` : `a ${v.kind} of every project`}`, icon: v.projectId ? VIEW_WORDS[v.kind].icon : 'i-lucide-globe', run: () => bar.value?.apply(v) })
+  }
+  rows.push({ key: 'page:save-view', label: 'Save the filter as a view…', icon: 'i-lucide-bookmark-plus', disabled: archived.value, run: () => void nextTick(() => bar.value?.openSave()) })
+  return { label: `${project.value} · Dispatch`, rows }
 })
 </script>
 
@@ -291,7 +528,7 @@ defineShortcuts({
       </div>
 
       <template v-else>
-        <div class="flex flex-none flex-col gap-3 px-4 pt-3 pb-2 sm:px-6">
+        <div class="flex min-w-0 flex-none flex-col gap-2.5 px-4 pt-3 pb-2 sm:px-6">
           <UAlert v-if="archived" color="neutral" variant="subtle" icon="i-lucide-archive" :title="`${project} is archived.`" description="Its tickets are read as they are; nothing of them can be changed until it is unarchived." />
           <div class="flex flex-wrap items-center gap-3">
             <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-project-view />
@@ -307,29 +544,39 @@ defineShortcuts({
               <UIcon :name="TRACKERS.external.icon" class="size-3.5 flex-none" />
               <span class="truncate">{{ projectRead.project.trackerUrl }}</span>
             </a>
-            <span v-if="listed && view === 'list'" class="ml-auto text-xs text-muted tabular-nums" data-list-total :data-count="total">{{ total }} {{ total === 1 ? 'ticket' : 'tickets' }}{{ narrows ? ' match' : '' }}</span>
+            <span v-if="listed" class="ml-auto text-xs text-muted tabular-nums" data-list-total :data-count="total">{{ total }} {{ total === 1 ? 'ticket' : 'tickets' }}{{ narrows ? ' match' : '' }}</span>
           </div>
-          <DispatchFilters v-if="view === 'list'" v-model="filter" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents" />
+          <DispatchViewsBar v-if="projectRead" ref="bar" :project="project" :filter="filter" :kind="view" :names="names" :archived="archived" @apply="applyView" />
+          <DispatchFilters v-model="filter" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents" />
+          <!-- The selection (X): what its tickets can be set to, one operation each, as the letters and the palette's rows do. -->
+          <div v-if="view === 'list' && selectedKeys.length" class="flex flex-wrap items-center gap-1.5 rounded-md bg-elevated/60 px-2 py-1.5" data-selection-bar :data-count="selectedKeys.length">
+            <span class="mr-1 text-xs font-medium text-highlighted tabular-nums">{{ selectedKeys.length }} selected</span>
+            <UButton v-for="(field, letter) in PICK_KEYS" :key="field" size="xs" color="neutral" variant="outline" :icon="PICK_WORDS[field].icon" :disabled="archived" :data-selection-pick="field" @click="openPicker(field, selectedKeys)">
+              {{ PICK_WORDS[field].title }}…<UKbd :value="String(letter).toUpperCase()" size="sm" class="ml-0.5 hidden sm:inline-flex" />
+            </UButton>
+            <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-x" label="Clear" class="ml-auto" data-selection-clear @click="clearSelection" />
+          </div>
         </div>
 
-        <div v-if="view !== 'list'" class="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-muted" data-view-later>
-          <UIcon :name="view === 'board' ? 'i-lucide-square-kanban' : 'i-lucide-map'" class="size-8" />
-          <p class="text-sm">The {{ view }} comes with the next change. The list has every ticket meanwhile.</p>
-          <UButton label="The list" icon="i-lucide-list" color="neutral" variant="soft" @click="view = 'list'" />
-        </div>
-
-        <template v-else>
-          <div v-if="!listed" class="flex flex-1 items-center justify-center p-8 text-sm text-muted">Reading the tickets…</div>
-          <div v-else-if="!tickets.length" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted" data-list-empty>
+        <div v-if="!listed" class="flex flex-1 items-center justify-center p-8 text-sm text-muted">Reading the tickets…</div>
+        <template v-else-if="view === 'list'">
+          <div v-if="!tickets.length" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted" data-list-empty>
             <UIcon name="i-lucide-ticket" class="size-8" />
             <p class="text-sm">{{ narrows ? 'No ticket matches the filter.' : `${project} has no tickets yet.` }}</p>
             <UButton v-if="!narrows && !archived" label="New ticket" icon="i-lucide-plus" @click="newOpen = true" />
           </div>
           <div v-else class="min-h-0 flex-1 overflow-y-auto border-t border-default">
-            <DispatchTicketList ref="list" :tickets="tickets" :labels="labelsById" :milestones="milestonesById" :agents="agents" :now="now" />
+            <DispatchTicketList ref="list" :tickets="shown" :labels="labelsById" :milestones="milestonesById" :agents="agents" :now="now" :selected="selected" @toggle="toggleSelected" />
             <div v-if="next" class="flex justify-center p-3">
               <UButton :label="`More (${tickets.length} of ${total})`" icon="i-lucide-chevrons-down" color="neutral" variant="soft" size="sm" :loading="loading" data-list-more @click="more" />
             </div>
+          </div>
+        </template>
+        <template v-else>
+          <DispatchBoard v-if="view === 'board'" ref="cards" :tickets="shown" :labels="labelsById" :agents="agents" :locked="archived" @move="(key: string, status: TicketStatus) => move(key, { status })" />
+          <DispatchRoadmap v-else ref="cards" :tickets="shown" :labels="labelsById" :milestones="projectRead?.milestones ?? []" :agents="agents" :locked="archived" @move="(key: string, horizon: Horizon) => move(key, { horizon })" />
+          <div v-if="next" class="flex flex-none justify-center border-t border-default p-2">
+            <UButton :label="`More (${tickets.length} of ${total})`" icon="i-lucide-chevrons-down" color="neutral" variant="soft" size="sm" :loading="loading" data-list-more @click="more" />
           </div>
         </template>
       </template>
@@ -337,4 +584,5 @@ defineShortcuts({
   </UDashboardPanel>
 
   <DispatchNewTicket v-model:open="newOpen" :project="project" :gate="gate" @created="created" />
+  <DispatchPicker v-model:open="pickerOpen" :field="pickerField" :tickets="pickerTickets" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents" @pick="picked" />
 </template>

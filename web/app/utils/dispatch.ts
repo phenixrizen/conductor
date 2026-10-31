@@ -1,4 +1,4 @@
-import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, Horizon, LabelColor, TicketEdit, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
+import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, TicketEdit, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -531,4 +531,264 @@ export function historyEntries(changes: readonly DispatchChange[], names: Change
 /** Whether `c` is a ticket's row of an acceptance's `field` as one is made, not as one is taken back: set to a value. */
 function accepting(c: DispatchChange, field: 'accepted_for' | 'accepted_at'): boolean {
   return c.entity === 'ticket' && c.field === field && !!c.value
+}
+
+// ---------------------------------------------------------------------------
+// The board's and the roadmap's moves (PR-9): a card moved by drag and drop, or by ← → on a focused card, one column at a time; a move
+// never wraps, so → on the last column, or ← on the first, is no move.
+
+/** The status of the board's column `delta` columns from `status`'s; null past either end, and for a status the board has no column of. */
+export function boardStep(status: string, delta: 1 | -1): TicketStatus | null {
+  const i = TICKET_STATUSES.indexOf(status as TicketStatus)
+  if (i < 0) return null
+  return TICKET_STATUSES[i + delta] ?? null
+}
+
+/** The horizon of the roadmap's column `delta` columns from `horizon`'s (Now, Next, Later, Not planned); null past either end. */
+export function roadmapStep(horizon: string, delta: 1 | -1): Horizon | null {
+  const i = HORIZONS.findIndex((h) => h.value === horizon)
+  if (i < 0) return null
+  return HORIZONS[i + delta]?.value ?? null
+}
+
+/** A move on its way: the column a card was dropped in, shown until the store has answered. */
+export interface CardMove {
+  status?: TicketStatus
+  horizon?: Horizon
+}
+
+/**
+ * The rows as a board or a roadmap shows them while moves are on their way: each card moved in the column it was dropped in, every other
+ * row as the store last answered. A move refused takes its entry away, and its card is back in the column the store holds: it snaps back.
+ */
+export function withMoves<T extends { key: string; status: TicketStatus; horizon: Horizon }>(rows: readonly T[], moves: ReadonlyMap<string, CardMove>): T[] {
+  if (!moves.size) return [...rows]
+  return rows.map((r) => {
+    const m = moves.get(r.key)
+    return m ? { ...r, ...m } : r
+  })
+}
+
+/** The edit a card's move makes: its status set (a board), or its horizon (a roadmap); null when the ticket is in that column already. */
+export function moveEdit(t: Pick<TicketSummary, 'status' | 'horizon'>, to: CardMove): TicketEdit | null {
+  if (to.status !== undefined) return to.status === t.status ? null : { set: { status: to.status } }
+  if (to.horizon !== undefined) return to.horizon === (t.horizon ?? '') ? null : { set: { horizon: to.horizon } }
+  return null
+}
+
+/** A ticket's summary, as a list holds it, from the ticket in full an operation answers with. */
+export function ticketSummaryOf(t: DispatchTicket): TicketSummary {
+  const s: TicketSummary = {
+    id: t.id,
+    projectId: t.projectId,
+    number: t.number,
+    key: t.key,
+    title: t.title,
+    status: t.status,
+    priority: t.priority,
+    horizon: t.horizon,
+    owner: t.owner,
+    assignees: [...t.assignees],
+    labels: [...t.labels],
+    milestoneId: t.milestoneId,
+    parentId: t.parentId,
+    blocked: t.blocked,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    rev: t.rev,
+  }
+  if (t.closedAt) s.closedAt = t.closedAt
+  if (t.deletedAt) s.deletedAt = t.deletedAt
+  return s
+}
+
+/**
+ * The rows with the one of `t`'s key replaced by `t`, an operation's answer, when `t` is at that row's revision or later (the store's
+ * `rev` orders a ticket's states; an older answer never replaces a newer row); the rows unchanged otherwise, and when none has the key.
+ */
+export function patchRows(rows: readonly TicketSummary[], t: TicketSummary): TicketSummary[] {
+  return rows.map((r) => (r.key === t.key && t.rev >= r.rev ? t : r))
+}
+
+/**
+ * A list's rows as read, each replaced by the ticket `known` holds for its key when that one is at a later revision: an edit's answer this
+ * page applied, newer than a row of a read sent before it and served after. Rows `known` has nothing newer for are as read.
+ */
+export function newestRows(rows: readonly TicketSummary[], known: ReadonlyMap<string, TicketSummary>): TicketSummary[] {
+  return rows.map((r) => {
+    const k = known.get(r.key)
+    return k && k.rev > r.rev ? k : r
+  })
+}
+
+// ---------------------------------------------------------------------------
+// The pickers of the list's letters (Owner decisions, 10): S P A L M O pick a ticket's status, priority, assignees, labels, milestone
+// and owner, for the focused ticket or for the tickets selected with X, one operation per ticket.
+
+/** What a picker sets. */
+export type PickField = 'status' | 'priority' | 'assignees' | 'labels' | 'milestone' | 'owner'
+
+/** The letter of each picker, as the list takes it. */
+export const PICK_KEYS: Readonly<Record<string, PickField>> = { s: 'status', p: 'priority', a: 'assignees', l: 'labels', m: 'milestone', o: 'owner' }
+
+/** A picker's field in words: its title ("Status") and what a row of the palette says it sets ("Set status of"). */
+export const PICK_WORDS: Readonly<Record<PickField, { title: string; set: string; icon: string }>> = {
+  status: { title: 'Status', set: 'Set status of', icon: 'i-lucide-circle-dot' },
+  priority: { title: 'Priority', set: 'Set priority of', icon: 'i-lucide-signal-high' },
+  assignees: { title: 'Assignees', set: 'Assign', icon: 'i-lucide-users' },
+  labels: { title: 'Labels', set: 'Label', icon: 'i-lucide-tag' },
+  milestone: { title: 'Milestone', set: 'Set the milestone of', icon: 'i-lucide-milestone' },
+  owner: { title: 'Owner', set: 'Set the owner of', icon: 'i-lucide-user' },
+}
+
+/** What of a ticket a picker reads. */
+export type Pickable = Pick<TicketSummary, 'key' | 'status' | 'priority' | 'assignees' | 'labels' | 'milestoneId' | 'owner'>
+
+/** A ticket's value of a scalar field, as a picker's choices carry it: a status, a priority's number, a milestone's id, an owner's name. */
+function scalarOf(field: 'status' | 'priority' | 'milestone' | 'owner', t: Pickable): string | number {
+  switch (field) {
+    case 'status':
+      return t.status
+    case 'priority':
+      return t.priority
+    case 'milestone':
+      return t.milestoneId ?? ''
+    case 'owner':
+      return t.owner ?? ''
+  }
+}
+
+/** A ticket's members of a set field: its assignees' actors, its labels' ids. */
+function membersOf(field: 'assignees' | 'labels', t: Pickable): readonly string[] {
+  return field === 'assignees' ? t.assignees : t.labels
+}
+
+/**
+ * The choices a picker marks as held over `tickets`: a scalar's value when every ticket holds the same one (none when they differ), a
+ * set's members every ticket holds.
+ */
+export function pickHeld(field: PickField, tickets: readonly Pickable[]): Array<string | number> {
+  if (!tickets.length) return []
+  if (field === 'assignees' || field === 'labels') {
+    const [first, ...rest] = tickets
+    return membersOf(field, first!).filter((m) => rest.every((t) => membersOf(field, t).includes(m)))
+  }
+  const v = scalarOf(field, tickets[0]!)
+  return tickets.every((t) => scalarOf(field, t) === v) ? [v] : []
+}
+
+/**
+ * Whether picking `member` of a set (an assignee, a label) over `tickets` adds it: some ticket lacks it. When every one holds it already,
+ * the pick takes it away from every one, so picking a member twice puts things back.
+ */
+export function pickAdds(field: 'assignees' | 'labels', tickets: readonly Pickable[], member: string): boolean {
+  return tickets.some((t) => !membersOf(field, t).includes(member))
+}
+
+/**
+ * One ticket's edit for a pick: the scalar set to `value` ('' clears a milestone or an owner), or the set's `value` added (`adds`) or
+ * taken away; null when the ticket holds it already, since the store refuses an edit that changes nothing.
+ */
+export function pickEdit(field: PickField, t: Pickable, value: string | number, adds = true): TicketEdit | null {
+  if (field === 'assignees' || field === 'labels') {
+    const member = String(value)
+    const has = membersOf(field, t).includes(member)
+    if (adds === has) return null
+    return adds ? { add: { [field]: [member] } } : { remove: { [field]: [member] } }
+  }
+  if (scalarOf(field, t) === value) return null
+  switch (field) {
+    case 'status':
+      return { set: { status: value as TicketStatus } }
+    case 'priority':
+      return { set: { priority: Number(value) } }
+    case 'milestone':
+      return { set: { milestone: String(value) } }
+    case 'owner':
+      return { set: { owner: String(value) } }
+  }
+}
+
+/** The tickets a pick acts on, in words: the key of one, "3 tickets" of several. */
+export function targetWords(keys: readonly string[]): string {
+  return keys.length === 1 ? keys[0]! : `${keys.length} tickets`
+}
+
+// ---------------------------------------------------------------------------
+// The roadmap's milestones (PR-9), beside its columns: each with how many of the tickets shown are in it and how many of those are done.
+
+export interface MilestoneProgress<M> {
+  milestone: M
+  /** The tickets shown in it, the cancelled left out: what is planned for it. */
+  total: number
+  /** Of those, the ones done. */
+  done: number
+}
+
+/**
+ * The project's milestones with their progress over the tickets given, the open ones first by their target (the soonest first, one with
+ * no target after those with one), then the closed ones; a cancelled ticket counts in neither number, since it will never be done.
+ */
+export function milestoneProgress<M extends { id: string; target: string; state: string; name: string }>(milestones: readonly M[], tickets: readonly { milestoneId: string; status: string }[]): MilestoneProgress<M>[] {
+  const order = (m: M) => (m.state === 'closed' ? 2 : m.target ? 0 : 1)
+  return [...milestones]
+    .sort((a, b) => order(a) - order(b) || a.target.localeCompare(b.target) || a.name.localeCompare(b.name))
+    .map((milestone) => {
+      const mine = tickets.filter((t) => t.milestoneId === milestone.id && t.status !== 'cancelled')
+      return { milestone, total: mine.length, done: mine.filter((t) => t.status === 'done').length }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The palette's Tickets cache (usePalette.ts): the pages read whole, and a read that answers after an edit's answer it was served before.
+
+/** Every page of a list read in turn by its cursor (`read('')` first, then each page's `next`), at most `max` items. */
+export async function allPages<T>(read: (cursor: string) => Promise<{ items: readonly T[]; next?: string }>, max = Infinity): Promise<T[]> {
+  const all: T[] = []
+  let cursor = ''
+  do {
+    const page = await read(cursor)
+    all.push(...page.items)
+    cursor = page.next ?? ''
+  } while (cursor && all.length < max)
+  return all.slice(0, max)
+}
+
+/** Whether the palette's Tickets group lists a ticket: one not done, cancelled or deleted. */
+export function paletteListed(t: Pick<TicketSummary, 'status' | 'deletedAt'>): boolean {
+  return (t.status === 'backlog' || t.status === 'ready' || t.status === 'in_progress' || t.status === 'in_review') && !t.deletedAt
+}
+
+/**
+ * The palette's tickets from a read, beside the tickets its edits answered with (`patched`, by key): a row the read carries below the
+ * revision an edit answered with shows the edit's ticket instead, or goes when that ticket is no longer listed (a read served before the
+ * commit and answered after it never brings the older row back). `keep` is what of `patched` a later read may still need: an entry the
+ * read carries at its revision or later is done with.
+ */
+export function withPatched(read: readonly TicketSummary[], patched: ReadonlyMap<string, TicketSummary>): { rows: TicketSummary[]; keep: Map<string, TicketSummary> } {
+  const keep = new Map(patched)
+  const rows = read.flatMap((r) => {
+    const p = patched.get(r.key)
+    if (!p) return [r]
+    if (p.rev > r.rev) return paletteListed(p) ? [p] : []
+    keep.delete(r.key)
+    return [r]
+  })
+  return { rows, keep }
+}
+
+// ---------------------------------------------------------------------------
+// A name typed into the owner's or the assignees' picker (DispatchPicker.vue).
+
+/**
+ * The value a name typed into the owner's or the assignees' picker offers as a choice of its own, or null when a choice is it already:
+ * the owner's is the name, the assignees' the person (`person:<name>`), compared without case with the values offered (`values`), so an
+ * agent whose display name is the name typed never stands for the person. At most 60 characters of the name.
+ */
+export function typedPick(field: 'owner' | 'assignees', query: string, values: readonly string[]): string | null {
+  const typed = query.trim().slice(0, 60)
+  if (!typed) return null
+  const value = field === 'owner' ? typed : `person:${typed}`
+  const v = value.toLowerCase()
+  return values.some((x) => x.toLowerCase() === v) ? null : value
 }

@@ -48,7 +48,7 @@ const VERB_KINDS: Record<Verb, Array<'session' | 'run' | 'crew' | 'agent'>> = {
   go: [],
 }
 
-export const PAGES = ['yard', 'roundhouse', 'crews', 'agents', 'events', 'settings', 'paste'] as const
+export const PAGES = ['yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'settings', 'paste'] as const
 export type Page = (typeof PAGES)[number]
 
 export interface Named {
@@ -214,6 +214,8 @@ export interface PaletteRow {
   detail?: string
   /** What the query matches beside the label. */
   words?: string[]
+  /** A query equal to one of these, case folded, ranks the row first in its group whatever else was used lately: a ticket's key. */
+  exact?: string[]
 }
 
 export interface PaletteGroup<R extends PaletteRow = PaletteRow> {
@@ -239,12 +241,19 @@ export function rowMatches(row: PaletteRow, query: string): boolean {
   return [row.label, row.detail ?? '', ...(row.words ?? [])].some((w) => w.toLowerCase().includes(q))
 }
 
+/** Whether the query is one of the row's exact names (a ticket's key typed whole), case folded. */
+export function rowExact(row: PaletteRow, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  return !!q && !!row.exact?.some((w) => w.toLowerCase() === q)
+}
+
 /**
  * The groups ranked for a query: Needs you first, always, then the page's
  * own group, then the others in their order; within a group the rows that
- * match the query (every row of a pinned group with no query), the ones
- * used lately first (frecency), then the group's order. A group left with
- * no rows is dropped.
+ * match the query (every row of a pinned group with no query), a row the
+ * query names exactly first (a ticket's key typed whole), then the ones
+ * used lately (frecency), then the group's order. A group left with no
+ * rows is dropped.
  */
 export function rank<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], query: string, recent: Recent, now = Date.now()): PaletteGroup<R>[] {
   const q = query.trim()
@@ -253,11 +262,19 @@ export function rank<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], q
     .sort((a, b) => order(a) - order(b))
     .map((g) => {
       const rows = g.rows
-        .map((r, i) => ({ r, i, f: frecency(recent, r.key, now) }))
+        .map((r, i) => ({ r, i, f: frecency(recent, r.key, now), x: rowExact(r, q) ? 1 : 0 }))
         .filter(({ r }) => (!q && g.pinned) || rowMatches(r, q))
-        .sort((a, b) => b.f - a.f || a.i - b.i)
+        .sort((a, b) => b.x - a.x || b.f - a.f || a.i - b.i)
         .map(({ r }) => r)
       return { ...g, rows }
     })
     .filter((g) => g.rows.length > 0)
+}
+
+/**
+ * A long group cut to its first `n` rows, as ranked, its label saying how many it holds: the rest are found by typing. The Tickets group
+ * may hold a thousand open tickets, which drawn whole would slow every open of the palette and every key typed in it.
+ */
+export function capGroup<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], id: string, n: number): PaletteGroup<R>[] {
+  return groups.map((g) => (g.id === id && g.rows.length > n ? { ...g, label: `${g.label} · ${n} of ${g.rows.length}, type to find the rest`, rows: g.rows.slice(0, n) } : g))
 }

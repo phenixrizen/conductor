@@ -80,8 +80,9 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
 
 /**
  * Dispatch's keys (Owner decisions, 10: Linear's letters, plain keys that pause in text fields and terminals as every page key does),
- * registered by the Dispatch page that takes them: a project's list moves a roving focus over its tickets. The letters that act on a
- * ticket (c, x, s, p, a, l, m, o) come with the board and the list's selection.
+ * registered by the Dispatch page that takes them: a project's list moves a roving focus over its tickets, X selects, C makes a ticket,
+ * and S P A L M O pick a field of the tickets selected, or of the focused one, a ticket or a card; a card of the board or the roadmap
+ * moves by ← →; Escape on a ticket's page goes back to the list.
  */
 export const DISPATCH_SHORTCUTS: ShortcutGroup = {
   title: 'Dispatch',
@@ -89,7 +90,16 @@ export const DISPATCH_SHORTCUTS: ShortcutGroup = {
     { keys: ['J'], label: 'Next ticket in the list (or ↓); from the last, the first' },
     { keys: ['K'], label: 'Previous ticket (or ↑); from the first, the last' },
     { keys: ['enter'], label: 'Open the focused ticket' },
-    { keys: ['escape'], label: 'Leave the list' },
+    { keys: ['X'], label: 'Select the focused ticket, or leave it out; the palette sets what the selection is' },
+    { keys: ['C'], label: 'New ticket in this project' },
+    { keys: ['S'], label: 'Status of the tickets selected, or of the focused one' },
+    { keys: ['P'], label: 'Priority' },
+    { keys: ['A'], label: 'Assignees' },
+    { keys: ['L'], label: 'Labels' },
+    { keys: ['M'], label: 'Milestone' },
+    { keys: ['O'], label: 'Owner' },
+    { keys: ['arrowright'], label: 'On a card of the board or the roadmap: move it a column right; ← left' },
+    { keys: ['escape'], label: "Clear the selection, else leave the list; on a ticket's page, back to the list" },
   ],
 }
 

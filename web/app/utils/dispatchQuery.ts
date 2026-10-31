@@ -293,3 +293,27 @@ export function apiQuery(project: string, f: DispatchFilter, names: FilterNames,
   if (page.cursor) p.set('cursor', page.cursor)
   return p.toString()
 }
+
+/**
+ * Whether two filters list the same tickets in the same order (a saved view's chip shows itself applied by it): the same values in each
+ * field whatever their order in the link, the same search, sort, direction and grouping.
+ */
+export function sameFilter(a: DispatchFilter, b: DispatchFilter): boolean {
+  const set = (xs: readonly (string | number)[]) => JSON.stringify([...new Set(xs.map(String))].sort())
+  return (
+    set(a.status) === set(b.status) &&
+    set(a.priority) === set(b.priority) &&
+    set(a.labels) === set(b.labels) &&
+    a.owner === b.owner &&
+    set(a.assignees) === set(b.assignees) &&
+    a.milestone === b.milestone &&
+    set(a.horizon) === set(b.horizon) &&
+    a.parent === b.parent &&
+    a.blocked === b.blocked &&
+    a.q.trim() === b.q.trim() &&
+    a.deleted === b.deleted &&
+    a.sort === b.sort &&
+    a.desc === b.desc &&
+    a.group === b.group
+  )
+}
