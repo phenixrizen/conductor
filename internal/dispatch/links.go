@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 )
@@ -31,6 +32,23 @@ type NewLink struct {
 	Note string `json:"note,omitempty"`
 }
 
+// LinkAddArgs is link.add's content, its fingerprint: the ticket's key
+// and the link as the client sent it, before an empty reference takes the
+// URL, so a request with the reference omitted and one with the reference
+// the URL make one link and differ as requests. Replay takes it.
+type LinkAddArgs struct {
+	Key string `json:"key"`
+	NewLink
+}
+
+// linkAdded is a link's add row's value: the link whole and the
+// fingerprint of the operation that added it, which the link's row keeps
+// too, so a replica can compare a resend once its receipt is pruned.
+type linkAdded struct {
+	Link
+	Fingerprint string `json:"fingerprint"`
+}
+
 // SetRunExists gives the store the engine's sight of its runs: fn reports
 // whether a run with the id exists, one the engine holds or has a record
 // of. A run link names only a run fn knows; with no fn every run link is
@@ -52,15 +70,13 @@ func (s *Store) SetRunExists(fn func(id string) bool) {
 // other live ticket's live run link (run_linked, the receipt's Key naming
 // that ticket), so a run belongs to one ticket at most. At most MaxLinks
 // live links on the ticket (bound). One add row, its value the link
-// whole ({id, kind, ref, url, note, createdAt, createdBy}). A deleted
+// whole ({id, kind, ref, url, note, createdAt, createdBy}) and the
+// operation's fingerprint, which the link's row keeps as well (Replay
+// compares a resend by it once the receipt is pruned). A deleted
 // ticket is not_found; an expected revision is the ticket's; an archived
 // project refuses it (archived). The receipt carries the link's id.
 func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Receipt, error) {
-	args := struct {
-		Key string `json:"key"`
-		NewLink
-	}{key, l}
-	return s.Apply(ctx, op, "link.add", args, func(t *tx) error {
+	return s.Apply(ctx, op, IntentLinkAdd, LinkAddArgs{Key: key, NewLink: l}, func(t *tx) error {
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
 			return err
@@ -113,13 +129,13 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 		if err := checkCount("links", n+1, MaxLinks); err != nil {
 			return err
 		}
-		link := Link{ID: newID(), TicketID: tk.ID, Kind: l.Kind, Ref: ref, URL: l.URL, Note: l.Note, CreatedAt: t.now, CreatedBy: t.op.author()}
-		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO links (id, ticket_id, kind, ref, url, note, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			link.ID, link.TicketID, link.Kind, link.Ref, link.URL, link.Note, stamp(link.CreatedAt), link.CreatedBy); err != nil {
+		link := Link{ID: newID(), TicketID: tk.ID, Kind: l.Kind, Ref: ref, URL: l.URL, Note: l.Note, CreatedAt: t.now, CreatedBy: t.op.author(), Fingerprint: t.fp}
+		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO links (id, ticket_id, kind, ref, url, note, created_at, created_by, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			link.ID, link.TicketID, link.Kind, link.Ref, link.URL, link.Note, stamp(link.CreatedAt), link.CreatedBy, link.Fingerprint); err != nil {
 			return err
 		}
 		t.created(link.ID, "")
-		value, err := encodeValue(link)
+		value, err := encodeValue(linkAdded{Link: link, Fingerprint: link.Fingerprint})
 		if err != nil {
 			return err
 		}
@@ -377,14 +393,17 @@ func runTicket(ctx context.Context, q queryer, run string) (tk Ticket, found boo
 }
 
 // linkColumns is a link's row as scanLink reads it.
-const linkColumns = "id, ticket_id, kind, ref, url, note, created_at, created_by, deleted_at"
+const linkColumns = "id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by, deleted_at, fingerprint"
 
 // scanLink reads a link's row.
 func scanLink(row interface{ Scan(...any) error }) (Link, error) {
 	var l Link
-	var created, deleted string
-	if err := row.Scan(&l.ID, &l.TicketID, &l.Kind, &l.Ref, &l.URL, &l.Note, &created, &l.CreatedBy, &deleted); err != nil {
+	var verified, created, deleted string
+	if err := row.Scan(&l.ID, &l.TicketID, &l.Kind, &l.Ref, &l.URL, &l.Note, &l.Candidate, &verified, &created, &l.CreatedBy, &deleted, &l.Fingerprint); err != nil {
 		return Link{}, err
+	}
+	if verified != "" {
+		l.Verified = json.RawMessage(verified)
 	}
 	l.CreatedAt, l.DeletedAt = unstamp(created), unstamp(deleted)
 	return l, nil

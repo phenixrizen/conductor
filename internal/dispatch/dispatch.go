@@ -15,7 +15,11 @@
 // move written through (a module internal/proc imports already), and
 // nothing else: no HTTP, no session, no process. A ticket's attachments
 // are files beside the database (attachments.go), which only the sweep
-// deletes (sweep.go). The API, the CLI and the tests are its callers.
+// deletes (sweep.go). From schema version 2 it also keeps a ticket's
+// plan revisions, the record that authorizes a run (plans.go; Program
+// item DS2, docs/plans/dispatch-evidence.md), and answers a resend before
+// its caller does any work of its own (Replay). The API, the CLI and the
+// tests are its callers.
 package dispatch
 
 import (
