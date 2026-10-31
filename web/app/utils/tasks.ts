@@ -1,4 +1,5 @@
-import type { RunInfo, RunTask } from '~/composables/useSessions'
+import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
+import { relativeTime, shortCwd } from './sessions'
 
 // A managed run's tasks on the run page (#334, row 7): the counts its
 // header says, a task's state in words, which actions apply to it, and the
@@ -91,22 +92,34 @@ export function taskCounts(tasks: readonly RunTask[] | undefined): TaskCounts {
 
 export type BadgeColor = 'success' | 'warning' | 'error' | 'neutral' | 'info'
 
-/** The header's badges for a managed run: `3/7 tasks`, then what is wrong or moving (`1 failed`, `2 running`, `1 checking`), and `paused`. */
-export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome'>): Array<{ label: string; color: BadgeColor }> {
+/** A header badge: its words, its colour, and the longer words its title carries (a pause's why). */
+export interface TaskBadge {
+  label: string
+  color: BadgeColor
+  title?: string
+}
+
+/**
+ * The header's badges for a managed run: `3/7 tasks`, then what is wrong or moving (`1 failed`, `2 running`, `1 checking`), `paused`
+ * (titled with why the run paused itself, when it did) and `cleaning up` while trees are being ended (EN1: their services stopped, their
+ * cleanup steps run).
+ */
+export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | 'pausedWhy' | 'cleaning'>): TaskBadge[] {
   const c = taskCounts(run.tasks)
-  const out: Array<{ label: string; color: BadgeColor }> = [{ label: `${c.done}/${c.total} tasks`, color: run.outcome === 'succeeded' ? 'success' : 'neutral' }]
+  const out: TaskBadge[] = [{ label: `${c.done}/${c.total} tasks`, color: run.outcome === 'succeeded' ? 'success' : 'neutral' }]
   if (c.failed) out.push({ label: `${c.failed} failed`, color: 'error' })
   if (c.cancelled) out.push({ label: `${c.cancelled} cancelled`, color: 'neutral' })
   if (c.running) out.push({ label: `${c.running} running`, color: 'success' })
   if (c.checking) out.push({ label: `${c.checking} checking`, color: 'info' })
-  if (run.paused) out.push({ label: 'paused', color: 'warning' })
+  if (run.paused) out.push(run.pausedWhy ? { label: 'paused', color: 'warning', title: `Paused: ${run.pausedWhy}` } : { label: 'paused', color: 'warning', title: 'Paused by a person' })
+  if ((run.cleaning ?? 0) > 0) out.push({ label: 'cleaning up', color: 'info', title: `${run.cleaning} ${run.cleaning === 1 ? 'tree is' : 'trees are'} being ended: services stopped, cleanup steps run` })
   return out
 }
 
 export type Tone = 'warning' | 'error' | 'muted' | 'default' | 'success'
 
 /** A task's state in words: what it waits for, which attempt runs, how it ended; on an interrupted run, what its continuation takes up. */
-export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'> & { state?: string }): { text: string; tone: Tone } {
+export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'> & { state?: string; pausedWhy?: string }): { text: string; tone: Tone } {
   const n = t.attempt?.n ?? t.attempts
   switch (t.state) {
     case 'blocked':
@@ -115,6 +128,9 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
       const why = t.reason ? `${t.reason}; ` : ''
       if (run.state === 'interrupted') return { text: `${why}taken up when the run is continued`, tone: 'warning' }
       if (run.stoppedAt) return { text: `${why}ready, the run is stopped`, tone: 'muted' }
+      // The run paused itself over this task's own reason (a project manifest's step that failed in a tree the agent had not
+      // touched, EN1): the pause is the news, the reason why.
+      if (run.paused && run.pausedWhy && t.reason) return { text: `ready, the dispatch is paused: ${t.reason}`, tone: 'warning' }
       if (run.paused) return { text: `${why}ready, scheduling is paused`, tone: 'warning' }
       return { text: `${why}ready to start`, tone: 'default' }
     }
@@ -162,9 +178,16 @@ export interface TaskActionSet {
   open: boolean
   copyBranch: boolean
   showResult: boolean
+  /** The attempt's preview URL while its worktree answers behind it (EN1), else ''. */
+  preview: string
 }
 
-/** Which actions apply to a task: Retry on a failed or cancelled task, Accept anyway on a failed task whose last attempt submitted a commit, Cancel on a live one. None that changes a run continued: its continuation owns its tasks (`409 run_continued`). */
+/**
+ * Which actions apply to a task: Retry on a failed or cancelled task, Accept anyway on a failed task whose last attempt submitted a commit,
+ * Cancel on a live one. None that changes a run continued: its continuation owns its tasks (`409 run_continued`). Open preview follows the
+ * attempt's `preview` alone: the server sets it at its worktree's `tree.ready` and clears it at the attempt's close, at a service's own
+ * exit and while the run stops, so nothing here second-guesses it.
+ */
 export function taskActions(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'record' | 'resumedBy'>): TaskActionSet {
   const live = !run.stoppedAt && !run.record && !run.resumedBy
   const terminal = t.state === 'succeeded' || t.state === 'failed' || t.state === 'cancelled'
@@ -175,7 +198,77 @@ export function taskActions(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'record
     open: !!t.attempt?.sessionId,
     copyBranch: !!t.attempt?.branch,
     showResult: !!t.result,
+    preview: t.attempt?.preview ?? '',
   }
+}
+
+/** A step's duration in words: `4.2 s` under ten seconds, `60 s` under two minutes, `3 min 5 s` after. */
+export function stepDuration(ms: number): string {
+  if (ms < 10_000) return `${(Math.max(0, ms) / 1000).toFixed(1)} s`
+  const s = Math.round(ms / 1000)
+  if (s < 120) return `${s} s`
+  return s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${Math.floor(s / 60)} min`
+}
+
+/**
+ * A receipt's outcome in words (EN1): `exited 0 in 4.2 s`, `exited 1 in 3.0 s`, `timed out after 60 s`, `ready after 3 tries`,
+ * `not ready after 30 tries`, a service's `exited 0 after 12 s` or `ended after 12 s` (a signal: the tree's end stops it), `running
+ * since 2m ago`, `starting`, `interrupted`. The failure's own words are the step's `error`, shown beside these.
+ */
+export function stepWords(s: RunStep, now = Date.now()): { text: string; tone: Tone } {
+  const tries = (n: number) => `${n} ${n === 1 ? 'try' : 'tries'}`
+  switch (s.state) {
+    case 'started':
+      return { text: 'starting', tone: 'muted' }
+    case 'running':
+      return { text: `running since ${relativeTime(s.startedAt, now, { suffix: true })}`, tone: 'default' }
+    case 'interrupted':
+      return { text: 'interrupted', tone: 'warning' }
+  }
+  const d = stepDuration(s.duration ?? 0)
+  if (s.phase === 'ready') {
+    if (s.exit === 0 && !s.timedOut) return { text: `ready after ${tries(s.tries)}`, tone: 'success' }
+    if (!s.tries) return { text: 'never tried', tone: 'error' }
+    return { text: `not ready after ${tries(s.tries)}`, tone: 'error' }
+  }
+  if (s.phase === 'service') {
+    if (s.exit === undefined || s.exit < 0) return { text: `ended after ${d}`, tone: s.error ? 'error' : 'muted' }
+    return { text: `exited ${s.exit} after ${d}`, tone: s.error ? 'error' : 'muted' }
+  }
+  if (s.timedOut) return { text: `timed out after ${d}`, tone: 'error' }
+  if (s.exit === undefined || s.exit < 0) return { text: s.error ? 'did not run' : `ended after ${d}`, tone: 'error' }
+  return { text: `exited ${s.exit} in ${d}`, tone: s.exit === 0 ? 'success' : 'error' }
+}
+
+/** A receipt's command as shown: a probe over HTTP is `GET <url>`; an argv is its words, one in quotes when it holds a space or a quote. */
+export function stepCommand(s: Pick<RunStep, 'argv' | 'url'>): string {
+  if (s.url) return `GET ${s.url}`
+  return (s.argv ?? []).map((a) => (a === '' || /[\s"'\\]/.test(a) ? JSON.stringify(a) : a)).join(' ')
+}
+
+/** The manifest that produced a receipt: `crew:3` as it is, `file:<blob>` as `file: <its first 12>`; '' for a task's check. */
+export function stepManifest(m?: string): string {
+  if (!m) return ''
+  if (m.startsWith('file:')) return `file: ${m.slice(5, 17)}`
+  return m
+}
+
+/** Where a receipt ran: the attempt's worktree, its result's checkout (`<worktree>.check`), or the directory itself (a prerequisite's: the crew's). */
+export function stepWhere(s: Pick<RunStep, 'dir'>, attempt?: Pick<RunAttempt, 'worktree'>): string {
+  const dir = s.dir ?? ''
+  const wt = attempt?.worktree
+  if (wt && dir) {
+    if (dir === `${wt}.check` || dir.startsWith(`${wt}.check/`)) return 'checkout'
+    if (dir === wt || dir.startsWith(`${wt}/`)) return 'worktree'
+  }
+  return shortCwd(dir)
+}
+
+/** A receipt's ports as words: `web 41234, db 40112`. */
+export function stepPorts(p?: Record<string, number>): string {
+  return Object.entries(p ?? {})
+    .map(([name, n]) => `${name} ${n}`)
+    .join(', ')
 }
 
 /** A command id the browser mints: 16 hex characters, from the platform's random bytes where there are any. */
