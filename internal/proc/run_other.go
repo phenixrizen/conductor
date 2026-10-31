@@ -26,6 +26,11 @@ func (*lifecycle) members(*exec.Cmd) (pids []int, known bool) { return nil, fals
 
 func (*lifecycle) still(*exec.Cmd, []int) []int { return nil }
 
+// noteKills and killedHolding note nothing: no service runs here.
+func (*lifecycle) noteKills(<-chan struct{}) {}
+
+func (*lifecycle) killedHolding() (killed, held bool) { return false, false }
+
 func attr(cmd *exec.Cmd, g *lifecycle) { cmd.Cancel = func() error { return g.signal(cmd, sigKill) } }
 
 // noServiceRunner refuses Serve here: a service is stopped through its

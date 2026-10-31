@@ -322,6 +322,18 @@ var outputRead func()
 // it returns, before end kills the group. Set it before the process starts.
 var settled func(held bool)
 
+// outputOpen says whether the output whose end of file closes eof is open
+// at this moment: read where an answer is made, never from what a wait
+// last saw.
+func outputOpen(eof <-chan struct{}) bool {
+	select {
+	case <-eof:
+		return false
+	default:
+		return true
+	}
+}
+
 // end waits for the launched command's exit, ends what it left in its
 // group, reaps it and reads what became of it: the pipe given holdGrace to
 // close at the exit (Killed: held by a child, which went with the group),
@@ -375,9 +387,14 @@ func (l *launched) end(ctx context.Context) Result {
 
 // settle waits, once the process has exited, for what it left in its group
 // before end kills the group: the output pipe given holdGrace to close
-// (held: a child still holds it). For a service whose stop has asked its
-// group to end (Service.Stop), before the exit or while this waits, the
-// group has the stop's grace instead (settleStopped).
+// (held: a child still holds it). An output still open then is held by a
+// member of the group only while the group has one: with none of it left,
+// the output's end is read late (the goroutine that reads it can be, on a
+// loaded machine) or a process that left the group holds it, which end
+// gives WaitDelay and leaves alone; and the output is read again after
+// the listing, which is slow on a loaded machine. For a service whose stop
+// has asked its group to end (Service.Stop), before the exit or while this
+// waits, the group has the stop's grace instead (settleStopped).
 func (l *launched) settle(ctx context.Context) (held bool) {
 	var asked <-chan struct{}
 	if l.stop != nil {
@@ -394,7 +411,10 @@ func (l *launched) settle(ctx context.Context) (held bool) {
 	case <-l.eof:
 		return false
 	case <-hold.C:
-		return true
+		if members, known := l.g.members(l.cmd); known && len(members) == 0 {
+			return false
+		}
+		return outputOpen(l.eof)
 	case <-asked:
 		return l.settleStopped(ctx)
 	}
