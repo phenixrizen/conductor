@@ -15,7 +15,11 @@
 // move written through (a module internal/proc imports already), and
 // nothing else: no HTTP, no session, no process. A ticket's attachments
 // are files beside the database (attachments.go), which only the sweep
-// deletes (sweep.go). The API, the CLI and the tests are its callers.
+// deletes (sweep.go). From schema version 2 it also keeps a ticket's
+// plan revisions, the record that authorizes a run (plans.go; Program
+// item DS2, docs/plans/dispatch-evidence.md), and answers a resend before
+// its caller does any work of its own (Replay). The API, the CLI and the
+// tests are its callers.
 package dispatch
 
 import (
@@ -538,21 +542,53 @@ func (s *Store) conn() (*sql.DB, error) {
 // commits between its statements from this process or from a second
 // server on the file: under WAL the transaction reads one snapshot from
 // its first statement to its end. ReadOnly makes the driver begin it as
-// a plain BEGIN whatever _txlock says, so it takes no write lock.
+// a plain BEGIN whatever _txlock says, so it takes no write lock. A
+// read-only store reads the version in the same transaction, and fn is
+// given an olderSchema for a database of a version before this binary's,
+// one the store could not migrate (another writer held it, or the store
+// may not write it): its reads take what the later versions added as
+// empty (schemaOf), so a ticket reads as it did before them.
 func (s *Store) read(ctx context.Context, fn func(q queryer) error) error {
 	db, err := s.conn()
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	readOnly := s.readOnly
+	s.mu.Unlock()
 	rtx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
 	}
 	defer rtx.Rollback()
-	if err := fn(rtx); err != nil {
+	var q queryer = rtx
+	if readOnly {
+		var version int
+		if err := rtx.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&version); err == nil && version < Version {
+			q = olderSchema{queryer: rtx, version: version}
+		}
+	}
+	if err := fn(q); err != nil {
 		return err
 	}
 	return rtx.Commit()
+}
+
+// olderSchema is a read's queryer on a database of a version before
+// Version, which a read-only store reads as it found it (read).
+type olderSchema struct {
+	queryer
+	version int
+}
+
+// schemaOf is the schema version of the database q reads: an
+// olderSchema's version, else Version (a writable store's database is
+// brought to Version at open, and a newer one holds what Version has).
+func schemaOf(q queryer) int {
+	if o, ok := q.(olderSchema); ok {
+		return o.version
+	}
+	return Version
 }
 
 // Checkpoint moves the write-ahead log into the database and truncates
