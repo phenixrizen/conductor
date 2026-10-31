@@ -2634,8 +2634,9 @@ is the admin's, a share link's viewers seeing no ticket, and a switchyard's
 `403 switchyard`. Without a data directory every route answers `503
 store_unavailable`; with a store that could not be opened, `503
 dispatch_unavailable`. A store opened read-only (a newer Conductor wrote
-it, it fails its check, or another writer held it past the busy timeout as
-the server started; the server's log says which) answers its reads as it
+it, it fails its check, another writer held it past the busy timeout as
+the server started, or the server may not write its file; the server's
+log says which) answers its reads as it
 can and every write `503 dispatch_unavailable` with why. A failure of the
 database is `500 store_failed`, logged. A read takes the query
 parameters its row names and no other: any other is `400
