@@ -16,8 +16,10 @@ const refused = ref('')
 
 // The name as it is, selected as the field first takes the focus: typing replaces it, a click after places the caret.
 let selectNext = false
-watch(rename.open, (o) => {
-  if (!o) return
+// Every opening starts afresh, on its session's name: one made while the dialog is open (Rename… on another session from the
+// palette, over this dialog) included, which leaves open as it was and changes only the target and the opening.
+watch(rename.opening, () => {
+  if (!rename.open.value) return
   draft.value = rename.target.value?.name ?? ''
   refused.value = ''
   // A save still under way belongs to an earlier opening: this one is not waiting on it.

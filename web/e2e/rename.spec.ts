@@ -198,3 +198,58 @@ test("a save's reply after its dialog was dismissed leaves the dialog opened sin
   await expect(second.dialog).toHaveCount(0)
   expect((await api.session(b.id)).name).toBe('e2e next draft')
 })
+
+test("Rename… on another session from the palette, over an open dialog, starts that dialog afresh on the other session", async ({ page, api }) => {
+  const a = await launch(api, 'e2e rename over')
+  const b = await launch(api, 'e2e rename under palette')
+  // A's rename is held at the network until the test lets it go: the dialog is still open on A, saving, when B's opening comes.
+  let arrived!: () => void
+  const held = new Promise<void>((r) => (arrived = r))
+  let release!: () => void
+  const released = new Promise<void>((r) => (release = r))
+  await page.route(`**/api/sessions/${a.id}`, async (route) => {
+    if (route.request().method() !== 'PATCH') return route.continue()
+    arrived()
+    await released
+    await route.continue()
+  })
+  await page.goto('/crews')
+  const first = await renameFromRow(page, a)
+  await first.field.fill('e2e renamed over')
+  await first.save.click()
+  await held
+  await expect(first.dialog).toBeVisible()
+  // Alt+/ opens the palette over the dialog; B's row offers Rename….
+  await page.keyboard.press('Alt+Slash')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('e2e rename under palette')
+  const row = palette.locator(`[data-palette-row="session:${b.id}"]`)
+  await expect(row).toBeVisible()
+  await row.focus()
+  await expect(row).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  // By the keyboard: the open dialog's overlay takes the pointer, as it does a person's.
+  const action = row.locator('[data-palette-action="rename"]')
+  await action.focus()
+  await page.keyboard.press('Enter')
+  await expect(palette).toBeHidden()
+  // The dialog is B's now: B's name, not A's draft, and a save not held by A's.
+  const dialog = page.getByRole('dialog')
+  const field = dialog.getByRole('textbox', { name: 'Session name' })
+  const save = dialog.locator('[data-rename-save]')
+  await expect(field).toHaveValue('e2e rename under palette')
+  await expect(save).toBeEnabled()
+  // A's reply comes back: A is renamed, and B's dialog stays open on B.
+  const replied = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/sessions/${a.id}`))
+  release()
+  expect((await replied).status()).toBe(200)
+  await expect(page.locator(`[data-session-list] [data-sidebar-row="s:${a.id}"]`).first()).toContainText('e2e renamed over')
+  await expect(dialog).toBeVisible()
+  await expect(field).toHaveValue('e2e rename under palette')
+  await field.fill('e2e renamed under palette')
+  await save.click()
+  await expect(dialog).toHaveCount(0)
+  expect((await api.session(b.id)).name).toBe('e2e renamed under palette')
+  expect((await api.session(a.id)).name).toBe('e2e renamed over')
+})
