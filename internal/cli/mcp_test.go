@@ -278,3 +278,24 @@ func TestMcpTicketReadGivesTheLargestTicketWhole(t *testing.T) {
 	}
 	checkWhole(t, text, l.view, l.labels, l.milestone)
 }
+
+// ticket_comment reports a comment made whose reply carries no comment,
+// the server unable to read it back after its commit (comment null beside
+// a done receipt), as made, without a number it does not have.
+func TestMcpTicketCommentWithoutTheCommentRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/ticket/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"o1","intent":"comment.add","status":"done","rev":1,"id":"c1"},"comment":null}`)
+	}))
+	t.Cleanup(srv.Close)
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "agent-tok")}
+	text, err := s.call(t.Context(), "ticket_comment", json.RawMessage(`{"body":"seen"}`))
+	if err != nil || text != "commented on your ticket" {
+		t.Fatalf("ticket_comment with no comment read: %q %v", text, err)
+	}
+}

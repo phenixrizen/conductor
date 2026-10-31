@@ -333,3 +333,24 @@ func TestTaskTicketPrintsTheLargestTicketWhole(t *testing.T) {
 		t.Fatalf("a reply past the limit: %d %v", code, err)
 	}
 }
+
+// A comment made whose reply carries no comment, the server unable to
+// read it back after its commit (comment null beside a done receipt), is
+// reported made, without a number it does not have.
+func TestTaskTicketCommentWithoutTheCommentRead(t *testing.T) {
+	clearConductorEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/ticket/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"o1","intent":"comment.add","status":"done","rev":1,"id":"c1"},"comment":null}`)
+	}))
+	t.Cleanup(srv.Close)
+	inSessionOf(t, srv.URL, "s1", "agent-tok")
+	if code, out, err := task(t, "", "ticket", "comment", "seen"); code != 0 || err != nil || out != "commented on your ticket\n" {
+		t.Fatalf("a comment with no comment read: %d %v %q", code, err, out)
+	}
+}

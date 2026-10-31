@@ -131,7 +131,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			if err != nil {
 				return 1, err
 			}
-			fmt.Fprintf(stdout, "comment #%d on your ticket\n", cm.N)
+			fmt.Fprintln(stdout, sessionCommentText(cm))
 			return 0, nil
 		}
 		raw, st, err := readSessionTicket(ctx, c)

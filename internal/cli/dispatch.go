@@ -56,7 +56,8 @@ const dispatchUsage = `Usage:
       (person:NAME, agent:ID, or a person's NAME) or a label; "" clears the
       owner, the milestone or the horizon
   conductor dispatch comment KEY-n TEXT...
-      comment on a ticket
+      comment on a ticket: TEXT is every word after the key as written, one
+      that starts with - among them, so flags go before the key
   conductor dispatch accept KEY-n [--note TEXT]
       record the owner's acceptance of a ticket, for its owner and criteria now
   conductor dispatch link KEY-n --kind delivery|run|external [--url U] [--ref R]
@@ -204,7 +205,17 @@ func runDispatch(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		fmt.Fprint(stderr, dispatchUsage, "\nFlags of dispatch "+sub+":\n")
 		fs.PrintDefaults()
 	}
-	pos, err := parseInterspersed(fs, rest)
+	// A comment's text is every word after its key, as written: a word
+	// that starts with '-' (a Markdown list item, "-1 on this") is the
+	// comment's, never a flag, so its flags go before the key.
+	var pos []string
+	var err error
+	if sub == "comment" {
+		err = fs.Parse(rest)
+		pos = fs.Args()
+	} else {
+		pos, err = parseInterspersed(fs, rest)
+	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0, nil
@@ -979,12 +990,24 @@ func sessionTicketText(st sessionTicket) string {
 // commentOnSessionTicket comments on the ticket the session's run is
 // linked to, as the session's member: the operation's id minted, the
 // comment sent once more on a lost reply (askTwice), and the comment as
-// the server kept it, with its number.
-func commentOnSessionTicket(ctx context.Context, c *crewClient, text string) (dispatch.Comment, error) {
+// the server kept it, with its number, or nil when the reply carries
+// none: the comment was made, and the server could not read it back
+// (writeOp's comment null), or its receipt was pruned before a resend.
+func commentOnSessionTicket(ctx context.Context, c *crewClient, text string) (*dispatch.Comment, error) {
 	body := map[string]any{"opId": newOpID(), "body": text}
 	var out struct {
-		Comment dispatch.Comment `json:"comment"`
+		Comment *dispatch.Comment `json:"comment"`
 	}
 	err := askTwice(ctx, func() error { return c.into(ctx, http.MethodPost, "/ticket/comments", body, &out) })
 	return out.Comment, err
+}
+
+// sessionCommentText is what conductor task ticket comment and
+// ticket_comment say of a comment made: its number when the reply
+// carries the comment, else only that it was made.
+func sessionCommentText(cm *dispatch.Comment) string {
+	if cm == nil {
+		return "commented on your ticket"
+	}
+	return fmt.Sprintf("comment #%d on your ticket", cm.N)
 }

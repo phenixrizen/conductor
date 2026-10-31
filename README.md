@@ -1442,8 +1442,9 @@ conductor dispatch link CND-12 --kind run --ref <run-id>   # or --kind delivery|
 ```
 
 They take `--server`, `--token` and `--insecure` as `conductor crews` does
-([Crews](#crews), From a shell). `create` prints the new ticket's key; labels
-and milestones are given by name; a write whose reply is lost to the network
+([Crews](#crews), From a shell), before the key for `comment`, whose text is
+every word after the key, one that starts with `-` among them. `create` prints
+the new ticket's key; labels and milestones are given by name; a write whose reply is lost to the network
 is sent once more with the same operation id, which the server answers
 without a second change. No command makes or edits a project: the routes do
 (`POST /api/dispatch/projects`, `docs/protocol.md`).

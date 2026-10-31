@@ -418,7 +418,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			if err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("comment #%d on your ticket", cm.N), nil
+			return sessionCommentText(cm), nil
 		}
 	}
 	return "", unknownTool(name)

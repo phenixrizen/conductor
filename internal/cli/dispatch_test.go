@@ -111,7 +111,11 @@ func newDispatchAPI(t *testing.T) *dispatchAPI {
 }
 
 // serve records the request and serves it, or loses its reply when it is
-// the one lose names.
+// the one lose names. A request is recorded before its client can act on
+// the answer: a lost one before its connection is closed, which wakes the
+// client to resend, and a served one before the handler returns, which
+// the reply's end waits for, so the records are in the order the client
+// sent them.
 func (a *dispatchAPI) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
@@ -124,20 +128,24 @@ func (a *dispatchAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Unlock()
 	seen := seenRequest{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: decoded}
+	record := func() {
+		a.mu.Lock()
+		a.seen = append(a.seen, seen)
+		a.mu.Unlock()
+	}
 	if lost {
 		a.h.ServeHTTP(httptest.NewRecorder(), r)
+		seen.reply = -1
+		record()
 		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 			conn.Close()
 		}
-		seen.reply = -1
-	} else {
-		cw := &countingWriter{ResponseWriter: w}
-		a.h.ServeHTTP(cw, r)
-		seen.reply = cw.n
+		return
 	}
-	a.mu.Lock()
-	a.seen = append(a.seen, seen)
-	a.mu.Unlock()
+	cw := &countingWriter{ResponseWriter: w}
+	a.h.ServeHTTP(cw, r)
+	seen.reply = cw.n
+	record()
 }
 
 // loseNext arms the loss of the next n replies to "METHOD path".
@@ -832,4 +840,23 @@ func TestDispatchListsEveryPage(t *testing.T) {
 		t.Fatalf("tickets: %d lines, the last %.60q", len(lines), lines[len(lines)-1])
 	}
 	checkPages("tickets")
+}
+
+// A comment's text is every word after its key, as written: a word that
+// starts with '-', a Markdown list item or "-1", is the comment's and no
+// flag, and the flags go before the key.
+func TestDispatchCommentTextMayStartWithADash(t *testing.T) {
+	a := newDispatchAPI(t)
+	a.admin(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p1", "key": "CND", "name": "Conductor"}, http.StatusCreated)
+	a.mustDispatch(t, "create", "--project", "CND", "--title", "Dashes")
+	for i, words := range [][]string{{"-", "fixed", "the", "cache"}, {"-1", "on", "this"}, {"--", "--server", "x"}} {
+		want := fmt.Sprintf("comment #%d on CND-1\n", i+1)
+		if out := a.mustDispatch(t, "comment", append([]string{"CND-1"}, words...)...); out != want {
+			t.Fatalf("comment %q: %q", words, out)
+		}
+	}
+	cs := a.ticket(t, "CND-1").Comments
+	if len(cs) != 3 || cs[0].Body != "- fixed the cache" || cs[1].Body != "-1 on this" || cs[2].Body != "-- --server x" {
+		t.Fatalf("the comments: %+v", cs)
+	}
 }
