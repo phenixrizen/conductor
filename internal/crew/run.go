@@ -596,9 +596,8 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 // started are stopped, no run is kept, and the error names the member; when
 // the run is stopped meanwhile, it stays, stopped, and LaunchHeld returns
 // ErrRunStopped, a stop that lands before the first member's start included.
-// A crew with no members, one that runs on a host, one without a valid ID,
-// one whose project manifest names what this build does not run yet
-// (runnableManifest) or, with worktrees, one whose <cwd>/.conductor or
+// A crew with no members, one that runs on a host, one without a valid ID
+// or, with worktrees, one whose <cwd>/.conductor or
 // <cwd>/.conductor/worktrees is a symbolic link is not launched
 // (ErrInvalid), and neither is a member whose directory in its worktree
 // lies through a symbolic link.
@@ -693,17 +692,13 @@ type prepared struct {
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
-// its cwd lies in its repository (the prefix). A project manifest that names
-// what this build does not run yet is refused (runnableManifest). For a
-// managed crew it pins the base: base when given (a continuation's own),
+// its cwd lies in its repository (the prefix). For a managed crew it pins
+// the base: base when given (a continuation's own),
 // else HEAD of cwd, read once here; the file form's manifest is read and
 // held to its rules at that commit, so a broken file refuses the launch
 // before a run exists, with the file and the commit named.
 func (e *Engine) prepare(ctx context.Context, c Crew, base string) (prepared, error) {
 	if err := c.validateWithID(); err != nil {
-		return prepared{}, err
-	}
-	if err := c.runnableManifest(); err != nil {
 		return prepared{}, err
 	}
 	if c.Managed() {
@@ -759,9 +754,6 @@ func (e *Engine) prepare(ctx context.Context, c Crew, base string) (prepared, er
 	rec, blob, err := resolveManifest(ctx, c.Cwd, base, prefix, c.Tasks)
 	if err != nil {
 		return prepared{}, err
-	}
-	if err := rec.runnable(); err != nil {
-		return prepared{}, fmt.Errorf("%s at %s: %w", prefix+manifestFile, short(base), err)
 	}
 	p.man = resolvedManifest{m: rec, source: sourceFile, digest: blob}
 	return p, nil

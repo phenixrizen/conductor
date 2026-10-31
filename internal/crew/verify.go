@@ -66,13 +66,13 @@ func checkTimeout(ch Check) time.Duration {
 // stage "ready"), its ports, its state directory and the manifest's
 // approved env names given to its steps and checks as to the worker's
 // session; its services run beside the checks, and a change found after a
-// check names them as its other possible author. Then the checks, one at a
-// time across the server (checkSlots), each recorded before it starts, with its
+// check names them as its other possible author. Then the checks, and after them the manifest's verify
+// steps (runCheck), one at a time across the server (checkSlots), each recorded before it starts, with its
 // process once started, and with its outcome when it ends. After each one
 // the checkout is compared with the commit as git would store it
 // (checkoutIntact): a check that cannot run, exits non-zero, times out,
 // moves the checkout or changes tracked content fails the attempt at that
-// check, and the rest do not run; untracked outputs are listed with the
+// check ("check <id>", "verify <id>"), and the rest do not run; untracked outputs are listed with the
 // check. A failure before the checks is a refused result, counted, the
 // next attempt starting where the refused one did. The phases and the
 // checks hold the tree, which is quiet when the decision is taken. It runs
@@ -136,12 +136,14 @@ func (e *Engine) verify(r *run, a *attempt) {
 	e.accept(r, a, stage == "", stage, words)
 }
 
-// checkTree runs the checkout's setup phase, when it is a tree, and the
-// task's checks in it: the stage and words of the first failure, "" for
-// none; decided is false when the attempt closed under them (cancelled or
-// stopped), which takes no decision. The caller holds the tree.
+// checkTree runs the checkout's phases, when it is a tree, then the task's
+// checks in it and, after them, the manifest's verify steps (checks of
+// the crew's: rows of phase verify, each under the server's check slot and
+// the checkout compared after it, a failure at stage "verify <id>" decided
+// as a failing check's is): the stage and words of the first failure, ""
+// for none; decided is false when the attempt closed under them (cancelled
+// or stopped), which takes no decision. The caller holds the tree.
 func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, dir, cwd string) (stage, words string, decided bool) {
-	t := a.t
 	if tr != nil {
 		stage, err := e.prepareTree(ctx, r, a, tr)
 		if ctx.Err() != nil {
@@ -151,86 +153,146 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 			return stage, session.CleanMessage(err.Error()), true
 		}
 	}
-	for _, ch := range t.def.Checks {
-		if ctx.Err() != nil {
-			return "", "", false // closed meanwhile: cancelled or stopped
+	for _, ch := range a.t.def.Checks {
+		if stage, words, decided, ok := e.runCheck(ctx, r, a, tr, dir, cwd, ledger.PhaseCheck, ch); !ok {
+			return stage, words, decided
 		}
-		e.mu.Lock()
-		k := a.nextK(ch.ID)
-		e.mu.Unlock()
-		row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: ledger.PhaseCheck, Tries: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
-		if tr != nil {
-			row.Ports = maps.Clone(tr.ports)
-		}
-		if err := e.transact(ctx, r, func() tx {
-			out := ev("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "k": k, "subject": a.result})
-			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
-			return out
-		}, giveUp); err != nil {
-			return "check " + ch.ID, "the ledger could not record the check: " + session.CleanMessage(err.Error()), true
-		}
-		sem := e.checkSlots()
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			return "", "", false
-		}
-		var log bytes.Buffer
-		res := e.runCommand(ctx, cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
-			running := row
-			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
-			_ = e.transact(context.Background(), r, func() tx {
-				out := ev("check.running", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "pid": p.PID, "group": p.Group})
-				out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
-				return out
-			}, nil)
-		})
-		<-sem
-		if ctx.Err() != nil {
-			// Cancelled or stopped under the check: the attempt is closed
-			// by what cancelled it, with the check's end recorded.
-			fin := row
-			fin.State, fin.FinishedAt, fin.Killed, fin.Exit, fin.Signal = ledger.CheckInterrupted, time.Now().UTC(), res.Killed, res.Exit, res.Signal
-			fin.Error = "the attempt closed under the check"
-			_ = e.transact(context.Background(), r, func() tx {
-				out := ev("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "interrupted": true, "duration": res.Duration.String()})
-				out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
-				return out
-			}, nil)
-			return "", "", false
-		}
-		moved, changed, untracked, cerr := checkoutIntact(ctx, dir, a.result)
-		fin := row
-		fin.State, fin.FinishedAt = ledger.CheckFinished, time.Now().UTC()
-		fin.PID, fin.Group, fin.ProcessStartedAt = res.Process.PID, res.Process.Group, res.Process.StartedAt
-		fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = res.Exit, res.Signal, res.TimedOut, res.Killed
-		fin.Stable, fin.Truncated, fin.Total = cerr == nil && !moved && len(changed) == 0, res.Truncated, res.Total
-		fin.Log = bytes.Clone(log.Bytes())
-		sum := sha256.Sum256(fin.Log)
-		fin.LogSHA256 = hex.EncodeToString(sum[:])
-		fin.Tail = string(lastOutput(res, checkTail))
-		words := checkWords(ch, res, moved, changed, cerr)
-		if ids := e.serviceIDs(tr); len(ids) > 0 && words != "" && words == intactWords(moved, changed, cerr) {
-			// The tree's services ran beside the check: the comparison
-			// cannot tell their writes from its own.
-			words = fmt.Sprintf("check %s, or a service of the tree (%s), %s", ch.ID, strings.Join(ids, ", "), words)
-		}
-		fin.Error = session.CleanMessage(words)
-		// The check's outcome is evidence: not recorded, the result is not
-		// taken on it.
-		if err := e.transact(context.Background(), r, func() tx {
-			out := ev("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable,
-				"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
-			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
-			return out
-		}, giveUp); err != nil {
-			return "check " + ch.ID, "the ledger could not record the check's outcome: " + session.CleanMessage(err.Error()), true
-		}
-		if words != "" {
-			return "check " + ch.ID, words, true
+	}
+	if tr != nil {
+		for _, ch := range tr.man.m.Verify {
+			if stage, words, decided, ok := e.runCheck(ctx, r, a, tr, dir, cwd, ledger.PhaseVerify, ch); !ok {
+				return stage, words, decided
+			}
 		}
 	}
 	return "", "", true
+}
+
+// runCheck runs one of the checkout's checks, of phase check (the task's)
+// or verify (the manifest's), and keeps its receipt: put started before it
+// runs, running with its process once started, and finished with its
+// outcome, the checkout compared with the result after it (a change is its
+// failure, naming the tree's services as its other possible author). A
+// task's check's events are check.started, check.running and
+// check.finished, as they always were; a verify step's are the steps'
+// (step.started, step.running, step.finished) with its phase and the
+// manifest that ran it. ok is true when it passed; else the stage ("check
+// <id>", "verify <id>") and words of its failure, decided false when the
+// attempt closed under it.
+func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir, cwd, phase string, ch Check) (stage, words string, decided, ok bool) {
+	t := a.t
+	stage = phase + " " + ch.ID
+	if ctx.Err() != nil {
+		return "", "", false, false // closed meanwhile: cancelled or stopped
+	}
+	step := phase == ledger.PhaseVerify
+	e.mu.Lock()
+	k := a.nextK(ch.ID)
+	e.mu.Unlock()
+	row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: phase, Tries: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+	if tr != nil {
+		row.Ports = maps.Clone(tr.ports)
+		if step {
+			row.Manifest = tr.man.identity()
+		}
+	}
+	// event is the receipt's event of the kind (started, running,
+	// finished), with more in its payload.
+	event := func(kind string, more map[string]any) tx {
+		if step {
+			return ev("step."+kind, stepPayload(a, tr, phase, ch.ID, k, more))
+		}
+		p := map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID}
+		maps.Copy(p, more)
+		return ev("check."+kind, p)
+	}
+	unrecorded := "the ledger could not record the check"
+	if step {
+		unrecorded = "the ledger could not record the step " + ch.ID
+	}
+	if err := e.transact(ctx, r, func() tx {
+		more := map[string]any{"k": k, "subject": a.result}
+		if step {
+			more = map[string]any{"manifest": row.Manifest, "subject": a.result}
+		}
+		out := event("started", more)
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
+		return out
+	}, giveUp); err != nil {
+		return stage, unrecorded + ": " + session.CleanMessage(err.Error()), true, false
+	}
+	sem := e.checkSlots()
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", "", false, false
+	}
+	var log bytes.Buffer
+	res := e.runCommand(ctx, cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
+		running := row
+		running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
+		_ = e.transact(context.Background(), r, func() tx {
+			out := event("running", map[string]any{"pid": p.PID, "group": p.Group})
+			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
+			return out
+		}, nil)
+	})
+	<-sem
+	if ctx.Err() != nil {
+		// Cancelled or stopped under the check: the attempt is closed
+		// by what cancelled it, with the check's end recorded.
+		fin := row
+		fin.State, fin.FinishedAt, fin.Killed, fin.Exit, fin.Signal = ledger.CheckInterrupted, time.Now().UTC(), res.Killed, res.Exit, res.Signal
+		fin.Error = "the attempt closed under the check"
+		if step {
+			fin.Error = e.interruptedWhy(r, a, ch)
+		}
+		_ = e.transact(context.Background(), r, func() tx {
+			more := map[string]any{"interrupted": true, "duration": res.Duration.String()}
+			if step {
+				more["exit"], more["error"] = res.Exit, fin.Error
+			}
+			out := event("finished", more)
+			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+			return out
+		}, nil)
+		return "", "", false, false
+	}
+	moved, changed, untracked, cerr := checkoutIntact(ctx, dir, a.result)
+	fin := row
+	fin.State, fin.FinishedAt = ledger.CheckFinished, time.Now().UTC()
+	fin.PID, fin.Group, fin.ProcessStartedAt = res.Process.PID, res.Process.Group, res.Process.StartedAt
+	fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = res.Exit, res.Signal, res.TimedOut, res.Killed
+	fin.Stable, fin.Truncated, fin.Total = cerr == nil && !moved && len(changed) == 0, res.Truncated, res.Total
+	fin.Log = bytes.Clone(log.Bytes())
+	sum := sha256.Sum256(fin.Log)
+	fin.LogSHA256 = hex.EncodeToString(sum[:])
+	fin.Tail = string(lastOutput(res, checkTail))
+	words = checkWords(ch, res, moved, changed, cerr)
+	if ids := e.serviceIDs(tr); len(ids) > 0 && words != "" && words == intactWords(moved, changed, cerr) {
+		// The tree's services ran beside the check: the comparison
+		// cannot tell their writes from its own.
+		words = fmt.Sprintf("%s, or a service of the tree (%s), %s", stage, strings.Join(ids, ", "), words)
+	}
+	fin.Error = session.CleanMessage(words)
+	// The check's outcome is evidence: not recorded, the result is not
+	// taken on it.
+	if err := e.transact(context.Background(), r, func() tx {
+		out := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable,
+			"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+		return out
+	}, giveUp); err != nil {
+		what := "the ledger could not record the check's outcome"
+		if step {
+			what = "the ledger could not record the outcome of the step " + ch.ID
+		}
+		return stage, what + ": " + session.CleanMessage(err.Error()), true, false
+	}
+	if words != "" {
+		return stage, words, true, false
+	}
+	return "", "", true, true
 }
 
 // serviceIDs is the ids of t's services, in the order they started; none
