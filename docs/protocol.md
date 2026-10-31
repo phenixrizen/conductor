@@ -1771,7 +1771,7 @@ its run, and on no other.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times and the `manifestRevision` of a new crew (1 with a project manifest or a `setup`, absent without), whatever the original's; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 1 MiB; `404` when unknown; `409 crew_unreadable` when its file cannot be used |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, one whose project manifest names what this build does not run yet (`verify` or `cleanup` steps; the message says which, as the crew limits below have it), or, with the file form, whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing, broken or names what this build does not run (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, or, with the file form, one whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing or broken (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
 | `GET /api/crews/{id}/runs` | admin | `{runs, live}`: the crew's runs, newest first, each as `GET /api/runs/{run}` answers it (without diffs): the `live` first ones the server holds, then the records of runs the server no longer holds, saved under `runs/<id>.json` in the data directory, at most 500 kept (the oldest by start dropped), never a terminal's contents; a run's record is written from its launch on (again a couple of seconds after each change, and as it ends, a reopened run again when it ends again) and read back after a restart, where the record of a run that was running when the server last stopped is marked `interrupted` (its running members `ended` with that `error`), never relaunched on its own; `404 not_found` for a crew neither saved nor recorded |
 | `POST /api/sessions/{id}/paste` | admin | answer a viewer's paste invite for a server session: `{offer, role, label?}`, `offer` a `cpi1.` blob (the viewer's SDP with every candidate gathered, deflated and base64url-encoded, ≤ 64 KiB), reply `201 {answer, role}` with the session's blob of the same form, which the viewer pastes back; the data channel then runs with no server between the two, as a host's does (hello over it, welcome, scrollback, input by role); at most 16 such peers a session, idle ones dropped after two minutes; `400 invalid_offer` for a blob that is not an offer, `400 hosted_session` for a hosted session (shared from its own machine), `409 session_ended` |
 | `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` URLs, for a viewer gathering a paste invite's offer before it has any session; a TURN server's credentials never leave the server |
@@ -1781,7 +1781,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
 | `POST /api/runs/{run}/members/{name}/resume` | admin | resume an ended member of the run (no body), in its working directory, its worktree and branch kept: a session tagged with the run that resumes the member's last `agentSession` with its agent's `session` recipe when the agent has one and the session was `resumable` (`resumed: true`; no prompt is typed, its conversation has it), and otherwise a fresh one whose role prompt is typed again once it is ready (`resumed: false`, with a `notice`); the member is `starting` with the new `sessionId` until its session is ready for a prompt (a resumed conversation, whose agent takes a while to show its prompt; a trust question holding it is noted) or until that prompt is typed (a fresh one), then `running`, so a handoff typed into it meanwhile waits, queued, and is typed once it is; noted in the run log; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; `404` for an unknown run or member; `409 still_running` for a member that is pending, starting or running; `409 run_stopped` only while a stop is under way or was cut short: an ended member of a run whose stop completed is resumed in place, which reopens the run (`stoppedAt` cleared, the log noting `reopened: <member> resumes`; the other ended members stay ended until resumed one by one, and a later stop stops it again); `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when the member's agent is no longer in the catalog; a session that cannot be created answers as at launch, the member `ended` with its `error` |
 | `POST /api/runs/{run}/resume` | admin | start a new run of a stopped (or finished) run's crew in which every member whose last `agentSession` is `resumable` continues its conversation in its kept worktree and branch, without a prompt (`starting` until its session is ready for one, then `running`; its next done starts the members after it), and the others start afresh under their start rules; reply `201 {run}`, the new run with `resumedFrom`, the old run from then on carrying `resumedBy` and staying stopped; `409 run_running` while the run goes; `409 run_stopped` when its stop was cut short; `409 already_resumed` for a run resumed already, or being resumed, with `run` naming the continuation; for a run the server no longer holds but has a record of (stopped, finished or interrupted), the same from the record: the crew as the record has it (each member's `prompt`, `args` and `start` as they ran, not the crew as saved since), each member with a `resumable` `agentSession` continuing it in its recorded `worktree` and `branch` (a worktree gone fails that member's start), the record then carrying `resumedBy` and resumed no more (`409 already_resumed`); `404` when unknown; a member whose session cannot be made ends with its `error`, as at launch |
-| `POST /api/runs/{run}/stop` | admin | stop every member's session and, in a managed run, every service of its trees beside them (`SIGTERM` to the service's process group, `SIGKILL` after 5 s), before the stop is recorded and the trees end (Project manifests, under Managed runs); reply `{run}` with `stoppedAt`, and `cleaning` above zero when a tree's end was still under way as the stop's 30 s ran out (it goes on); the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
+| `POST /api/runs/{run}/stop` | admin | stop every member's session and, in a managed run, every service of its trees beside them (`SIGTERM` to the service's process group, `SIGKILL` after 5 s), before the stop is recorded and the trees end, their cleanup steps run (Project manifests, under Managed runs); reply `{run}` with `stoppedAt`, and `cleaning` above zero when a tree's end was still under way as the stop's 30 s ran out (it goes on); the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
@@ -1981,16 +1981,12 @@ of the crew's manifest changes, read with the crew and refused in a create or
 update body as `id` is: a new crew starts at 1 with a manifest (a `setup`
 counts) and 0 without; a save that changes the manifest, a removal included,
 makes it one more, and one that does not leaves it, so a number names one
-manifest of a crew for good. This build runs a manifest's prerequisites, its
-setup phase, its services and its `ready` probes, offers its `preview`, passes
-its `env` names on, gives each tree its ports and its state directory and
-expands its placeholders, from the crew or from `conductor.manifest.json`
-(Project manifests, under Managed runs): the launch of a crew whose manifest
-names `verify` or `cleanup` steps is refused with `400 invalid_crew` saying
-what this build does not run yet ("this build does not run a project
-manifest's verify steps yet"), never accepted and skipped; the file form is
-held to the same at the run's base when it launches and at every tree's
-commit.
+manifest of a crew for good. Every phase of a manifest runs, from the crew or
+from `conductor.manifest.json` (Project manifests, under Managed runs): its
+prerequisites, its setup phase, its services and its `ready` probes, its
+`preview`, its `env` names, each tree's ports, state directory and
+placeholders, its `verify` steps after a result's checks and its `cleanup`
+steps at each tree's end.
 
 ### Crew runs
 
@@ -2353,7 +2349,8 @@ that changes `conductor.manifest.json` is checked by the one it changed),
 before the checks, the checkout compared with the result after each step,
 before its receipt is finished, so a change fails that step in its receipt
 as in the attempt (`setup deps changed tracked files: …`). A step's timeout is 60 s for a
-prerequisite and 600 s for a setup step when it gives none.
+prerequisite and a cleanup step and 600 s for a setup or verify step when it
+gives none.
 
 After the setup steps a tree's services start, in order, each in the tree's
 working directory with the tree's names, a process group of its own beside
@@ -2395,6 +2392,43 @@ it is never offered before the probes passed, behind a service stopped or
 gone, or once its port may be another tree's. It is on the server's
 loopback and is not proxied.
 
+In a checkout, once the tree is ready, the task's checks run and after them
+the manifest's `verify` steps, in order, each a check of the crew's: one at
+a time across the server with the checks (`checks.maxConcurrent`), in the
+checkout's working directory with the tree's names, the checkout compared
+with the result after it, its receipt of phase `verify` naming the manifest
+that ran it. One that cannot run, exits non-zero, times out or changes
+tracked content fails the attempt at `verify <id>` (its words "exited 3:
+…", or beside a service "verify e2e, or a service of the tree (web),
+changed tracked files: …"), counted and decided as a failing check is: the
+next attempt starts at the result with the step's words in its task file,
+and the steps after it do not run. Its events are the steps'
+(`step.started`, `step.running` and `step.finished`, phase `verify`, tree
+`checkout`), not the checks'. A check or a verify step whose running
+receipt the ledger refuses is ended with its group and fails the attempt
+at its stage with the ledger's words ("the ledger could not record the
+step e2e: …"); one the attempt's close interrupts, under it or while it
+waits for its turn, is recorded `interrupted` with what its process left
+(its pid, its output and the output's hash and tail).
+
+A tree ends once its attempt's close is committed, however the attempt
+closed (a result taken or refused, a failed check, a cancel, a withdrawal,
+a stop, a failure that stops the session): its services are stopped first,
+then its `cleanup` steps run, in order, in its working directory with its
+names (a close that comes while the tree is being made, before its state
+directory and task files are there, ends it once they are), each a receipt of phase `cleanup`, every one whatever the one before
+it did. One that fails is its receipt and a line in the run log ("task
+build: attempt 2: cleanup db exited 1: …", "… the checkout's cleanup …" for
+a checkout's), never a change to the attempt's state, and `tree.ended`
+names the first that failed (`cleanupFailed`). The cleanup runs under the
+run's teardown, which no stop cuts: a stop whose time ran out returns with
+`cleaning` above zero while it goes on. The server's shutdown cut-off
+(below) kills a cleanup step under way with its group (its receipt
+`interrupted`: "slow was interrupted: the server's shutdown cut it"),
+starts none after it (the run log names those not run), and `tree.ended`
+says `interrupted`, the tree's row too. Nothing is removed: the worktree,
+the checkout and the state directory stay.
+
 A step, a service or a probe that fails in an attempt's worktree, or a
 manifest that cannot be resolved there (stage `setup <id>`, `service <id>`,
 `ready <id>`, `ready` for a `tree.ready` the ledger refused, or `manifest`),
@@ -2433,11 +2467,11 @@ prerequisite's; `service.ended {task, attempt, tree, id, k, exit, signal,
 why}` when a service ends, stopped or on its own, its row `finished`;
 `tree.ready {tree, task, attempt, preview}` once a tree's phases passed;
 `prerequisites.passed {manifest}` before the first `attempt.reserved`;
-`run.paused {paused, why}`; and `tree.ended {tree, task, attempt, why}` once
-an attempt's close is committed and the tree is quiet (its step or check
-returned, a session being stopped ended) and its services are stopped
-(`SIGTERM` to each one's group, `SIGKILL` after 5 s, each one's
-`service.ended`), each tree once, also when the task succeeded and its
+`run.paused {paused, why}`; and `tree.ended {tree, task, attempt, why,
+cleanupFailed?, interrupted?}` once an attempt's close is committed and the
+tree is quiet (its step or check returned, a session being stopped ended),
+its services are stopped (`SIGTERM` to each one's group, `SIGKILL` after 5
+s, each one's `service.ended`) and its cleanup steps have run, each tree once, also when the task succeeded and its
 session stays idle, its ports let go once that transaction is committed
 (one the ledger refused, once the run's next commit carries it; nothing is
 removed: the state directory stays). A run's stop ends the services of its
@@ -2445,7 +2479,7 @@ live trees itself, beside its sessions and before it records the stop, so a
 stop the ledger refuses leaves no service running; its trees end once the
 stop is recorded, and a stop whose time ran out returns with `cleaning`
 above zero while they do. The server's shutdown kills what is left of a
-tree's teardown at its deadline less 3 s (the cut-off: 10 s for `conductor
+tree's teardown (a service, a cleanup step) at its deadline less 3 s (the cut-off: 10 s for `conductor
 serve`, so 7 s), which leaves the rows their time, and waits for the trees'
 ends before the ledger closes. The run's JSON gains `pausedWhy`, `manifest`
 (`{source, revision?, digest?, prerequisites: [{id, k?, state, exit?, error?,
