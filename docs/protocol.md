@@ -1138,7 +1138,9 @@ run (see Crew runs), and no `crew` otherwise.
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
 header-authenticated `fetch`: `snapshot` with the full list first, then
-`session` per change, `removed{id}` when a session leaves the registry,
+`session` per change, a server session's as it is when the event goes out,
+so that one session's events never undo a later change (a rename) out of
+order, `removed{id}` when a session leaves the registry,
 `activity` for every activity entry, see Events, `run{id}` when a crew run
 changes in a way no session change carries, or `run{id, removed: true}` when
 the server forgets it, see Crew runs, and `dispatch{seq, entity, id, ticket,
@@ -1720,7 +1722,7 @@ after 20 s.
 
 On a switchyard (`switchyard.enabled`, `conductor switchyard`) every route
 that launches, edits or lists what the server launches, the sessions'
-creation and resume, the catalog, the crews, the runs, the paths, the git
+creation, resume and rename, the catalog, the crews, the runs, the paths, the git
 check, the integrations, an agent's self-service crew routes and Dispatch's
 routes (a switchyard keeps no tickets, and opens no Dispatch store), answers
 `403 {error: {code: "switchyard"}}`; the rest, hosted sessions, links,
@@ -1830,7 +1832,8 @@ its run, and on no other.
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?}`, reply `201` with the session `Info`; `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`); `400 not_the_agent` when the identity probe's cached answer names the agent's program a known other one (`identity.impostor`; nothing is run at launch, so an answer not yet cached refuses nothing), the message naming the program, the agent and what it printed; `probe: false` on the agent launches it anyway; a verified probe that matched nothing does not refuse (the launch goes ahead, with an `error` entry in the activity) |
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`; on a switchyard the workbench token's `role` is `""` |
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list; on a switchyard, a session a Conductor published there ends its publication, its process running on at home |
-| `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name, working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`; `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; otherwise as `POST /api/sessions` answers |
+| `PATCH /api/sessions/{id}` | admin | rename a server session, running or ended: `{name}` (the body at most 4 KiB); the name loses its control characters (C0, DEL and C1) and the space around it and is cut to 120 bytes at a character boundary (`proto.MaxSessionName`, the bound a launch's name has too); reply `200` with the session `Info`; the change reaches `GET /api/events` as a `session` event, and a resume of the session starts under the new name (`POST /api/sessions/{id}/resume`; a crew member's too, the member keeping its own name in its run); `400 invalid_name` when nothing is left; `400 hosted_session` for a hosted session (its host names it); `400 invalid_request` for a body that is not one `{name}` (an unknown field, or past its 4 KiB); `404` when unknown. A session a Conductor published to a switchyard keeps there the name it was published with |
+| `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name (the one it was renamed to, if it was: `PATCH /api/sessions/{id}`), working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`; `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; otherwise as `POST /api/sessions` answers |
 | `POST /api/sessions/{id}/crew` | the session's agent token, or admin | an agent forms a crew around its own session (`agents.selfService`, on by default; `403 self_service_off`): body `{name, goal, members, self, isolation?, open?}` (the crew's `cwd`, `where` and `yolo` are the session's own, never in the body; `self` names the member this session becomes, whose `agentId` is the session's agent or empty, meaning that); the crew is saved, its run launched with the session adopted as `self` (`running`, its prompt its own: the members after it start on its next done, handoffs reach it) and the others started as at launch; reply `201 {run, crew, member, url}`, `url` the run's page; the session is tagged with the run and records `formed crew <name>` (a `link` entry with `(open)` when asked, which the workbench offers as a toast); at most 2 per session per hour (`429`); `409 in_a_run` while the session is a member of a run, `409 session_ended`, `400 hosted_session`, `400 invalid_crew` as a launch answers (an impostor among the members included) |
 | `POST /api/sessions/{id}/run/members` | the session's agent token, or admin | add a member (one `crew.Member`) to the session's own run, as `POST /api/runs/{run}/members` does; `201 {run}`; `409 no_run` |
 | `GET /api/sessions/{id}/task` | the session's agent token, or admin | the task of an attempt's session in a managed run (#334, row 6): `{task, markdown, page, pages, bytes}`, `task` the attempt's `task.json` and `markdown` a page of its `task.md` (32 KiB a page, `?page=` from 1, page 1 unless asked; `400 invalid_request` past the last); `404 not_an_attempt` for a session that is no attempt; `409 not_running` for an attempt whose worktree is not made yet; never gated by `agents.selfService` |
@@ -1841,6 +1844,8 @@ its run, and on no other.
 | `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
 | `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
 | `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
+| `GET /api/sessions/{id}/ticket` | the session's agent token, or admin | the Dispatch ticket the session's run is linked to (see Dispatch, An attempt's ticket), for `conductor task ticket` and the MCP tool `ticket_read`: `{ticket, labels, milestone}`, `ticket` as `GET /api/dispatch/tickets/{key}` reads it (its last 50 comments among it), `labels` the rows of its live labels, by name, and `milestone` its live milestone's row or `null`, which the project's routes give the admin alone; the live ticket whose live `run` link names the session's run, one at most, a deleted ticket's link holding none; `404 no_ticket` for a session that is no member of a run and for a run no live ticket holds; `400 invalid_request` for any parameter; under 3 MiB, as the ticket's own read; a switchyard's `403 switchyard` |
+| `POST /api/sessions/{id}/ticket/comments` | the session's agent token, or admin | comment on that ticket (`comment.add`, Dispatch operations), for `conductor task ticket comment` and the MCP tool `ticket_comment`: body `{opId, body}`, `body` Markdown of 1 to 16 KiB; the comment is the session's member's, `agent:<member>` its author and the actor its operation is kept under, whichever token sent it, with no display name; reply `201 {receipt, comment}`, `200` for the same `opId` sent again, as the admin's comment route; `404 no_ticket` as above; `400 invalid_request` for a body that is not `{opId, body}`, `413 bound` past 64 KiB, and the store's refusals as the admin's route answers them; an agent reads its ticket and comments on it, nothing more; a switchyard's `403 switchyard` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
 | `GET /api/sessions/{id}/links` | admin | share links of a session (`{links, published?, republish?}`), each with `active` viewers; with a switchyard configured, `published` says the session is published there now, and `republish: true` that the publication the switchyard ended has not been made again, which the next link does (the Share dialog makes a link anew then, and in place of one it made here while the session was not published, once it is); for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
@@ -2203,7 +2208,12 @@ not ready for its prompt gets it after 60 s.
 An ended member can be resumed (`POST /api/runs/{run}/members/{name}/resume`,
 or `POST /api/sessions/{id}/resume` on its session): a new session in its
 working directory, its worktree and branch untouched, tagged with the run and
-launched with the run's yolo choice. It resumes the member's agent session
+launched with the run's yolo choice. The session takes the member's name,
+whatever the session it follows was launched as (a session adopted as a
+crew's `self` included), unless a person renamed that session (`PATCH
+/api/sessions/{id}`, or the session it was itself resumed from) and it is
+still listed: then it takes the name they gave, as a member of a run resumed
+as a new run does. The member keeps its own name in the run. It resumes the member's agent session
 when the agent has a `session` recipe and that session had a turn, and gets no
 prompt; otherwise it starts anew and its role prompt is typed again once it is
 ready, and only a `done` after that prompt counts for the members after it. A
@@ -2664,13 +2674,14 @@ in the data directory, and its attachments' files beside it in
 `dispatch/attachments/`, which the file routes never reach. It is not the
 engine's scheduling of a managed run's attempts (Managed runs): it starts
 nothing, and a ticket links to a run the engine made. Every Dispatch route
-is the admin's, a share link's viewers seeing no ticket, and a switchyard's
-`403 switchyard`. Without a data directory every route answers `503
-store_unavailable`; with a store that could not be opened, `503
-dispatch_unavailable`. A store opened read-only (a newer Conductor wrote
-it, it fails its check, another writer held it past the busy timeout as
-the server started, or the server may not write its file; the server's
-log says which) answers its reads as it
+is the admin's, a share link's viewers seeing no ticket, but the two of an
+attempt's ticket (below), which take the session's own token too; on a
+switchyard each answers `403 switchyard`. Without a data directory every
+route answers `503 store_unavailable`; with a store that could not be
+opened, `503 dispatch_unavailable`. A store opened read-only (a newer
+Conductor wrote it, it fails its check, another writer held it past the
+busy timeout as the server started, or the server may not write its file;
+the server's log says which) answers its reads as it
 can and every write `503 dispatch_unavailable` with why. A failure of the
 database is `500 store_failed`, logged. A read takes the query
 parameters its row names and no other: any other is `400
@@ -2691,7 +2702,8 @@ of letters, digits, `.`, `_`, `~` and `-`), `expectedRev`, the revision of
 the entity it acts on that the client expects (absent or 0 for none), and
 `byName`, the display name the store records as `by` (at most 60
 characters, no control character; never in the query string). The admin's
-operations are kept under the actor `admin`. Each is one transaction: the
+operations are kept under the actor `admin`, a run member's under
+`agent:<member>` (An attempt's ticket, below). Each is one transaction: the
 receipt is looked up (the same `opId` with the same content answers with
 the receipt given before, `repeat: true`, and changes nothing; with other
 content it is `409 op_conflict`), the revision compared (`409
@@ -2739,6 +2751,28 @@ the machine asleep) finds its lease dropped and is refused `409 expired`,
 a failed receipt kept, rather than name a file the sweep may have
 deleted: the client sends the file again under a new `opId`. A download is
 served from the file the row names, never from a path a client gave.
+
+**An attempt's ticket.** A run belongs to one live ticket at most, the
+one whose live `run` link names it, so a session of the run's member has
+one ticket to read and comment on, over HTTP with its own token
+(`CONDUCTOR_NOTIFY_TOKEN`), as every task route takes it: `GET
+/api/sessions/{id}/ticket` and `POST /api/sessions/{id}/ticket/comments`,
+which `conductor task ticket` and the MCP tools `ticket_read` and
+`ticket_comment` call. A deleted ticket's link holds no run, and with no
+live ticket both answer `404 no_ticket`. The comment is a `comment.add`
+of the actor `agent:<member>`, its receipts kept under that actor, apart
+from the admin's (`GET /api/dispatch/ops/{opId}` reads none of them).
+The ticket is found inside the comment's own transaction, after its
+receipt is looked up, and the operation's content is the run and the
+body, never the ticket: the same `opId` sent again, or sent while the
+first is still in flight, answers that operation's receipt wherever the
+run's link is now and whether its ticket is live, a repeat naming the
+comment on the ticket it went to, or `op_conflict` for another body (a
+refused comment's too), never a comment on another ticket or `404
+no_ticket`; a new `opId` goes to the ticket that holds the run when it
+commits, and with none answers `404 no_ticket` with nothing kept. An
+agent reads its ticket and comments on it, nothing more: no route of
+its creates, edits, links or closes a ticket.
 
 **The `dispatch` event.** After each commit the server sends one
 `dispatch` event per entity the commit changed on `GET /api/events`, the
