@@ -10,8 +10,14 @@ import {
   TICKET_STATUSES,
   boardColumns,
   changeWords,
+  closeCard,
   closePolicyWords,
   closeRefusalWords,
+  closeRequiresOf,
+  deliveryLinks,
+  linkLabel,
+  runLinkedWords,
+  samePolicy,
   historyEntries,
   horizonWord,
   isSort,
@@ -202,6 +208,96 @@ describe("the close policy's words", () => {
     expect(closeRefusalWords(['acceptance'])).toBe("It needs the owner's acceptance to be done.")
     expect(closeRefusalWords(['acceptance', 'delivery'])).toBe("It needs the owner's acceptance and a delivery link to be done.")
     expect(closeRefusalWords([])).toBe('The close policy refused it.')
+  })
+  it("say a run held by another ticket, the receipt's key naming it", () => {
+    expect(runLinkedWords('CND-3')).toBe('The run is linked to CND-3 already: a run belongs to one ticket.')
+    expect(runLinkedWords()).toBe('The run is linked to another ticket already: a run belongs to one ticket.')
+  })
+})
+
+describe("the close card's words (PR-11)", () => {
+  const link = (kind: 'delivery' | 'run' | 'external', ref: string, deletedAt?: string) => ({ id: ref, kind, ref, url: `https://h/${ref}`, note: '', createdAt: '', createdBy: '', ...(deletedAt ? { deletedAt } : {}) })
+  const base = {
+    owner: 'Alice',
+    status: 'in_review' as const,
+    links: [] as ReturnType<typeof link>[],
+    close: { requires: ['acceptance', 'delivery'] as Array<'acceptance' | 'delivery'>, met: { acceptance: false, delivery: false }, missing: ['acceptance', 'delivery'] as Array<'acceptance' | 'delivery'> },
+  }
+  it('say what closing takes and that nothing of it is met yet, the owner named', () => {
+    const c = closeCard(base)
+    expect(c.summary).toBe("To close: the owner's acceptance · a delivery link")
+    expect(c.items.map((i) => [i.requirement, i.met, i.state])).toEqual([
+      ['acceptance', false, 'Not accepted yet: Alice is the owner'],
+      ['delivery', false, 'No delivery link yet'],
+    ])
+    expect([c.ready, c.closed, c.acceptBlocked]).toEqual([false, false, ''])
+    expect(c.acceptance).toEqual({ text: 'Not accepted yet: Alice is the owner', tone: 'muted', recorded: false, met: false })
+  })
+  it('say who accepted for whom, and count the live delivery links alone', () => {
+    const c = closeCard({
+      ...base,
+      acceptedAt: '2026-10-31T00:00:00Z',
+      acceptedBy: 'Nate',
+      acceptedFor: 'Alice',
+      links: [link('delivery', 'a'), link('delivery', 'b'), link('delivery', 'c', '2026-10-31T00:00:00Z'), link('run', 'team-0000aaaa'), link('external', 'x')],
+      close: { requires: ['acceptance', 'delivery'], met: { acceptance: true, delivery: true }, missing: [] },
+    })
+    expect(c.items.map((i) => [i.met, i.state])).toEqual([
+      [true, 'Accepted by Nate for Alice'],
+      [true, 'Delivered: 2 links'],
+    ])
+    expect(c.acceptance.tone).toBe('success')
+    expect(c.ready).toBe(true)
+    expect(closeCard({ ...base, links: [link('delivery', 'a')], close: { ...base.close, met: { acceptance: false, delivery: true } } }).items[1]!.state).toBe('Delivered: one link')
+  })
+  it("say why an acceptance on record is unmet in the server's words: the owner changed, the criteria changed", () => {
+    const owner = closeCard({ ...base, owner: 'Bob', acceptedAt: 'x', acceptedBy: 'Nate', acceptedFor: 'Alice', close: { ...base.close, why: 'accepted for Alice; the owner is now Bob' } })
+    expect(owner.items[0]).toEqual({ requirement: 'acceptance', words: "the owner's acceptance", met: false, state: 'accepted for Alice; the owner is now Bob' })
+    expect(owner.acceptance).toEqual({ text: 'accepted for Alice; the owner is now Bob', tone: 'warning', recorded: true, met: false })
+    const criteria = closeCard({ ...base, acceptedAt: 'x', acceptedBy: 'Nate', acceptedFor: 'Alice', close: { ...base.close, why: 'accepted before the criteria changed' } })
+    expect(criteria.items[0]!.state).toBe('accepted before the criteria changed')
+  })
+  it('say that a ticket with no owner has no one to accept it for, and that a closed ticket offers no Close', () => {
+    const c = closeCard({ ...base, owner: '', status: 'done' })
+    expect(c.acceptBlocked).toBe('It needs an owner to accept it for.')
+    expect(c.acceptance.text).toBe('Not accepted yet: the ticket has no owner to accept it')
+    expect(c.closed).toBe(true)
+    expect(closeCard({ ...base, status: 'cancelled' }).closed).toBe(true)
+  })
+  it('say the acceptance on record when the policy does not require it, and that nothing is required', () => {
+    const c = closeCard({ ...base, acceptedAt: 'x', acceptedBy: 'Nate', acceptedFor: 'Alice', close: { requires: [], met: { acceptance: true, delivery: false }, missing: [] } })
+    expect(c.summary).toBe('Closes with nothing required')
+    expect(c.items).toEqual([])
+    expect(c.acceptance.text).toBe('Accepted by Nate for Alice')
+    expect(c.ready).toBe(true)
+  })
+  it('keep the live delivery links alone', () => {
+    expect(deliveryLinks([link('delivery', 'a'), link('external', 'b'), link('delivery', 'c', 'gone')]).map((l) => l.ref)).toEqual(['a'])
+  })
+})
+
+describe("the close policy's editor", () => {
+  it('keeps the policy in its order, each requirement once, nothing it does not know', () => {
+    expect(closeRequiresOf(['delivery', 'acceptance', 'delivery'])).toEqual(['acceptance', 'delivery'])
+    expect(closeRequiresOf(['verified', 'delivery'])).toEqual(['delivery'])
+    expect(closeRequiresOf([])).toEqual([])
+  })
+  it('tells two policies apart whatever their order', () => {
+    expect(samePolicy(['delivery', 'acceptance'], ['acceptance', 'delivery'])).toBe(true)
+    expect(samePolicy(['acceptance'], ['acceptance', 'delivery'])).toBe(false)
+    expect(samePolicy([], [])).toBe(true)
+  })
+})
+
+describe("a link's label", () => {
+  it('says a GitHub pull request, issue and release in short, and any other URL by its host and path', () => {
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor/pull/411')).toBe('rocksolidlabs/conductor#411')
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor/issues/12#issuecomment-1')).toBe('rocksolidlabs/conductor#12')
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor/releases/tag/v0.7.0-rc.18')).toBe('rocksolidlabs/conductor v0.7.0-rc.18')
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor')).toBe('github.com/rocksolidlabs/conductor')
+    expect(linkLabel('https://example.com/')).toBe('example.com')
+    expect(linkLabel('http://example.com:8080/a/b/')).toBe('example.com:8080/a/b')
+    expect(linkLabel('not a url')).toBe('not a url')
   })
 })
 

@@ -1,4 +1,4 @@
-import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, RelatedTicket, TicketAttachment, TicketComment, TicketEdit, TicketRelation, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
+import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, RelatedTicket, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -293,6 +293,108 @@ export function closePolicyWords(close: CloseState): ClosePolicyWords {
 export function closeRefusalWords(missing: readonly string[]): string {
   if (!missing.length) return 'The close policy refused it.'
   return `It needs ${andList(missing.map(requirementWords))} to be done.`
+}
+
+/** A run link refused (409 run_linked) because another live ticket holds the run, the receipt's key naming it: a run belongs to one ticket. */
+export function runLinkedWords(holder?: string): string {
+  return holder ? `The run is linked to ${holder} already: a run belongs to one ticket.` : 'The run is linked to another ticket already: a run belongs to one ticket.'
+}
+
+/** What a project's close policy may require, in the order a policy is kept and said: `verified` is not offered (DS2 defines it). */
+export const CLOSE_REQUIREMENTS: ReadonlyArray<{ value: CloseRequirement; label: string; description: string }> = [
+  { value: 'acceptance', label: "The owner's acceptance", description: 'Recorded by a button of its own, for the owner and against the criteria as they stand' },
+  { value: 'delivery', label: 'A delivery link', description: "The merged pull request's or the release's URL" },
+]
+
+/** A close policy as the person ticked it, in the order the policy keeps (acceptance, then delivery), each once. */
+export function closeRequiresOf(picked: readonly string[]): CloseRequirement[] {
+  return CLOSE_REQUIREMENTS.map((r) => r.value).filter((r) => picked.includes(r))
+}
+
+/** Whether two close policies require the same things, whatever their order. */
+export function samePolicy(a: readonly string[], b: readonly string[]): boolean {
+  const x = closeRequiresOf(a)
+  const y = closeRequiresOf(b)
+  return x.length === y.length && x.every((r, i) => r === y[i])
+}
+
+/** A ticket as its close card reads it: its policy's state, its owner, its acceptance on record, its links. */
+export type ClosingTicket = Pick<DispatchTicket, 'close' | 'owner' | 'status' | 'acceptedAt' | 'acceptedBy' | 'acceptedFor' | 'acceptedNote' | 'links'>
+
+/** One line of the close card: a requirement of the policy, whether the ticket meets it, and its state in words. */
+export interface CloseCardItem {
+  requirement: CloseRequirement
+  words: string
+  met: boolean
+  /** "Accepted by Nate for Alice", "accepted for Alice; the owner is now Bob", "No delivery link yet". */
+  state: string
+}
+
+/** The close card's words (DispatchClosePolicy.vue): what closing takes, each requirement's state, the acceptance's own, and the Close. */
+export interface CloseCard {
+  /** "To close: the owner's acceptance · a delivery link", or that nothing is required. */
+  summary: string
+  items: CloseCardItem[]
+  /** The acceptance on record in words, whether the policy requires it or not: it is a fact of its own. */
+  acceptance: { text: string; tone: Tone; recorded: boolean; met: boolean }
+  /** Why Accept cannot be made now ('' when it can): a ticket with no owner has no one to accept it for. */
+  acceptBlocked: string
+  /** Whether the ticket is closed (done or cancelled): the card offers no Close then. */
+  closed: boolean
+  /** Whether the policy is met, as read: the Close is still sent and the store decides, its refusal said in words. */
+  ready: boolean
+}
+
+/** The live delivery links of a ticket. */
+export function deliveryLinks(links: readonly TicketLink[]): TicketLink[] {
+  return links.filter((l) => l.kind === 'delivery' && !l.deletedAt)
+}
+
+/** A ticket's close card, from its read: `close` as the server computed it, never re-derived here, the words around it. */
+export function closeCard(t: ClosingTicket): CloseCard {
+  const policy = closePolicyWords(t.close)
+  const recorded = !!t.acceptedAt
+  const met = !!t.close.met.acceptance
+  const by = t.acceptedBy || 'admin'
+  let acceptance: CloseCard['acceptance']
+  if (recorded && met) acceptance = { text: `Accepted by ${by} for ${t.acceptedFor || t.owner}`, tone: 'success', recorded, met }
+  else if (recorded) acceptance = { text: t.close.why || `Accepted by ${by} for ${t.acceptedFor}, no longer met`, tone: 'warning', recorded, met }
+  else if (t.owner) acceptance = { text: `Not accepted yet: ${t.owner} is the owner`, tone: 'muted', recorded, met }
+  else acceptance = { text: 'Not accepted yet: the ticket has no owner to accept it', tone: 'muted', recorded, met }
+  const delivered = deliveryLinks(t.links ?? []).length
+  const items = policy.items.map((i): CloseCardItem => {
+    if (i.requirement === 'acceptance') return { ...i, state: acceptance.text }
+    return { ...i, state: delivered ? `Delivered: ${delivered === 1 ? 'one link' : `${delivered} links`}` : 'No delivery link yet' }
+  })
+  return {
+    summary: policy.summary,
+    items,
+    acceptance,
+    acceptBlocked: t.owner ? '' : 'It needs an owner to accept it for.',
+    closed: t.status === 'done' || t.status === 'cancelled',
+    ready: !t.close.missing.length,
+  }
+}
+
+/**
+ * A link's URL in short, for its row: a GitHub pull request or issue as `owner/repo#12`, a release as `owner/repo v1.2`, else its host
+ * and path. The whole URL is the row's link and its title.
+ */
+export function linkLabel(url: string): string {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return url
+  }
+  const parts = u.pathname.split('/').filter(Boolean)
+  if (u.hostname === 'github.com' && parts.length >= 4) {
+    const [owner, repo, kind, ...rest] = parts
+    if ((kind === 'pull' || kind === 'issues') && /^\d+$/.test(rest[0] ?? '')) return `${owner}/${repo}#${rest[0]}`
+    if (kind === 'releases' && rest[0] === 'tag' && rest[1]) return `${owner}/${repo} ${decodeURIComponent(rest[1])}`
+  }
+  const path = u.pathname === '/' ? '' : u.pathname.replace(/\/$/, '')
+  return `${u.host}${path}`
 }
 
 // ---------------------------------------------------------------------------

@@ -56,6 +56,16 @@ export function projectsWatch(read: () => Promise<unknown>): DispatchWatch {
   return { later: () => true, read }
 }
 
+/**
+ * The run page's chip's watch (PR-11): the ticket the run is linked to (GET /api/dispatch/links?run=) read again, after the window, on
+ * every event whose entity is a ticket. A link's add or remove and a ticket's delete or undelete are events of that ticket, which name no
+ * run and no field, and a run linked to nothing has no project to narrow by, so every ticket event is one the chip may follow; the read
+ * is one indexed row. The collapsed event a commit sends for more than 64 tickets of a project is a ticket event too.
+ */
+export function runLinkWatch(read: () => Promise<unknown>): DispatchWatch {
+  return { later: (e) => e.entity === 'ticket', read }
+}
+
 /** A dispatch event's data as the stream sent it, or null for what is not one. */
 export function asDispatchEvent(v: unknown): DispatchEvent | null {
   if (v === null || typeof v !== 'object') return null
