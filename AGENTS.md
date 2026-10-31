@@ -183,8 +183,14 @@ add its rule here.
   #281). Read the channel or the file again where the answer is made, and
   let the test hold the event back past the judgement through a seam
   (`outputRead`, `settled` in `internal/proc`), so the old code fails
-  every run. A flake a whole loaded box will not show comes back when the
-  test and a few busy loops share a few cores (`taskset -c 0-3`).
+  every run. An answer drawn from more than one fact (a kill sent, the
+  group found empty, the output open) reads them all at once, under the
+  lock the events that change them take, and an event beside the wait is
+  noted, under that lock, with what it did when it happened (the kill with
+  whether it took a holder, `lifecycle.judge`). Read one by one, an event
+  between two reads gives a picture neither order would. A flake a whole
+  loaded box will not show comes back when the test and a few busy loops
+  share a few cores (`taskset -c 0-3`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
